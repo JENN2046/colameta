@@ -22,7 +22,10 @@ classifiers = [
 dependencies = [
     "jsonschema>=4.23,<5",
     "PyJWT[crypto]>=2.8,<3",
+    "cryptography>=50.0.0,<51",
     "PyYAML==6.0.3",
+    "tomli>=2.0.1; python_version < \"3.11\"",
+    "packaging>=24,<27",
 ]
 
 [project.urls]
@@ -55,6 +58,11 @@ schemas = ["work_item_governance/*.json"]
 target-version = "py310"
 line-length = 120
 extend-exclude = [".venv", "build", "dist", "*.egg-info"]
+
+[tool.pytest.ini_options]
+markers = [
+    "host_frozen_toolchain: requires the verified frozen host toolchain and trusted-launcher environment",
+]
 
 [tool.ruff.lint]
 select = ["E9", "F63", "F7", "F82"]

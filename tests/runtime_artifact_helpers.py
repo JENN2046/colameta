@@ -3,20 +3,64 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 
 RUNTIME_PACKAGE_ROOTS = ("runner", "adapters", "schemas", "scripts")
+BUILD_BINDING_FILES = ("pyproject.toml", "README.md")
+MetadataSourceMode = Literal["committed_head", "candidate_worktree"]
+
+
+def _regular_build_input(root: Path, relative_path: str) -> Path:
+    """Return a root-contained, non-symlink build input from an explicit root."""
+
+    resolved_root = root.expanduser().resolve(strict=True)
+    candidate = root / relative_path
+    metadata = candidate.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"build input must be a regular non-symlink file: {relative_path}")
+    resolved = candidate.resolve(strict=True)
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"build input escaped its source root: {relative_path}") from exc
+    return resolved
 
 
 def prepare_exact_runtime_artifacts(
     *,
     canary_root: Path,
     repository_root: Path,
+    metadata_source_mode: MetadataSourceMode = "committed_head",
+    candidate_root: Path | None = None,
 ) -> tuple[Path, Path, dict[str, str]]:
-    """Clone real history, commit current runtime bytes, and build a matching Wheel."""
+    """Clone real history, materialize one explicit source identity, and build a matching Wheel.
+
+    ``committed_head`` preserves the historical fixture behavior.  The
+    ``candidate_worktree`` mode is explicit and requires the source and build
+    metadata to come from the same candidate root; it never falls back to
+    ``HEAD``.
+    """
+
+    if metadata_source_mode not in {"committed_head", "candidate_worktree"}:
+        raise ValueError(f"unsupported metadata_source_mode: {metadata_source_mode}")
+    source_root = repository_root.expanduser().resolve(strict=True)
+    if not source_root.is_dir():
+        raise ValueError("repository_root must be a directory")
+    if metadata_source_mode == "candidate_worktree":
+        if candidate_root is None:
+            raise ValueError("candidate_root is required for candidate_worktree metadata")
+        candidate_source_root = candidate_root.expanduser().resolve(strict=True)
+        if candidate_source_root != source_root:
+            raise ValueError("candidate source and metadata roots must be identical")
+        for relative_path in BUILD_BINDING_FILES:
+            _regular_build_input(candidate_source_root, relative_path)
+    else:
+        candidate_source_root = source_root
 
     checkout = canary_root / "source"
     wheel = canary_root / "artifacts" / "colameta-0.0.0-py3-none-any.whl"
@@ -33,12 +77,18 @@ def prepare_exact_runtime_artifacts(
     for package in RUNTIME_PACKAGE_ROOTS:
         shutil.rmtree(checkout / package)
         shutil.copytree(
-            repository_root / package,
+            candidate_source_root / package,
             checkout / package,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
         )
-    _run_artifact_command(checkout, "git", "add", *RUNTIME_PACKAGE_ROOTS)
-    if _run_artifact_command(checkout, "git", "status", "--porcelain", *RUNTIME_PACKAGE_ROOTS).strip():
+    paths_to_commit = list(RUNTIME_PACKAGE_ROOTS)
+    if metadata_source_mode == "candidate_worktree":
+        for relative_path in BUILD_BINDING_FILES:
+            source_file = _regular_build_input(candidate_source_root, relative_path)
+            shutil.copyfile(source_file, checkout / relative_path)
+        paths_to_commit.extend(BUILD_BINDING_FILES)
+    _run_artifact_command(checkout, "git", "add", *paths_to_commit)
+    if _run_artifact_command(checkout, "git", "status", "--porcelain", *paths_to_commit).strip():
         _run_artifact_command(
             checkout,
             "git",

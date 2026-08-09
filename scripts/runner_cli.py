@@ -9,7 +9,6 @@ import signal
 import subprocess
 import threading
 import time
-import urllib.request
 import webbrowser
 from datetime import datetime, timezone
 
@@ -23,6 +22,7 @@ from scripts.runner_cli_usage import SIMPLE_START_MODES as _SIMPLE_START_MODES
 from scripts.runner_cli_usage import USAGE_MESSAGE
 from runner.mcp_decisions import MCPDecisionRecordsManager
 from runner.http_server_utils import is_tcp_port_bindable, wait_for_tcp_port_bindable
+from runner.http_url_policy import HTTPRedirectPolicy, open_http_url
 from runner.runner_global_config import DEFAULT_MCP_HOST, DEFAULT_WEB_HOST, RunnerGlobalConfigStore
 from runner.mcp_private_operator import (
     OperatorSettingsStore,
@@ -897,7 +897,12 @@ def _is_runner_web_console(host: str, port: int, timeout: int = 3) -> bool:
     try:
         probe_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
         url = f"http://{probe_host}:{port}/api/healthz"
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with open_http_url(
+            url,
+            timeout=timeout,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+        ) as resp:
             if resp.status != 200:
                 return False
             body = resp.read().decode("utf-8")
@@ -911,7 +916,12 @@ def _is_runner_mcp_server(host: str, port: int, timeout: int = 3) -> bool:
     try:
         probe_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
         url = f"http://{probe_host}:{port}/healthz"
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with open_http_url(
+            url,
+            timeout=timeout,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+        ) as resp:
             if resp.status != 200:
                 return False
             body = resp.read().decode("utf-8")
@@ -1887,7 +1897,12 @@ def _tunnel_admin_component(
 def _probe_tunnel_admin_path(host: str, port: int, path: str) -> bool:
     try:
         url = f"http://{_url_host(host)}:{port}{path}"
-        with urllib.request.urlopen(url, timeout=TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS) as response:
+        with open_http_url(
+            url,
+            timeout=TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+        ) as response:
             return int(response.status) == 200
     except Exception:
         return False

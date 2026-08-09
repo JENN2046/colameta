@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import threading
 import time
 
@@ -755,10 +754,7 @@ def test_manifest_validation_isolated_checkout_binds_toolchain_and_cleans_genera
     monkeypatch,
 ) -> None:
     project = _make_git_checkout(tmp_path)
-    venv_bin = project / ".venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    (venv_bin / "python").symlink_to(Path(sys.executable).resolve())
-    observed_venv_targets: list[Path] = []
+    observed_checkout_roots: list[Path] = []
     original_run_command = MCPValidationRunManager._run_command
 
     def run_command(
@@ -770,9 +766,8 @@ def test_manifest_validation_isolated_checkout_binds_toolchain_and_cleans_genera
     ):
         assert cwd is not None
         checkout = Path(cwd)
-        checkout_venv = checkout / ".venv"
-        assert checkout_venv.is_symlink()
-        observed_venv_targets.append(checkout_venv.resolve())
+        assert not (checkout / ".venv").exists()
+        observed_checkout_roots.append(checkout)
         generated = checkout / ".pytest_cache"
         generated.mkdir()
         (generated / "validation-cache").write_text(
@@ -796,11 +791,15 @@ def test_manifest_validation_isolated_checkout_binds_toolchain_and_cleans_genera
     )
 
     assert final["status"] == "passed"
-    assert observed_venv_targets == [(project / ".venv").resolve()]
+    assert observed_checkout_roots
     checkout = final["output_summary"]["checkout_provenance"]
     assert checkout["source_before"] == checkout["source_after"]
     assert checkout["source_binding_match"] is True
     assert checkout["cleanup_complete"] is True
+    environment = final["output_summary"]["validation_environment"]
+    assert environment["candidate_code_authority"] is True
+    assert environment["parent_pythonpath_removed"] is True
+    assert environment["validation_environment_verified"] is True
 
 
 def test_validation_result_status_detects_semantic_tampering_but_not_key_order(

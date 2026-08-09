@@ -500,8 +500,18 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             "reload_awareness_reason": "installed_package_matches_project_checkout",
         }
 
-        def fake_urlopen(url: str, timeout: float = 0) -> FakeResponse:
-            requested_urls.append(url)
+        def fake_open_http_url(
+            request_or_url: object,
+            *,
+            timeout: float | int | None,
+            allowed_schemes: object,
+            redirect_policy: object,
+        ) -> FakeResponse:
+            assert isinstance(request_or_url, str)
+            assert timeout == runner_cli.TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS
+            assert allowed_schemes == {"http"}
+            assert isinstance(redirect_policy, runner_cli.HTTPRedirectPolicy)
+            requested_urls.append(request_or_url)
             return FakeResponse()
 
         with (
@@ -523,7 +533,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             ),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
             patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
-            patch.object(runner_cli.urllib.request, "urlopen", side_effect=fake_urlopen),
+            patch.object(runner_cli, "open_http_url", side_effect=fake_open_http_url),
         ):
             result = runner_cli._run_service_status(
                 [
@@ -596,6 +606,19 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             "reload_awareness_reason": "installed_package_matches_project_checkout",
         }
 
+        def fake_open_http_url(
+            request_or_url: object,
+            *,
+            timeout: float | int | None,
+            allowed_schemes: object,
+            redirect_policy: object,
+        ) -> FakeResponse:
+            assert isinstance(request_or_url, str)
+            assert timeout == runner_cli.TUNNEL_ADMIN_PROBE_TIMEOUT_SECONDS
+            assert allowed_schemes == {"http"}
+            assert isinstance(redirect_policy, runner_cli.HTTPRedirectPolicy)
+            return FakeResponse()
+
         with (
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
@@ -616,7 +639,7 @@ class RunnerCliConnectorRuntimeHealthTests(unittest.TestCase):
             ),
             patch.object(runner_cli, "get_runtime_version_status", return_value=runtime_status),
             patch.object(runner_cli, "git_checkout_metadata", return_value={"head": "b" * 40}),
-            patch.object(runner_cli.urllib.request, "urlopen", return_value=FakeResponse()),
+            patch.object(runner_cli, "open_http_url", side_effect=fake_open_http_url),
         ):
             result = runner_cli._run_service_status(
                 [

@@ -5,22 +5,27 @@ import importlib.util
 import os
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 import pytest
 
+import runner.work_item_governance.closeout as governance_closeout
 import runner.work_item_governance.toolchain_binding as toolchain_binding
 import scripts.work_item_r3_closeout as closeout_script
 import scripts.work_item_r3_trusted_launcher as trusted_launcher
 from runner.work_item_governance.canonical import canonical_sha256, sha256_file
 from runner.work_item_governance.errors import WorkItemGovernanceError
-from runner.work_item_governance.toolchain_binding import measure_closeout_toolchain
 from scripts.work_item_r3_closeout import (
     bundle_access_check,
     bundle_manifest,
     protected_assets_check,
     run_command as _run_command,
     verify_receipt,
+)
+from runner.toolchain_environment import (
+    materialize_frozen_toolchain_environment,
+    venv_python,
 )
 
 
@@ -61,6 +66,104 @@ def run_command(*, name: str, output: Path, command: list[str]) -> int:
     )
 
 
+def _frozen_toolchain_project() -> Path:
+    configured = os.environ.get("COLAMETA_FROZEN_TOOLCHAIN_PROJECT_ROOT")
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(__file__).resolve().parents[1]
+    )
+
+
+def _frozen_source_project() -> Path:
+    configured = os.environ.get("COLAMETA_FROZEN_SOURCE_ROOT") or os.environ.get(
+        "COLAMETA_FROZEN_TRUSTED_SOURCE_ROOT"
+    )
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(__file__).resolve().parents[1]
+    )
+
+
+def _materialize_test_frozen_toolchain(tmp_path: Path) -> tuple[Path, Path]:
+    source_project = _frozen_toolchain_project()
+    asset_path = os.environ.get("COLAMETA_FROZEN_CRYPTOGRAPHY_WHEEL")
+    assets = toolchain_binding.load_verified_frozen_toolchain_record()["required_assets"]
+    asset = assets["cryptography"]
+    if not asset_path:
+        raise AssertionError("the bound cryptography wheel asset is required")
+    materialized_project, materialized_venv, _summary = (
+        materialize_frozen_toolchain_environment(
+            source_venv=source_project / ".venv",
+            work_root=tmp_path / "frozen-toolchain",
+            frozen_asset=Path(asset_path),
+            frozen_asset_filename=asset["filename"],
+            frozen_asset_sha256=asset["sha256"],
+            frozen_asset_distribution=asset["distribution"],
+            frozen_asset_version=asset["version"],
+        )
+    )
+    return materialized_project, materialized_venv
+
+
+def _measure_in_frozen_venv(
+    project: Path,
+    venv: Path,
+    *,
+    tamper_wrapper: bool = False,
+) -> dict[str, object]:
+    probe = r'''
+import json
+import sys
+from pathlib import Path
+import runner.work_item_governance.toolchain_binding as binding
+
+if sys.argv[2] == "tamper":
+    original = binding.sha256_file
+    def tampered(path):
+        target = Path(path)
+        if target.name == "ruff" and ".venv/bin" in target.as_posix():
+            return "0" * 64
+        return original(path)
+    binding.sha256_file = tampered
+try:
+    measured = binding.measure_closeout_toolchain(sys.argv[1])
+except Exception as exc:
+    print(json.dumps({"ok": False, "error_code": getattr(exc, "code", type(exc).__name__)}))
+else:
+    print(json.dumps({
+        "ok": True,
+        "record_hashes_verified": measured.get("record_hashes_verified"),
+        "unowned_import_files": measured.get("unowned_import_files"),
+        "environment_root_sha256": measured.get("environment_root_sha256"),
+    }, sort_keys=True))
+'''
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+    }
+    environment.update(
+        {
+            "PATH": f"{venv / 'bin'}:{os.defpath}",
+            "VIRTUAL_ENV": str(venv),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    completed = subprocess.run(
+        [str(venv_python(venv)), "-c", probe, str(project), "tamper" if tamper_wrapper else "clean"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        shell=False,
+    )
+    return json.loads(completed.stdout)
+
+
 @pytest.fixture(autouse=True)
 def _stub_exact_project_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -90,6 +193,191 @@ def _initialize_clean_repository(
     subprocess.run(["git", "-C", repository, "add", "tracked.txt"], check=True)
     subprocess.run(["git", "-C", repository, "commit", "-q", "-m", "fixture"], check=True)
     return repository
+
+
+def _initialize_governed_candidate(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    """Build a small HEAD-plus-delta checkout and its governed receipt."""
+
+    repository = root / "candidate"
+    repository.mkdir()
+    for directory in ("runner", "adapters", "schemas", "scripts", "tests"):
+        package = repository / directory
+        package.mkdir()
+        (package / ".keep").write_text("fixture\n", encoding="utf-8")
+    launcher = repository / "scripts" / "work_item_r3_trusted_launcher.py"
+    launcher.write_bytes(
+        (Path(__file__).resolve().parents[1] / "scripts" / launcher.name).read_bytes()
+    )
+    tracked = repository / "runner" / "dependency.py"
+    tracked.write_text("MARKER = 'head'\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", repository], check=True)
+    subprocess.run(
+        ["git", "-C", repository, "config", "user.email", "r3-runner@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", repository, "config", "user.name", "R3 Runner"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", repository, "add", "."], check=True)
+    subprocess.run(["git", "-C", repository, "commit", "-q", "-m", "fixture"], check=True)
+
+    tracked.write_text("MARKER = 'delta'\n", encoding="utf-8")
+    overlay = repository / "scripts" / "candidate_overlay.py"
+    overlay.write_text("MARKER = 'overlay'\n", encoding="utf-8")
+    head = subprocess.run(
+        ["git", "-C", repository, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    bindings = [
+        {
+            "path": "runner/dependency.py",
+            "present": True,
+            "sha256": sha256_file(tracked),
+        },
+        {
+            "path": "scripts/candidate_overlay.py",
+            "present": True,
+            "sha256": sha256_file(overlay),
+        },
+    ]
+    toolchain_project = root / "frozen-toolchain-project"
+    toolchain_environment = toolchain_project / ".venv"
+    toolchain_environment.mkdir(parents=True)
+    (toolchain_environment / "pyvenv.cfg").write_text(
+        "home = /usr/bin\nversion = 3.12.3\n", encoding="utf-8"
+    )
+    receipt = {
+        "schema_version": "colameta.trusted_launcher_binding.v1",
+        "candidate": {
+            "head": head,
+            "root": repository.resolve().as_posix(),
+            "worktree_delta_sha256": canonical_sha256(bindings),
+            "source_binding_sha256": canonical_sha256(bindings),
+            "source_binding_count": len(bindings),
+            "source_binding_scope": "full_allowed_worktree_delta",
+            "source_bindings": bindings,
+        },
+        "toolchain": {
+            "project_root": toolchain_project.resolve().as_posix(),
+            "environment_root": toolchain_environment.resolve().as_posix(),
+            "environment_root_sha256": "a" * 64,
+            "frozen_record_sha256": "b" * 64,
+            "cryptography_version": "50.0.0",
+        },
+        "launcher": {
+            "path": "scripts/work_item_r3_trusted_launcher.py",
+            "sha256": sha256_file(launcher),
+        },
+        "validation": {
+            "preview_id": "fixture1234",
+            "command_specs_sha256": "c" * 64,
+            "lane": "host_frozen",
+        },
+    }
+    receipt["receipt_sha256"] = canonical_sha256(receipt)
+    receipt_path = repository.parent / "trusted-launcher-binding.json"
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    monkeypatch.setenv(
+        "COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE",
+        receipt_path.as_posix(),
+    )
+    return repository, receipt_path
+
+
+def test_governed_receipt_accepts_exact_head_plus_candidate_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+
+    receipt = trusted_launcher._load_binding_receipt(repository)
+    assert receipt is not None
+    measured = trusted_launcher._measure_source_tree(
+        repository,
+        binding_receipt=receipt,
+    )
+    assert measured["candidate_binding"]["exact_match"] is True
+    assert measured["candidate_binding"]["source_binding_count"] == 2
+
+
+def test_governed_receipt_rejects_extra_candidate_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+    (repository / "schemas" / "unbound.py").write_text(
+        "MARKER = 'unbound'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="unbound source overlay"):
+        trusted_launcher._measure_source_tree(repository)
+
+
+def test_governed_receipt_rejects_bound_file_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+    (repository / "runner" / "dependency.py").write_text(
+        "MARKER = 'raced'\n", encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="source differs"):
+        trusted_launcher._measure_source_tree(repository)
+
+
+def test_governed_receipt_rejects_tampering_and_receipt_path_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, receipt_path = _initialize_governed_candidate(tmp_path, monkeypatch)
+    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered["candidate"]["head"] = "0" * 40
+    receipt_path.write_text(json.dumps(tampered, sort_keys=True), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        trusted_launcher._load_binding_receipt(repository)
+
+    link = receipt_path.with_name("receipt-link.json")
+    link.symlink_to(receipt_path)
+    monkeypatch.setenv("COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE", link.as_posix())
+    with pytest.raises(RuntimeError, match="path is unsafe"):
+        trusted_launcher._load_binding_receipt(repository)
+
+
+def test_host_nested_launcher_rejects_missing_governed_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _initialize_clean_repository(tmp_path)
+    monkeypatch.chdir(repository)
+    monkeypatch.setenv("COLAMETA_VALIDATION_LANE", "host_frozen")
+    monkeypatch.delenv("COLAMETA_TRUSTED_LAUNCHER_BINDING_FILE", raising=False)
+    output = tmp_path / "missing-binding.json"
+
+    result = run_command(
+        name="missing_binding",
+        output=output,
+        command=[
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "-B",
+            "-",
+            ".",
+            "protected-assets-check",
+        ],
+    )
+
+    assert result == 126
+    evidence = json.loads(output.read_text(encoding="utf-8"))
+    assert evidence["passed"] is False
+    assert evidence["trusted_launcher_stdin"] is None
 
 
 def test_run_command_retains_exact_completed_process_record(
@@ -510,6 +798,88 @@ def test_protected_asset_and_bundle_access_checks_fail_closed(
     assert result["sanitization_findings"]
 
 
+def test_only_exact_obsolete_zone_metadata_paths_may_be_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    expected = governance_closeout.OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256
+    monkeypatch.chdir(tmp_path)
+
+    for path, digest in expected.items():
+        assert protected_assets_check([f"{path}={digest}"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["assets"] == [
+            {
+                "path": path,
+                "expected_sha256": digest,
+                "present": False,
+                "absence_allowed": True,
+                "actual_sha256": None,
+                "match": True,
+            }
+        ]
+
+    arbitrary = "other:Zone.Identifier"
+    assert protected_assets_check([f"{arbitrary}={'a' * 64}"]) == 1
+    assert json.loads(capsys.readouterr().out)["assets"][0]["absence_allowed"] is False
+
+    exact_name_at_wrong_root = tmp_path / next(iter(expected))
+    assert protected_assets_check(
+        [f"{exact_name_at_wrong_root}={expected[exact_name_at_wrong_root.name]}"]
+    ) == 1
+    assert json.loads(capsys.readouterr().out)["assets"][0]["absence_allowed"] is False
+
+    exact_path = next(iter(expected))
+    Path(exact_path).write_text("wrong bytes", encoding="utf-8")
+    assert protected_assets_check([f"{exact_path}={expected[exact_path]}"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["assets"][0]["present"] is True
+    assert result["assets"][0]["match"] is False
+
+
+def test_receipt_verifier_accepts_only_exact_absent_zone_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CleanGit:
+        def run(self, _root: Path, *_arguments: str) -> str:
+            return ""
+
+    monkeypatch.setattr(
+        governance_closeout,
+        "_trusted_git_for_checkout",
+        lambda _root: _CleanGit(),
+    )
+    expected = governance_closeout.OPTIONAL_ABSENT_PROTECTED_ASSET_SHA256
+    receipt = {
+        "protected_user_assets": {
+            "assets": [
+                {"path": path, "sha256": digest}
+                for path, digest in expected.items()
+            ],
+            "staged": False,
+            "committed": False,
+        }
+    }
+
+    violations: list[str] = []
+    governance_closeout._verify_protected_assets(receipt, tmp_path, violations)
+    assert violations == []
+
+    receipt["protected_user_assets"]["assets"][0]["sha256"] = "a" * 64
+    governance_closeout._verify_protected_assets(receipt, tmp_path, violations := [])
+    assert violations == [
+        "protected_asset_digest:AGENTS - 副本.md:Zone.Identifier"
+    ]
+
+    receipt["protected_user_assets"]["assets"] = [
+        {"path": "other:Zone.Identifier", "sha256": "a" * 64}
+    ]
+    governance_closeout._verify_protected_assets(receipt, tmp_path, violations := [])
+    assert violations == ["protected_asset_missing:other:Zone.Identifier"]
+
+
 def test_protected_asset_receipt_order_matches_frozen_schema() -> None:
     schema = json.loads(
         Path("schemas/work_item_governance/r2-closeout-receipt.v1.schema.json").read_text(
@@ -543,29 +913,87 @@ def test_bundle_manifest_excludes_itself_and_binds_file_list(
     assert manifest["files"][0]["path"] == "one.txt"
 
 
+@pytest.mark.host_frozen_toolchain
 def test_frozen_toolchain_record_and_environment_root_are_verified(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    project = Path(__file__).resolve().parents[1]
-    measured = measure_closeout_toolchain(project)
+    project, venv = _materialize_test_frozen_toolchain(tmp_path)
+    measured = _measure_in_frozen_venv(project, venv)
+    assert measured["ok"] is True
     assert measured["record_hashes_verified"] is True
     assert measured["unowned_import_files"] == []
 
-    original = toolchain_binding.sha256_file
-
-    def tampered(path: str | Path) -> str:
-        target = Path(path)
-        if target.name == "ruff" and ".venv/bin" in target.as_posix():
-            return "0" * 64
-        return original(path)
-
-    monkeypatch.setattr(toolchain_binding, "sha256_file", tampered)
-    with pytest.raises(WorkItemGovernanceError) as rejected:
-        measure_closeout_toolchain(project)
-    assert rejected.value.code in {
+    tampered = _measure_in_frozen_venv(project, venv, tamper_wrapper=True)
+    assert tampered["ok"] is False
+    assert tampered["error_code"] in {
         "CLOSEOUT_TOOLCHAIN_RECORD_MISMATCH",
         "CLOSEOUT_TOOLCHAIN_ROOT_MISMATCH",
     }
+
+
+def test_rebased_frozen_authority_does_not_accept_historical_root() -> None:
+    historical_root = (
+        "0f80e9f3d3bb3cc4b7aed88acdddf7f87c2fc17e3954c7d2966795fb0dc2515d"
+    )
+    record = toolchain_binding.load_verified_frozen_toolchain_record()
+    assert record["environment_root_sha256"] == (
+        "1eb3b914080827525b75bb230b0f2cb41a692995892ba39a71085f70bd141c29"
+    )
+    assert record["environment_root_sha256"] != historical_root
+
+
+def test_frozen_record_load_is_independent_from_active_bytecode_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = toolchain_binding.load_verified_frozen_toolchain_record()
+    venv = tmp_path / "venv"
+    site_packages = venv / "lib" / "python3.12" / "site-packages"
+    unknown = site_packages / "unknown" / "__pycache__" / "module.cpython-312.pyc"
+    unknown.parent.mkdir(parents=True)
+    unknown.write_bytes(b"unknown")
+    monkeypatch.setattr(
+        toolchain_binding,
+        "_toolchain_context",
+        lambda project_root: (Path(project_root), venv, site_packages),
+    )
+    monkeypatch.setattr(
+        toolchain_binding,
+        "_measure_closeout_toolchain",
+        lambda _project_root, allow_preimport_bytecode=False: {
+            "environment_root_sha256": record["environment_root_sha256"],
+            "record_hashes_verified": True,
+        },
+    )
+    inspection = toolchain_binding.inspect_frozen_toolchain_environment(
+        tmp_path,
+    )
+    inventory = inspection["bytecode_inventory"]
+    assert record["record_sha256"]
+    assert inspection["status"] == "drifted"
+    assert inspection["record_hashes_verified"] is True
+    assert inspection["bytecode_policy_satisfied"] is False
+    assert inventory["total_count"] == 1
+    assert inventory["unknown_owner_count"] == 1
+    assert inspection["blocking_reasons"]
+
+
+def test_unknown_bytecode_owner_is_not_silently_allowed(tmp_path: Path) -> None:
+    site_packages = tmp_path / "lib" / "python3.12" / "site-packages"
+    site_packages.mkdir(parents=True)
+    unknown = site_packages / "unknown" / "__pycache__" / "module.cpython-312.pyc"
+    unknown.parent.mkdir(parents=True)
+    unknown.write_bytes(b"unknown")
+
+    inventory = toolchain_binding._bytecode_inventory(
+        venv=tmp_path,
+        site_packages=site_packages,
+        distributions=[],
+    )
+    assert inventory["total_count"] == 1
+    assert inventory["record_listed_count"] == 0
+    assert inventory["unknown_owner_count"] == 1
+    assert inventory["bytecode_policy_satisfied"] is False
 
 
 def test_toolchain_inventory_rejects_symlink_special_and_sourceless_overlays(
@@ -615,16 +1043,19 @@ def test_toolchain_bin_inventory_rejects_import_shadow_directory(
     assert rejected.value.code == "CLOSEOUT_TOOLCHAIN_BIN_INVENTORY_MISMATCH"
 
 
-def test_toolchain_rejects_record_owned_preimport_bytecode() -> None:
-    project = Path(__file__).resolve().parents[1]
-    source = project / ".venv/lib/python3.12/site-packages/_distutils_hack/__init__.py"
+@pytest.mark.host_frozen_toolchain
+def test_toolchain_rejects_record_owned_preimport_bytecode(tmp_path: Path) -> None:
+    project, venv = _materialize_test_frozen_toolchain(tmp_path)
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    relative_purelib = purelib.relative_to(Path(sys.prefix))
+    source = project / ".venv" / relative_purelib / "_distutils_hack" / "__init__.py"
     cache = Path(importlib.util.cache_from_source(source.as_posix()))
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(b"pre-import bytecode")
     try:
-        with pytest.raises(WorkItemGovernanceError) as rejected:
-            measure_closeout_toolchain(project)
-        assert rejected.value.code in {
+        rejected = _measure_in_frozen_venv(project, venv)
+        assert rejected["ok"] is False
+        assert rejected["error_code"] in {
             "CLOSEOUT_TOOLCHAIN_PREIMPORT_BYTECODE",
             "CLOSEOUT_TOOLCHAIN_UNOWNED_IMPORT_FILE",
         }
@@ -636,15 +1067,27 @@ def test_toolchain_rejects_record_owned_preimport_bytecode() -> None:
             pass
 
 
+@pytest.mark.host_frozen_toolchain
 def test_run_command_executes_nested_trusted_launcher_with_scrubbed_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = Path(__file__).resolve().parents[1]
-    try:
-        trusted_launcher._measure_source_tree(project)
-    except RuntimeError:
-        pytest.skip("nested launcher positive assertion requires the committed candidate")
+    project = _frozen_source_project()
+    binding_receipt = trusted_launcher._load_binding_receipt(project)
+    if binding_receipt is not None:
+        trusted_launcher._measure_source_tree(
+            project,
+            binding_receipt=binding_receipt,
+        )
+        launcher_python = Path(
+            binding_receipt["toolchain"]["environment_root"]
+        ) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    else:
+        try:
+            trusted_launcher._measure_source_tree(project)
+        except RuntimeError:
+            pytest.skip("nested launcher positive assertion requires the committed candidate")
+        launcher_python = Path("/usr/bin/python3.12")
     monkeypatch.chdir(project)
     output = tmp_path / "nested-launcher.json"
 
@@ -652,7 +1095,7 @@ def test_run_command_executes_nested_trusted_launcher_with_scrubbed_startup(
         name="nested_launcher",
         output=output,
         command=[
-            "/usr/bin/python3.12",
+            launcher_python.as_posix(),
             "-I",
             "-S",
             "-B",

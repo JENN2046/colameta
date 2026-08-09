@@ -16,6 +16,7 @@ from runner.git_diff_helper import (
     collect_git_diff_name_paths,
     filter_business_diff_paths,
 )
+from runner.http_url_policy import HTTPRedirectPolicy, open_http_url
 from runner.sensitive_redaction import redact_sensitive_text
 from runner.token_usage import normalize_token_usage
 
@@ -189,7 +190,12 @@ def _http_request(
     body = json.dumps(data).encode("utf-8") if data else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_http_url(
+            req,
+            timeout=timeout,
+            allowed_schemes={"http", "https"},
+            redirect_policy=HTTPRedirectPolicy(),
+        ) as resp:
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""

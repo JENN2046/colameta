@@ -9,7 +9,6 @@ import uuid
 import ipaddress
 import hashlib
 import hmac
-import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -17,6 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from runner.http_server_utils import ReusableThreadingHTTPServer
+from runner.http_url_policy import HTTPRedirectPolicy, open_http_url
 from runner.planning_bridge import PlanningBridge, PlanningBridgeError
 from runner.executor_registry import (
     DEFAULT_EXECUTION_PROVIDER,
@@ -1889,7 +1889,12 @@ class WebConsoleServer:
         if port_int <= 0:
             return False
         try:
-            with urllib.request.urlopen(f"http://{host_text}:{port_int}/healthz", timeout=2) as response:
+            with open_http_url(
+                f"http://{host_text}:{port_int}/healthz",
+                timeout=2,
+                allowed_schemes={"http"},
+                redirect_policy=HTTPRedirectPolicy(),
+            ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception:
             return False
