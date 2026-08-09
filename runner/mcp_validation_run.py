@@ -5282,6 +5282,15 @@ print(json.dumps(payload, sort_keys=True))
             name = name[:-4]
         return bool(re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", name))
 
+    @staticmethod
+    def _is_direct_pytest_entrypoint(executable: str) -> bool:
+        """Direct pytest consoles are not governed validation authorities."""
+
+        name = os.path.basename(executable)
+        if name.endswith(".exe"):
+            name = name[:-4]
+        return name == "pytest" or name.startswith("pytest-")
+
     def _is_supported_python_validation_command(
         self,
         command: list[str],
@@ -5322,6 +5331,8 @@ print(json.dumps(payload, sort_keys=True))
         if self._is_general_purpose_shell(command):
             return False
         first = command[0]
+        if self._is_direct_pytest_entrypoint(first):
+            return False
         executable_name = os.path.basename(first)
         if executable_name in DANGEROUS_EXECUTABLES:
             return False

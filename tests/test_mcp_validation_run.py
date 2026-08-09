@@ -1572,6 +1572,68 @@ def test_preview_rejects_arbitrary_python_execution_before_execution(
 @pytest.mark.parametrize(
     "command",
     [
+        ["pytest", "tests/test_example.py"],
+        ["pytest", "/tmp/outside/test_escape.py"],
+        ["pytest", "../outside/test_escape.py"],
+        ["pytest", "--", "/tmp/outside/test_escape.py"],
+        ["pytest", "tests/test_example.py::test_case"],
+        ["pytest-8.4", "tests/test_example.py"],
+        ["pytest.exe", "tests/test_example.py"],
+    ],
+)
+def test_direct_pytest_entrypoints_are_rejected_before_execution(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is False
+    _argv, error = manager._parse_command_string(" ".join(command))
+    assert error == "命令不在安全白名单内"
+
+
+def test_preview_rejects_direct_pytest_entrypoint_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": ["pytest", "tests/test_example.py"],
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }], []),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "VALIDATION_COMMAND_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert "preview_id" not in result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "pytest", "tests/test_example.py"],
+        ["python3", "-m", "pytest", "tests/test_example.py"],
+        [".venv/bin/python", "-m", "pytest", "tests/test_example.py"],
+    ],
+)
+def test_canonical_python_module_pytest_entrypoints_remain_supported(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         ["python", "-m", "pytest", "tests", "--basetemp=/tmp/external"],
         ["pytest", "tests", "--basetemp", "/tmp/external"],
     ],
