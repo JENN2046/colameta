@@ -372,6 +372,58 @@ def test_validation_environment_removes_parent_python_contamination(
         assert key not in environment
 
 
+@pytest.mark.parametrize("shadow_kind", ["module", "package"])
+def test_isolated_control_plane_pip_ignores_candidate_and_pythonpath_shadowing(
+    tmp_path: Path,
+    shadow_kind: str,
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    candidate_sentinel = tmp_path / "candidate-pip-imported"
+    injected = tmp_path / "injected"
+    injected.mkdir()
+    injected_sentinel = tmp_path / "pythonpath-pip-imported"
+
+    module_code = (
+        "from pathlib import Path\n"
+        f"Path({str(candidate_sentinel)!r}).write_text('imported')\n"
+    )
+    if shadow_kind == "module":
+        (candidate / "pip.py").write_text(module_code, encoding="utf-8")
+    else:
+        package = candidate / "pip"
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "__main__.py").write_text(module_code, encoding="utf-8")
+    (injected / "pip.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(injected_sentinel)!r}).write_text('imported')\n",
+        encoding="utf-8",
+    )
+
+    validation_venv = tmp_path / "validation-venv"
+    create_validation_venv(validation_venv)
+    toolchain_environment._run_toolchain_command(
+        toolchain_environment._isolated_python_command(
+            venv_python(validation_venv),
+            "-m",
+            "pip",
+            "--version",
+        ),
+        cwd=candidate,
+        environment={
+            "PATH": os.defpath,
+            "PYTHONPATH": str(injected),
+            "PYTHONHOME": str(injected),
+        },
+        timeout_seconds=60,
+        label="isolated pip shadowing regression",
+    )
+
+    assert not candidate_sentinel.exists()
+    assert not injected_sentinel.exists()
+
+
 def test_validation_environment_does_not_retain_sensitive_parent_values(
     tmp_path: Path,
 ) -> None:
@@ -830,7 +882,7 @@ def test_frozen_materialization_uses_find_links_requirement_not_absolute_wheel(
     assert len(commands) == 1
     command = commands[0]
     assert command[0].endswith("/bin/python")
-    assert command[1:4] == ["-m", "pip", "install"]
+    assert command[1:6] == ["-I", "-B", "-m", "pip", "install"]
     assert command[command.index("--find-links") + 1] == str(asset_dir)
     assert "--only-binary" in command
     assert command[command.index("--only-binary") + 1] == ":all:"
@@ -962,6 +1014,7 @@ def test_candidate_validation_uses_online_tools_without_validation_closure(
         ("candidate validation tool installation", 1200),
     ]
     assert all(command[0] == str(environment.python_executable) for command in commands)
+    assert all(command[1:4] == ["-I", "-B", "-m"] for command in commands)
     assert all(
         command[command.index("--index-url") + 1]
         == toolchain_environment._OFFICIAL_PYPI_INDEX_URL
@@ -1095,6 +1148,7 @@ def test_candidate_wheel_build_uses_candidate_pip_without_build_isolation(
         ("candidate wheel installation", 300),
     ]
     assert all(command[0] == str(environment.python_executable) for command in commands)
+    assert all(command[1:4] == ["-I", "-B", "-m"] for command in commands)
     assert all(
         command[command.index("--index-url") + 1]
         == toolchain_environment._OFFICIAL_PYPI_INDEX_URL

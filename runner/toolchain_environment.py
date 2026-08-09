@@ -374,8 +374,8 @@ def download_candidate_pip_asset(
     if download_dir.exists() or download_dir.is_symlink():
         raise ValidationEnvironmentError("candidate pip download directory collision")
     download_dir.mkdir(parents=True, exist_ok=True)
-    download_command = [
-        str(python_executable),
+    download_command = _isolated_python_command(
+        python_executable,
         "-m",
         "pip",
         "download",
@@ -390,7 +390,7 @@ def download_candidate_pip_asset(
         "--dest",
         str(download_dir),
         f"pip=={_CANDIDATE_PIP_VERSION}",
-    ]
+    )
     _run_toolchain_command(
         download_command,
         cwd=_real_path(work_root),
@@ -673,6 +673,15 @@ def _run_toolchain_command(
         )
 
 
+def _isolated_python_command(
+    python_executable: Path,
+    *arguments: str,
+) -> list[str]:
+    """Build a trusted control-plane Python command without candidate imports."""
+
+    return [str(python_executable), "-I", "-B", *arguments]
+
+
 def _clean_candidate_build_overlays(
     *,
     candidate_root: Path,
@@ -786,8 +795,8 @@ def materialize_frozen_toolchain_environment(
         environment["PIP_NO_INDEX"] = "1"
         environment["PIP_FIND_LINKS"] = str(wheel_dir)
         _run_toolchain_command(
-            [
-                str(venv_python(venv_root)),
+            _isolated_python_command(
+                venv_python(venv_root),
                 "-m",
                 "pip",
                 "install",
@@ -799,7 +808,7 @@ def materialize_frozen_toolchain_environment(
                 "--no-deps",
                 "--force-reinstall",
                 f"{frozen_asset_distribution}=={frozen_asset_version}",
-            ],
+            ),
             cwd=project_root,
             environment=environment,
             timeout_seconds=300,
@@ -807,12 +816,12 @@ def materialize_frozen_toolchain_environment(
         )
         _remove_bytecode(venv_root)
         installed_version = subprocess.check_output(
-            [
-                str(venv_python(venv_root)),
+            _isolated_python_command(
+                venv_python(venv_root),
                 "-c",
                 "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))",
                 frozen_asset_distribution,
-            ],
+            ),
             cwd=project_root,
             env=environment,
             text=True,
@@ -1055,12 +1064,12 @@ def _read_distribution_version(
 
     try:
         completed = subprocess.run(
-            [
-                str(python_executable),
+            _isolated_python_command(
+                python_executable,
                 "-c",
                 "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))",
                 distribution,
-            ],
+            ),
             cwd=cwd,
             env=dict(environment) if environment is not None else None,
             capture_output=True,
@@ -1355,7 +1364,7 @@ def prepare_validation_environment(
             command_environment: Mapping[str, str],
             timeout_seconds: int = 300,
         ) -> None:
-            command = [str(python_executable), "-m", "pip", *arguments]
+            command = _isolated_python_command(python_executable, "-m", "pip", *arguments)
             pip_commands.append(command)
             _run_toolchain_command(
                 command,
