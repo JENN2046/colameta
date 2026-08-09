@@ -1524,10 +1524,16 @@ def prepare_validation_environment(
                     _OFFICIAL_PYPI_INDEX_URL,
                     "--no-input",
                     "--no-cache-dir",
-                    "--force-reinstall",
                     candidate_requirement,
+                    *_VALIDATION_TOOL_REQUIREMENTS,
                 ],
-                label="candidate wheel installation",
+                label="candidate wheel and validation tool resolution",
+                command_environment=environment,
+                timeout_seconds=_VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS,
+            )
+            run_candidate_pip(
+                ["check"],
+                label="candidate environment consistency check",
                 command_environment=environment,
             )
         if frozen_asset is not None:
@@ -1626,6 +1632,11 @@ def prepare_validation_environment(
             "source": "built_wheel_metadata",
             "canonical_policy": list(_CANONICAL_TEST_EXTRAS),
             "selected": list(candidate_test_extras),
+        }
+        provenance["candidate_toolchain_resolution"] = {
+            "single_transaction": candidate_wheel is not None,
+            "governed_requirement_count": len(_VALIDATION_TOOL_REQUIREMENTS),
+            "post_install_consistency_checked": candidate_wheel is not None,
         }
         environment_identity = _probe_installed_environment_identity(
             python_executable=python_executable,

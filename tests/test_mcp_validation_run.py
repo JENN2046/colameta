@@ -11,6 +11,7 @@ import sys
 import sysconfig
 import time
 import types
+import zipfile
 
 import pytest
 
@@ -691,12 +692,33 @@ def test_non_pep621_setup_cfg_project_enters_governed_wheel_install(
         "candidate pip bootstrap upgrade",
         "candidate validation tool installation",
         "candidate wheel build",
-        "candidate wheel installation",
+        "candidate wheel and validation tool resolution",
+        "candidate environment consistency check",
     ]
     assert any("--no-build-isolation" in command for command in commands)
-    candidate_install = commands[labels.index("candidate wheel installation")]
-    assert candidate_install[-1].startswith("legacy-demo[test] @ file://")
+    candidate_install = commands[
+        labels.index("candidate wheel and validation tool resolution")
+    ]
+    assert any(
+        argument.startswith("legacy-demo[test] @ file://")
+        for argument in candidate_install
+    )
+    assert all(
+        requirement in candidate_install
+        for requirement in toolchain_environment._VALIDATION_TOOL_REQUIREMENTS
+    )
+    consistency_check = commands[
+        labels.index("candidate environment consistency check")
+    ]
+    assert consistency_check[-1] == "check"
     assert environment.summary["candidate_test_extras"]["selected"] == ["test"]
+    assert environment.summary["candidate_toolchain_resolution"] == {
+        "single_transaction": True,
+        "governed_requirement_count": len(
+            toolchain_environment._VALIDATION_TOOL_REQUIREMENTS
+        ),
+        "post_install_consistency_checked": True,
+    }
     assert environment.summary["candidate_package_expected"] is True
     assert environment.summary["candidate_package_installed"] is True
 
@@ -735,6 +757,118 @@ def test_candidate_wheel_install_selects_only_canonical_test_extras(
         )
     else:
         assert requirement == str(wheel)
+
+
+def _write_dependency_resolver_wheel(
+    wheel_dir: Path,
+    *,
+    name: str,
+    version: str,
+    requires_dist: tuple[str, ...] = (),
+    provides_extra: tuple[str, ...] = (),
+) -> Path:
+    normalized_name = name.replace("-", "_").replace(".", "_")
+    dist_info = f"{normalized_name}-{version}.dist-info"
+    module_name = normalized_name.lower()
+    wheel = wheel_dir / f"{normalized_name}-{version}-py3-none-any.whl"
+    metadata_lines = [
+        "Metadata-Version: 2.1",
+        f"Name: {name}",
+        f"Version: {version}",
+        *[f"Provides-Extra: {extra}" for extra in provides_extra],
+        *[f"Requires-Dist: {requirement}" for requirement in requires_dist],
+        "",
+    ]
+    members = {
+        f"{module_name}/__init__.py": f'__version__ = "{version}"\n',
+        f"{dist_info}/METADATA": "\n".join(metadata_lines),
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\n"
+            "Generator: colameta-test\n"
+            "Root-Is-Purelib: true\n"
+            "Tag: py3-none-any\n"
+        ),
+    }
+    record_name = f"{dist_info}/RECORD"
+    members[record_name] = "".join(f"{path},,\n" for path in (*members, record_name))
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content in members.items():
+            archive.writestr(path, content)
+    return wheel
+
+
+@pytest.mark.parametrize(
+    ("candidate_requirement", "expected_ok"),
+    [
+        ('pytest<9; extra == "test"', False),
+        ('pytest>=8; extra == "test"', True),
+        ('pluggy<2; extra == "test"', False),
+        ('local-test-dependency>=1; extra == "test"', True),
+    ],
+)
+def test_single_resolution_transaction_preserves_governed_tool_graph(
+    tmp_path: Path,
+    candidate_requirement: str,
+    expected_ok: bool,
+) -> None:
+    wheel_dir = tmp_path / "wheels"
+    wheel_dir.mkdir()
+    candidate_wheel = _write_dependency_resolver_wheel(
+        wheel_dir,
+        name="candidate-extra-repro",
+        version="0.0.1",
+        provides_extra=("test",),
+        requires_dist=(candidate_requirement,),
+    )
+    _write_dependency_resolver_wheel(
+        wheel_dir,
+        name="pytest",
+        version="8.4.2",
+        requires_dist=("pluggy>=1",),
+    )
+    _write_dependency_resolver_wheel(
+        wheel_dir,
+        name="pytest",
+        version="9.0.3",
+        requires_dist=("pluggy>=2",),
+    )
+    for version in ("1.6.0", "2.0.0"):
+        _write_dependency_resolver_wheel(
+            wheel_dir,
+            name="pluggy",
+            version=version,
+        )
+    _write_dependency_resolver_wheel(
+        wheel_dir,
+        name="local-test-dependency",
+        version="1.0.0",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--dry-run",
+            "--ignore-installed",
+            "--no-index",
+            "--find-links",
+            str(wheel_dir),
+            f"candidate-extra-repro[test] @ {candidate_wheel.resolve().as_uri()}",
+            "pytest>=9.0.3,<10",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=False,
+    )
+
+    assert (result.returncode == 0) is expected_ok
+    if not expected_ok:
+        assert "ResolutionImpossible" in result.stderr
 
 
 def test_runtime_dependencies_are_direct_and_python_version_bound() -> None:
@@ -1063,6 +1197,7 @@ def test_candidate_validation_uses_online_tools_without_validation_closure(
         command[command.index("--index-url") + 1]
         == toolchain_environment._OFFICIAL_PYPI_INDEX_URL
         for command in commands
+        if "--index-url" in command
     )
     assert "--no-index" in commands[0]
     assert all("--find-links" not in command for command in commands)
@@ -1184,12 +1319,13 @@ def test_candidate_wheel_build_uses_candidate_pip_without_build_isolation(
         needs_python=True,
     )
 
-    assert len(commands) == 4
+    assert len(commands) == 5
     assert timeouts == [
         ("candidate pip bootstrap upgrade", 300),
         ("candidate validation tool installation", 1200),
         ("candidate wheel build", 300),
-        ("candidate wheel installation", 300),
+        ("candidate wheel and validation tool resolution", 1200),
+        ("candidate environment consistency check", 300),
     ]
     assert all(command[0] == str(environment.python_executable) for command in commands)
     assert all(command[1:4] == ["-I", "-B", "-m"] for command in commands)
@@ -1197,6 +1333,7 @@ def test_candidate_wheel_build_uses_candidate_pip_without_build_isolation(
         command[command.index("--index-url") + 1]
         == toolchain_environment._OFFICIAL_PYPI_INDEX_URL
         for command in commands
+        if "--index-url" in command
     )
     build = next(command for command in commands if "wheel" in command)
     assert "--no-build-isolation" in build
