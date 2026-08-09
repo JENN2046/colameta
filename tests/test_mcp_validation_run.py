@@ -1806,6 +1806,7 @@ def test_governed_pytest_grammar_preserves_plan_shapes(
         ["--rootdir=/tmp"],
         ["--confcutdir=/tmp"],
         ["--override-ini=addopts=-q"],
+        ["-o", "addopts="],
         ["--verbose"],
     ],
 )
@@ -1876,7 +1877,7 @@ def test_runner_owned_pytest_basetemp_overrides_cli_and_preserves_double_dash(
     manager = MCPValidationRunManager(str(_git_project(tmp_path)))
     scratch = tmp_path / "run-scratch"
     scratch.mkdir()
-    projected, effective = manager._project_runner_pytest_basetemp(
+    projected, effective = manager._project_runner_pytest_runtime_authority(
         [
             "python",
             "-m",
@@ -1894,10 +1895,185 @@ def test_runner_owned_pytest_basetemp_overrides_cli_and_preserves_double_dash(
         "-m",
         "pytest",
         "tests",
+        "-o",
+        "addopts=",
         f"--basetemp={scratch}",
         "--",
         "--basetemp=/tmp/positional",
     ]
+
+
+@pytest.mark.parametrize(
+    ("config_name", "config_text"),
+    [
+        (
+            "pytest.ini",
+            "[pytest]\naddopts = -m smoke\nmarkers = smoke: fixture marker\n",
+        ),
+        (
+            "pyproject.toml",
+            "[tool.pytest.ini_options]\n"
+            'addopts = "-m smoke"\n'
+            'markers = ["smoke: fixture marker"]\n',
+        ),
+        (
+            "tox.ini",
+            "[pytest]\naddopts = -m smoke\nmarkers = smoke: fixture marker\n",
+        ),
+        (
+            "setup.cfg",
+            "[tool:pytest]\naddopts = -m smoke\nmarkers = smoke: fixture marker\n",
+        ),
+    ],
+)
+def test_repository_addopts_marker_is_neutralized_across_config_formats(
+    tmp_path: Path,
+    config_name: str,
+    config_text: str,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / config_name).write_text(config_text, encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_selection.py").write_text(
+        "import pytest\n\n"
+        "def test_unmarked():\n    pass\n\n"
+        "@pytest.mark.smoke\n"
+        "def test_smoke():\n    pass\n",
+        encoding="utf-8",
+    )
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    manager = MCPValidationRunManager(str(project))
+    projected, effective = manager._project_runner_pytest_runtime_authority(
+        [sys.executable, "-m", "pytest", "tests", "-q"],
+        scratch,
+    )
+
+    result = manager._run_command(projected, timeout_seconds=60, cwd=str(project))
+
+    assert result["returncode"] == 0
+    assert "2 passed" in result["stdout"]
+    assert effective == str(scratch)
+    override_index = projected.index("-o")
+    assert ["-o", "addopts="] == projected[override_index : override_index + 2]
+
+
+def test_repository_addopts_cannot_override_host_frozen_marker(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "pytest.ini").write_text(
+        "[pytest]\n"
+        "addopts = -m smoke\n"
+        "markers =\n"
+        "    smoke: fixture marker\n"
+        "    host_frozen_toolchain: governed marker\n",
+        encoding="utf-8",
+    )
+    (project / "tests").mkdir()
+    (project / "tests" / "test_lanes.py").write_text(
+        "import pytest\n\n"
+        "@pytest.mark.host_frozen_toolchain\n"
+        "def test_host():\n    pass\n\n"
+        "@pytest.mark.smoke\n"
+        "def test_smoke():\n    raise AssertionError('wrong lane executed')\n",
+        encoding="utf-8",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "tests",
+        "-q",
+        "-m",
+        "host_frozen_toolchain",
+    ]
+    manager = MCPValidationRunManager(str(project))
+    assert manager._command_lane(command) == "host_frozen"
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    projected, _effective = manager._project_runner_pytest_runtime_authority(
+        command,
+        scratch,
+    )
+
+    result = manager._run_command(projected, timeout_seconds=60, cwd=str(project))
+
+    assert result["returncode"] == 0
+    assert "1 passed" in result["stdout"]
+    assert "1 deselected" in result["stdout"]
+
+
+def test_repository_addopts_side_effect_and_external_target_are_neutralized(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path)
+    debug_output = tmp_path / "repository-addopts-debug.log"
+    external = tmp_path / "external"
+    external.mkdir()
+    external_sentinel = tmp_path / "external-target-executed"
+    (external / "test_escape.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(external_sentinel)!r}).write_text('executed')\n"
+        "def test_escape():\n    pass\n",
+        encoding="utf-8",
+    )
+    (project / "pytest.ini").write_text(
+        "[pytest]\n"
+        f"addopts = --debug={debug_output} ../external/test_escape.py\n",
+        encoding="utf-8",
+    )
+    (project / "tests").mkdir()
+    (project / "tests" / "test_declared.py").write_text(
+        "def test_declared():\n    pass\n",
+        encoding="utf-8",
+    )
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    manager = MCPValidationRunManager(str(project))
+    projected, _effective = manager._project_runner_pytest_runtime_authority(
+        [sys.executable, "-m", "pytest", "tests", "-q"],
+        scratch,
+    )
+
+    result = manager._run_command(projected, timeout_seconds=60, cwd=str(project))
+
+    assert result["returncode"] == 0
+    assert "1 passed" in result["stdout"]
+    assert not debug_output.exists()
+    assert not external_sentinel.exists()
+
+
+def test_config_and_environment_addopts_are_both_neutralized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _git_project(tmp_path)
+    (project / "pytest.ini").write_text(
+        "[pytest]\naddopts = -m smoke\nmarkers = smoke: fixture marker\n",
+        encoding="utf-8",
+    )
+    (project / "tests").mkdir()
+    (project / "tests" / "test_selection.py").write_text(
+        "import pytest\n\n"
+        "def test_unmarked():\n    pass\n\n"
+        "@pytest.mark.smoke\n"
+        "def test_smoke():\n    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-m missing")
+    scratch = tmp_path / "runner-scratch"
+    scratch.mkdir()
+    manager = MCPValidationRunManager(str(project))
+    projected, _effective = manager._project_runner_pytest_runtime_authority(
+        [sys.executable, "-m", "pytest", "tests", "-q"],
+        scratch,
+    )
+
+    result = manager._run_command(projected, timeout_seconds=60, cwd=str(project))
+
+    assert result["returncode"] == 0
+    assert "2 passed" in result["stdout"]
 
 
 def test_pytest_config_basetemp_cannot_override_runner_scratch(
@@ -1922,7 +2098,7 @@ def test_pytest_config_basetemp_cannot_override_runner_scratch(
     scratch = tmp_path / "runner-scratch"
     scratch.mkdir()
     manager = MCPValidationRunManager(str(project))
-    projected, effective = manager._project_runner_pytest_basetemp(
+    projected, effective = manager._project_runner_pytest_runtime_authority(
         [sys.executable, "-m", "pytest", "tests", "-q"],
         scratch,
     )
@@ -1956,7 +2132,7 @@ def test_pytest_addopts_environment_cannot_choose_basetemp(
     scratch = tmp_path / "runner-scratch"
     scratch.mkdir()
     manager = MCPValidationRunManager(str(project))
-    projected, _effective = manager._project_runner_pytest_basetemp(
+    projected, _effective = manager._project_runner_pytest_runtime_authority(
         [sys.executable, "-m", "pytest", "tests", "-q"],
         scratch,
     )
@@ -1990,7 +2166,7 @@ def test_pyproject_pytest_addopts_cannot_choose_basetemp(
     scratch = tmp_path / "runner-scratch"
     scratch.mkdir()
     manager = MCPValidationRunManager(str(project))
-    projected, _effective = manager._project_runner_pytest_basetemp(
+    projected, _effective = manager._project_runner_pytest_runtime_authority(
         [sys.executable, "-m", "pytest", "tests", "-q"],
         scratch,
     )

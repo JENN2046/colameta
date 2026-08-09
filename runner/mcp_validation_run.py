@@ -2325,7 +2325,7 @@ print(json.dumps(payload, sort_keys=True))
                     (
                         effective_command,
                         effective_pytest_basetemp,
-                    ) = self._project_runner_pytest_basetemp(
+                    ) = self._project_runner_pytest_runtime_authority(
                         effective_command,
                         pytest_scratch_root,
                     )
@@ -2500,6 +2500,15 @@ print(json.dumps(payload, sort_keys=True))
                             "enforced": True,
                             "authority": "runner_scratch",
                             "effective": effective_pytest_basetemp,
+                        }
+                        if effective_pytest_basetemp is not None
+                        else None
+                    ),
+                    "pytest_runtime_authority": (
+                        {
+                            "repository_addopts_neutralized": True,
+                            "environment_addopts_neutralized": True,
+                            "runner_basetemp_projected": True,
                         }
                         if effective_pytest_basetemp is not None
                         else None
@@ -4990,12 +4999,12 @@ print(json.dumps(payload, sort_keys=True))
         return 1
 
     @classmethod
-    def _project_runner_pytest_basetemp(
+    def _project_runner_pytest_runtime_authority(
         cls,
         command: list[str],
         scratch_root: Path,
     ) -> tuple[list[str], str | None]:
-        """Force pytest's final destructive-path authority to Runner scratch."""
+        """Project Runner-owned pytest argv and destructive-path authority."""
 
         option_start = cls._pytest_option_start(command)
         if option_start is None:
@@ -5020,7 +5029,11 @@ print(json.dumps(payload, sort_keys=True))
         insert_at = len(projected)
         if "--" in projected[option_start:]:
             insert_at = projected.index("--", option_start)
-        projected.insert(insert_at, f"--basetemp={scratch_root}")
+        projected[insert_at:insert_at] = [
+            "-o",
+            "addopts=",
+            f"--basetemp={scratch_root}",
+        ]
         return projected, str(scratch_root)
 
     @classmethod
@@ -6379,9 +6392,9 @@ print(json.dumps(payload, sort_keys=True))
             process_command
         )
         if is_pytest:
-            # Pytest configuration and inherited PYTEST_ADDOPTS are not part
-            # of the governed argv contract.  The projected Runner-owned
-            # --basetemp below is the sole destructive-path authority.
+            # Repository addopts are neutralized by the projected Runner
+            # override.  Inherited PYTEST_ADDOPTS is independently removed so
+            # neither channel can alter the already-admitted pytest argv.
             environment.pop("PYTEST_ADDOPTS", None)
         environment.pop("PYTHONPYCACHEPREFIX", None)
         artifact_context = _COMMAND_ARTIFACT_CONTEXT.get()
