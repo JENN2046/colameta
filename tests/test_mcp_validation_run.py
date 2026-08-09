@@ -644,7 +644,12 @@ def test_non_pep621_setup_cfg_project_enters_governed_wheel_install(
     monkeypatch.setattr(
         toolchain_environment,
         "_wheel_primary_metadata",
-        lambda _path: ("legacy-demo", "0.1.0", set(), {}),
+        lambda _path: (
+            "legacy-demo",
+            "0.1.0",
+            set(),
+            {"Provides-Extra": ["test"]},
+        ),
     )
     monkeypatch.setattr(
         toolchain_environment,
@@ -689,8 +694,47 @@ def test_non_pep621_setup_cfg_project_enters_governed_wheel_install(
         "candidate wheel installation",
     ]
     assert any("--no-build-isolation" in command for command in commands)
+    candidate_install = commands[labels.index("candidate wheel installation")]
+    assert candidate_install[-1].startswith("legacy-demo[test] @ file://")
+    assert environment.summary["candidate_test_extras"]["selected"] == ["test"]
     assert environment.summary["candidate_package_expected"] is True
     assert environment.summary["candidate_package_installed"] is True
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (["test"], ("test",)),
+        (["TESTS"], ("tests",)),
+        (["testing"], ("testing",)),
+        (["testing", "test", "tests", "TEST"], ("test", "tests", "testing")),
+        ([], ()),
+        (["dev", "docs", "all", "gpu"], ()),
+    ],
+)
+def test_candidate_wheel_install_selects_only_canonical_test_extras(
+    tmp_path: Path,
+    declared: list[str],
+    expected: tuple[str, ...],
+) -> None:
+    wheel = tmp_path / "candidate_extra_repro-0.0.1-py3-none-any.whl"
+    wheel.write_bytes(b"wheel")
+
+    requirement, selected = (
+        toolchain_environment._candidate_wheel_install_requirement(
+            wheel,
+            distribution_name="candidate-extra-repro",
+            metadata={"Provides-Extra": declared},
+        )
+    )
+
+    assert selected == expected
+    if expected:
+        assert requirement == (
+            f"candidate-extra-repro[{','.join(expected)}] @ {wheel.resolve().as_uri()}"
+        )
+    else:
+        assert requirement == str(wheel)
 
 
 def test_runtime_dependencies_are_direct_and_python_version_bound() -> None:

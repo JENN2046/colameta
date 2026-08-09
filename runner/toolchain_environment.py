@@ -97,6 +97,7 @@ _VALIDATION_TOOL_CONSOLE_COMMANDS = frozenset(
     }
 )
 _VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS = 1200
+_CANONICAL_TEST_EXTRAS = ("test", "tests", "testing")
 _PACKAGE_MODULES = ("runner", "adapters", "schemas", "scripts")
 
 
@@ -159,6 +160,40 @@ def _wheel_primary_metadata(path: Path) -> tuple[str, str, set[object], Any]:
             "candidate wheel metadata is invalid"
         ) from exc
     return str(filename_name), str(filename_version), set(tags), metadata
+
+
+def _candidate_wheel_install_requirement(
+    path: Path,
+    *,
+    distribution_name: str,
+    metadata: Any,
+) -> tuple[str, tuple[str, ...]]:
+    """Bind canonical test extras, when declared, to one exact built wheel."""
+
+    try:
+        from packaging.utils import canonicalize_name
+    except ImportError as exc:
+        raise ValidationEnvironmentError(
+            "candidate wheel metadata is invalid"
+        ) from exc
+    get_all = getattr(metadata, "get_all", None)
+    if callable(get_all):
+        declared = get_all("Provides-Extra", failobj=[]) or []
+    elif isinstance(metadata, Mapping):
+        declared = metadata.get("Provides-Extra", [])
+    else:
+        declared = []
+    if isinstance(declared, str):
+        declared = [declared]
+    normalized = {str(canonicalize_name(str(value))) for value in declared}
+    selected = tuple(
+        extra for extra in _CANONICAL_TEST_EXTRAS if extra in normalized
+    )
+    if not selected:
+        return str(path), selected
+    extras = ",".join(selected)
+    requirement = f"{distribution_name}[{extras}] @ {path.resolve().as_uri()}"
+    return requirement, selected
 
 
 def verify_bound_wheel_asset(
@@ -1432,6 +1467,7 @@ def prepare_validation_environment(
             timeout_seconds=_VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS,
         )
         candidate_wheel: Path | None = None
+        candidate_test_extras: tuple[str, ...] = ()
         if project_is_installable:
             run_candidate_pip(
                 [
@@ -1466,10 +1502,21 @@ def prepare_validation_environment(
             if len(candidate_wheels) != 1:
                 raise ValidationEnvironmentError("candidate wheel build output is ambiguous")
             candidate_wheel = candidate_wheels[0]
+            (
+                wheel_distribution_name,
+                _version,
+                _tags,
+                wheel_metadata,
+            ) = _wheel_primary_metadata(candidate_wheel)
             if candidate_distribution_name is None:
-                candidate_distribution_name, _version, _tags, _metadata = _wheel_primary_metadata(
-                    candidate_wheel
+                candidate_distribution_name = wheel_distribution_name
+            candidate_requirement, candidate_test_extras = (
+                _candidate_wheel_install_requirement(
+                    candidate_wheel,
+                    distribution_name=wheel_distribution_name,
+                    metadata=wheel_metadata,
                 )
+            )
             run_candidate_pip(
                 [
                     "install",
@@ -1478,7 +1525,7 @@ def prepare_validation_environment(
                     "--no-input",
                     "--no-cache-dir",
                     "--force-reinstall",
-                    str(candidate_wheel),
+                    candidate_requirement,
                 ],
                 label="candidate wheel installation",
                 command_environment=environment,
@@ -1574,6 +1621,11 @@ def prepare_validation_environment(
                 "--index-url" in command and "--no-index" not in command
                 for command in pip_commands
             ),
+        }
+        provenance["candidate_test_extras"] = {
+            "source": "built_wheel_metadata",
+            "canonical_policy": list(_CANONICAL_TEST_EXTRAS),
+            "selected": list(candidate_test_extras),
         }
         environment_identity = _probe_installed_environment_identity(
             python_executable=python_executable,
