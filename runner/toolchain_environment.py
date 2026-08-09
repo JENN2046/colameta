@@ -448,6 +448,29 @@ def download_candidate_pip_asset(
     }
 
 
+def _write_candidate_pip_constraint(work_root: Path) -> Path:
+    """Create one Runner-owned constraint for the bound bootstrap pip."""
+
+    constraint = _real_path(work_root) / "candidate-pip-authority.txt"
+    if constraint.exists() or constraint.is_symlink():
+        raise ValidationEnvironmentError(
+            "candidate pip authority constraint path collision"
+        )
+    try:
+        descriptor = os.open(
+            constraint,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"pip=={_CANDIDATE_PIP_VERSION}\n")
+    except OSError as exc:
+        raise ValidationEnvironmentError(
+            "candidate pip authority constraint could not be created"
+        ) from exc
+    return constraint
+
+
 def venv_bin_dir(venv_dir: Path) -> Path:
     """Return the platform-specific executable directory for a virtualenv."""
 
@@ -1129,6 +1152,28 @@ def _read_distribution_version(
     return version
 
 
+def _verify_bound_candidate_pip_version(
+    python_executable: Path,
+    *,
+    environment: Mapping[str, str],
+    cwd: Path,
+    phase: str,
+) -> str:
+    """Re-observe the bootstrap pip identity from its isolated interpreter."""
+
+    observed = _read_distribution_version(
+        python_executable,
+        environment=environment,
+        cwd=cwd,
+        distribution="pip",
+    )
+    if observed != _CANDIDATE_PIP_VERSION:
+        raise ValidationEnvironmentError(
+            f"candidate pip {phase} version mismatch"
+        )
+    return observed
+
+
 def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -1443,16 +1488,14 @@ def prepare_validation_environment(
             label="candidate pip bootstrap upgrade",
             command_environment=environment,
         )
-        selected_pip_version = _read_distribution_version(
+        selected_pip_version = _verify_bound_candidate_pip_version(
             python_executable,
             environment=environment,
             cwd=candidate,
-            distribution="pip",
+            phase="bootstrap",
         )
-        if selected_pip_version != _CANDIDATE_PIP_VERSION:
-            raise ValidationEnvironmentError(
-                "candidate pip bootstrap version mismatch"
-            )
+        post_resolution_pip_version = selected_pip_version
+        pip_constraint_projected = False
         run_candidate_pip(
             [
                 "install",
@@ -1517,6 +1560,7 @@ def prepare_validation_environment(
                     metadata=wheel_metadata,
                 )
             )
+            pip_constraint = _write_candidate_pip_constraint(work)
             run_candidate_pip(
                 [
                     "install",
@@ -1524,12 +1568,21 @@ def prepare_validation_environment(
                     _OFFICIAL_PYPI_INDEX_URL,
                     "--no-input",
                     "--no-cache-dir",
+                    "--constraint",
+                    str(pip_constraint),
                     candidate_requirement,
                     *_VALIDATION_TOOL_REQUIREMENTS,
                 ],
                 label="candidate wheel and validation tool resolution",
                 command_environment=environment,
                 timeout_seconds=_VALIDATION_TOOL_INSTALL_TIMEOUT_SECONDS,
+            )
+            pip_constraint_projected = True
+            post_resolution_pip_version = _verify_bound_candidate_pip_version(
+                python_executable,
+                environment=environment,
+                cwd=candidate,
+                phase="post-resolution",
             )
             run_candidate_pip(
                 ["check"],
@@ -1583,6 +1636,7 @@ def prepare_validation_environment(
         provenance["candidate_bootstrap"] = {
             "initial_pip_version": initial_pip_version,
             "selected_pip_version": selected_pip_version,
+            "post_resolution_pip_version": post_resolution_pip_version,
             "wheel_filename": candidate_pip_asset["filename"],
             "wheel_sha256": candidate_pip_asset["sha256"],
             "asset_verified": candidate_pip_asset["asset_verified"],
@@ -1597,7 +1651,14 @@ def prepare_validation_environment(
         }
         provenance["candidate_pip_authority"] = {
             "sole_pip_executable": str(python_executable),
-            "sole_pip_version": selected_pip_version,
+            "sole_pip_version": post_resolution_pip_version,
+            "canonical_bound_version": _CANDIDATE_PIP_VERSION,
+            "pre_resolution_version": selected_pip_version,
+            "post_resolution_version": post_resolution_pip_version,
+            "constraint_projected": pip_constraint_projected,
+            "identity_preserved": (
+                post_resolution_pip_version == _CANDIDATE_PIP_VERSION
+            ),
             "bootstrap_pip_invocation_count": 1,
             "post_upgrade_parent_pip_invocation_count": 0,
             "pip_command_count": len(pip_commands),

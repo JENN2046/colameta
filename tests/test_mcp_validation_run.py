@@ -871,6 +871,121 @@ def test_single_resolution_transaction_preserves_governed_tool_graph(
         assert "ResolutionImpossible" in result.stderr
 
 
+def test_runner_owned_pip_constraint_uses_canonical_binding(
+    tmp_path: Path,
+) -> None:
+    constraint = toolchain_environment._write_candidate_pip_constraint(tmp_path)
+
+    assert constraint.parent == tmp_path
+    assert constraint.read_text(encoding="utf-8") == (
+        f"pip=={toolchain_environment._CANDIDATE_PIP_VERSION}\n"
+    )
+    assert constraint.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(
+        toolchain_environment.ValidationEnvironmentError,
+        match="constraint path collision",
+    ):
+        toolchain_environment._write_candidate_pip_constraint(tmp_path)
+
+
+def test_post_resolution_pip_identity_mismatch_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        toolchain_environment,
+        "_read_distribution_version",
+        lambda *_args, **_kwargs: "25.3",
+    )
+
+    with pytest.raises(
+        toolchain_environment.ValidationEnvironmentError,
+        match="candidate pip post-resolution version mismatch",
+    ):
+        toolchain_environment._verify_bound_candidate_pip_version(
+            tmp_path / "python",
+            environment={},
+            cwd=tmp_path,
+            phase="post-resolution",
+        )
+
+
+@pytest.mark.parametrize(
+    ("candidate_requires", "bridge_requires", "expected_ok"),
+    [
+        (('pip<26.2; extra == "test"',), (), False),
+        (('pip>=26; extra == "test"',), (), True),
+        (('pip-bridge>=1; extra == "test"',), ("pip<26.2",), False),
+        (('local-test-dependency>=1; extra == "test"',), (), True),
+        ((), (), True),
+    ],
+)
+def test_bound_pip_constraint_preserves_bootstrap_authority(
+    tmp_path: Path,
+    candidate_requires: tuple[str, ...],
+    bridge_requires: tuple[str, ...],
+    expected_ok: bool,
+) -> None:
+    wheel_dir = tmp_path / "wheels"
+    wheel_dir.mkdir()
+    candidate_wheel = _write_dependency_resolver_wheel(
+        wheel_dir,
+        name="candidate-pip-authority-repro",
+        version="0.0.1",
+        provides_extra=("test",),
+        requires_dist=candidate_requires,
+    )
+    for version in ("25.3", toolchain_environment._CANDIDATE_PIP_VERSION):
+        _write_dependency_resolver_wheel(
+            wheel_dir,
+            name="pip",
+            version=version,
+        )
+    if bridge_requires:
+        _write_dependency_resolver_wheel(
+            wheel_dir,
+            name="pip-bridge",
+            version="1.0.0",
+            requires_dist=bridge_requires,
+        )
+    _write_dependency_resolver_wheel(
+        wheel_dir,
+        name="local-test-dependency",
+        version="1.0.0",
+    )
+    constraint = toolchain_environment._write_candidate_pip_constraint(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-m",
+            "pip",
+            "install",
+            "--dry-run",
+            "--ignore-installed",
+            "--no-index",
+            "--find-links",
+            str(wheel_dir),
+            "--constraint",
+            str(constraint),
+            (
+                "candidate-pip-authority-repro[test] @ "
+                f"{candidate_wheel.resolve().as_uri()}"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=False,
+    )
+
+    assert (result.returncode == 0) is expected_ok
+    if not expected_ok:
+        assert "ResolutionImpossible" in result.stderr
+
+
 def test_runtime_dependencies_are_direct_and_python_version_bound() -> None:
     try:
         import tomllib
@@ -1175,6 +1290,7 @@ def test_candidate_validation_uses_online_tools_without_validation_closure(
     assert bootstrap == {
         "initial_pip_version": "24.0",
         "selected_pip_version": "26.2",
+        "post_resolution_pip_version": "26.2",
         "wheel_filename": "pip-26.2-py3-none-any.whl",
         "wheel_sha256": (
             "931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"
@@ -1215,6 +1331,11 @@ def test_candidate_validation_uses_online_tools_without_validation_closure(
     )
     authority = environment.summary["candidate_pip_authority"]
     assert authority["sole_pip_executable"] == str(environment.python_executable)
+    assert authority["canonical_bound_version"] == "26.2"
+    assert authority["pre_resolution_version"] == "26.2"
+    assert authority["post_resolution_version"] == "26.2"
+    assert authority["constraint_projected"] is False
+    assert authority["identity_preserved"] is True
     assert authority["post_upgrade_parent_pip_invocation_count"] == 0
     assert authority["all_commands_candidate_python"] is True
     assert authority["all_online_index_urls_official"] is True
@@ -1280,7 +1401,7 @@ def test_candidate_wheel_build_uses_candidate_pip_without_build_isolation(
             ],
         },
     )
-    versions = iter(("24.0", "26.2"))
+    versions = iter(("24.0", "26.2", "26.2"))
     monkeypatch.setattr(
         toolchain_environment,
         "_read_distribution_version",
@@ -1339,6 +1460,17 @@ def test_candidate_wheel_build_uses_candidate_pip_without_build_isolation(
     assert "--no-build-isolation" in build
     assert "--no-index" in commands[0]
     assert all("--find-links" not in command for command in commands)
+    resolution = commands[3]
+    constraint = Path(resolution[resolution.index("--constraint") + 1])
+    assert constraint.parent == tmp_path / "work"
+    assert constraint.read_text(encoding="utf-8") == "pip==26.2\n"
+    assert "pip==26.2" not in resolution
+    authority = environment.summary["candidate_pip_authority"]
+    assert authority["canonical_bound_version"] == "26.2"
+    assert authority["pre_resolution_version"] == "26.2"
+    assert authority["post_resolution_version"] == "26.2"
+    assert authority["constraint_projected"] is True
+    assert authority["identity_preserved"] is True
     assert environment.summary["candidate_pip_authority"]["post_upgrade_parent_pip_invocation_count"] == 0
     assert environment.summary["candidate_pip_authority"]["build_isolation_disabled"] is True
     assert environment.summary["candidate_pip_authority"]["network_used"] is True
