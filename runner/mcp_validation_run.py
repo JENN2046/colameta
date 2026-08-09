@@ -5093,7 +5093,12 @@ print(json.dumps(payload, sort_keys=True))
 
         executable = Path(command[0]).name.lower()
         executable = executable.removesuffix(".exe")
-        if executable == "pytest" or executable.startswith("pytest-"):
+        if (
+            executable == "pytest"
+            or executable.startswith("pytest-")
+            or executable == "py.test"
+            or executable.startswith("py.test-")
+        ):
             pytest_args = command[1:]
         elif (
             len(command) >= 3
@@ -5289,7 +5294,12 @@ print(json.dumps(payload, sort_keys=True))
         name = os.path.basename(executable)
         if name.endswith(".exe"):
             name = name[:-4]
-        return name == "pytest" or name.startswith("pytest-")
+        return (
+            name == "pytest"
+            or name.startswith("pytest-")
+            or name == "py.test"
+            or name.startswith("py.test-")
+        )
 
     def _is_supported_python_validation_command(
         self,
@@ -5317,6 +5327,32 @@ print(json.dumps(payload, sort_keys=True))
             return True
         return False
 
+    @staticmethod
+    def _is_supported_non_python_validation_command(
+        command: list[str],
+    ) -> bool:
+        """Allow only non-Python families emitted by the Runner."""
+
+        return tuple(command) in {
+            ("npm", "test"),
+            ("phpunit",),
+            ("vendor/bin/phpunit",),
+            ("go", "test", "./..."),
+            ("cargo", "test"),
+        }
+
+    @classmethod
+    def _pytest_has_response_file_argument(cls, command: Any) -> bool:
+        """Reject pytest response-file expansion before pytest can read it."""
+
+        is_pytest, _selections = cls._extract_pytest_marker_selections(command)
+        if not is_pytest or not isinstance(command, list):
+            return False
+        option_start = (
+            3 if len(command) >= 3 and command[1:3] == ["-m", "pytest"] else 1
+        )
+        return any(argument.startswith("@") for argument in command[option_start:])
+
     def _is_safe_command(self, command: Any) -> bool:
         if not isinstance(command, list) or not command:
             return False
@@ -5332,6 +5368,8 @@ print(json.dumps(payload, sort_keys=True))
             return False
         first = command[0]
         if self._is_direct_pytest_entrypoint(first):
+            return False
+        if self._pytest_has_response_file_argument(command):
             return False
         executable_name = os.path.basename(first)
         if executable_name in DANGEROUS_EXECUTABLES:
@@ -5381,7 +5419,7 @@ print(json.dumps(payload, sort_keys=True))
             return True
         if self._is_python_interpreter(first):
             return self._is_supported_python_validation_command(command)
-        return True
+        return self._is_supported_non_python_validation_command(command)
 
     def _is_supported_manifest_command(self, command: Any) -> bool:
         """Accept only explicit validation argv families from review manifests."""

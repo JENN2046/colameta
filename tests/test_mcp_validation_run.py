@@ -1579,6 +1579,9 @@ def test_preview_rejects_arbitrary_python_execution_before_execution(
         ["pytest", "tests/test_example.py::test_case"],
         ["pytest-8.4", "tests/test_example.py"],
         ["pytest.exe", "tests/test_example.py"],
+        ["py.test", "tests/test_example.py"],
+        ["py.test-8.4", "tests/test_example.py"],
+        ["py.test.exe", "tests/test_example.py"],
     ],
 )
 def test_direct_pytest_entrypoints_are_rejected_before_execution(
@@ -1589,6 +1592,86 @@ def test_direct_pytest_entrypoints_are_rejected_before_execution(
     assert manager._is_safe_command(command) is False
     _argv, error = manager._parse_command_string(" ".join(command))
     assert error == "命令不在安全白名单内"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "pytest", "@args.txt"],
+        ["python", "-m", "pytest", "@/tmp/args.txt"],
+        ["python", "-m", "pytest", "@../args.txt"],
+        ["python", "-m", "pytest", "--", "@/tmp/args.txt"],
+    ],
+)
+def test_pytest_response_file_arguments_are_rejected_before_execution(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is False
+    _argv, error = manager._parse_command_string(" ".join(command))
+    assert error == "命令不在安全白名单内"
+
+
+def test_preview_rejects_pytest_response_file_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": ["python", "-m", "pytest", "@/tmp/args.txt"],
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }], []),
+    )
+
+    result = manager.preview({"scope": "current_version"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "VALIDATION_COMMAND_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert "preview_id" not in result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["timeout", "5", "bash", "-c", "pytest -q"],
+        ["nice", "bash", "-c", "pytest -q"],
+        ["nohup", "bash", "-c", "pytest -q"],
+        ["setsid", "bash", "-c", "pytest -q"],
+        ["stdbuf", "-o0", "bash", "-c", "pytest -q"],
+        ["true"],
+    ],
+)
+def test_unknown_validation_executables_are_rejected_by_default(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["npm", "test"],
+        ["phpunit"],
+        ["vendor/bin/phpunit"],
+        ["go", "test", "./..."],
+        ["cargo", "test"],
+    ],
+)
+def test_runner_generated_non_python_validation_families_remain_admitted(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is True
 
 
 def test_preview_rejects_direct_pytest_entrypoint_before_execution(
