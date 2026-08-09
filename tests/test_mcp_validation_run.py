@@ -1771,6 +1771,79 @@ def test_canonical_python_module_pytest_entrypoints_remain_supported(
 @pytest.mark.parametrize(
     "command",
     [
+        ["python", "-m", "pytest", "tests/test_example.py", "-q"],
+        [
+            "python",
+            "-m",
+            "pytest",
+            "tests/test_work_item_r3_closeout_runner.py",
+            "-q",
+            "-m",
+            "host_frozen_toolchain",
+            "-rs",
+        ],
+        ["python", "-m", "pytest", "tests/test_example.py::test_case"],
+    ],
+)
+def test_governed_pytest_grammar_preserves_plan_shapes(
+    tmp_path: Path,
+    command: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    assert manager._is_safe_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "unsupported_arguments",
+    [
+        ["--debug=/tmp/pytest-debug.log"],
+        ["--pastebin=all"],
+        ["--log-file=/tmp/external.log"],
+        ["--junitxml=/tmp/results.xml"],
+        ["--junit-xml=/tmp/results.xml"],
+        ["-p", "arbitrary_plugin"],
+        ["--pyargs", "arbitrary.package"],
+        ["--rootdir=/tmp"],
+        ["--confcutdir=/tmp"],
+        ["--override-ini=addopts=-q"],
+        ["--verbose"],
+    ],
+)
+def test_unknown_pytest_options_are_rejected_by_governed_grammar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsupported_arguments: list[str],
+) -> None:
+    manager = MCPValidationRunManager(str(_git_project(tmp_path)))
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        "tests/test_example.py",
+        *unsupported_arguments,
+    ]
+    assert manager._is_safe_command(command) is False
+
+    monkeypatch.setattr(
+        manager,
+        "_current_acceptance_commands",
+        lambda: ([{
+            "argv": command,
+            "timeout_seconds": 30,
+            "continue_on_failure": False,
+        }], []),
+    )
+    result = manager.preview({"scope": "current_version"})
+    assert result["ok"] is False
+    assert result["error_code"] == "VALIDATION_COMMAND_UNSUPPORTED"
+    assert result["command_executed"] is False
+    assert result["candidate_lane_fallback"] is False
+    assert "preview_id" not in result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         ["python", "-m", "pytest", "tests", "--basetemp=/tmp/external"],
         ["pytest", "tests", "--basetemp", "/tmp/external"],
     ],

@@ -5353,6 +5353,76 @@ print(json.dumps(payload, sort_keys=True))
         )
         return any(argument.startswith("@") for argument in command[option_start:])
 
+    def _validate_governed_pytest_arguments(self, command: list[str]) -> bool:
+        """Validate ColaMeta's bounded pytest grammar, independent of pytest."""
+
+        if len(command) < 3 or command[1:3] != ["-m", "pytest"]:
+            return False
+
+        # Marker expressions retain their existing single-lane authority
+        # classification.  This scan governs only the supported argv forms.
+        self._classify_pytest_marker_expression(command)
+        arguments = command[3:]
+        options_ended = False
+        index = 0
+        while index < len(arguments):
+            argument = arguments[index]
+            if argument.startswith("@"):
+                return False
+            if options_ended:
+                if self._normalize_repo_relative_path(
+                    argument.split("::", 1)[0]
+                ) is None:
+                    return False
+                index += 1
+                continue
+            if argument == "--":
+                options_ended = True
+                index += 1
+                continue
+            if argument in {"-q", "-rs"}:
+                index += 1
+                continue
+            if argument == "-m":
+                if index + 1 >= len(arguments):
+                    return False
+                marker_expression = arguments[index + 1]
+                if not marker_expression or marker_expression.startswith("-"):
+                    return False
+                index += 2
+                continue
+            if argument.startswith("-m="):
+                if not argument[3:]:
+                    return False
+                index += 1
+                continue
+            if argument.startswith("-m") and argument != "-m":
+                if not argument[2:]:
+                    return False
+                index += 1
+                continue
+            if argument == "--basetemp":
+                if index + 1 >= len(arguments):
+                    return False
+                candidate_path = arguments[index + 1]
+                if not candidate_path or candidate_path.startswith("-"):
+                    return False
+                index += 2
+                continue
+            if argument.startswith("--basetemp="):
+                if not argument.partition("=")[2]:
+                    return False
+                index += 1
+                continue
+            if argument.startswith("-"):
+                return False
+            if self._normalize_repo_relative_path(
+                argument.split("::", 1)[0]
+            ) is None:
+                return False
+            index += 1
+        return True
+
     def _is_safe_command(self, command: Any) -> bool:
         if not isinstance(command, list) or not command:
             return False
@@ -5388,24 +5458,7 @@ print(json.dumps(payload, sort_keys=True))
             if value_index is None or value_index >= len(command) or command[value_index].startswith("-"):
                 return False
         if len(command) >= 3 and command[1:3] == ["-m", "pytest"]:
-            marker_expression_pending = False
-            for part in command[3:]:
-                if marker_expression_pending:
-                    if part not in {
-                        _CANDIDATE_MARKER_EXPRESSION,
-                        _HOST_MARKER_EXPRESSION,
-                    }:
-                        return False
-                    marker_expression_pending = False
-                    continue
-                if part == "-m":
-                    marker_expression_pending = True
-                    continue
-                if part.startswith("-"):
-                    continue
-                if self._normalize_repo_relative_path(part.split("::", 1)[0]) is None:
-                    return False
-            return not marker_expression_pending
+            return self._validate_governed_pytest_arguments(command)
         if command[:3] == [first, "-m", "compileall"]:
             args = command[3:]
             while args and args[0] == "-q":
