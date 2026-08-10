@@ -105,7 +105,7 @@ class ThinGovernedLoopTests(unittest.TestCase):
         assert loop["id"].startswith("tlp_")
         assert len(loop["id"]) > 24
         assert loop["project_name"] == "colameta-self-dev"
-        assert loop["head"] == "30b23b9a5b769f0f9283a4369b6ee99fcc8d84d7"
+        assert loop["head"] == product["codex_execution_packet"]["current_head"]
         assert loop["execution_completed"] is False
         assert loop["review_completed"] is False
         assert product["next_action"]["type"] == "EXECUTE_WITH_CODEX"
@@ -167,12 +167,13 @@ class ThinGovernedLoopTests(unittest.TestCase):
     def test_product_receipt_fails_closed_on_head_drift(self) -> None:
         server, draft = self._product_draft()
         thin_loop_id = draft["result"]["thin_loop"]["id"]
+        bound_branch = draft["result"]["thin_loop"]["branch"]
 
         with patch(
             "runner.mcp_server.build_project_identity",
             return_value={
                 "project_name": "colameta-self-dev",
-                "git_branch": "main",
+                "git_branch": bound_branch,
                 "git_head": "f" * 40,
             },
         ):
@@ -223,8 +224,8 @@ class ThinGovernedLoopTests(unittest.TestCase):
         }
         plan_path = Path(__file__).resolve().parents[1] / ".colameta" / "plan.json"
         state_path = Path(__file__).resolve().parents[1] / ".colameta" / "state.json"
-        plan_before = plan_path.read_bytes()
-        state_before = state_path.read_bytes()
+        plan_before = plan_path.read_bytes() if plan_path.exists() else None
+        state_before = state_path.read_bytes() if state_path.exists() else None
 
         for decision, (status, next_action) in expected.items():
             with self.subTest(decision=decision):
@@ -263,8 +264,8 @@ class ThinGovernedLoopTests(unittest.TestCase):
                         "phase": "preview",
                     }
 
-        assert plan_path.read_bytes() == plan_before
-        assert state_path.read_bytes() == state_before
+        assert (plan_path.read_bytes() if plan_path.exists() else None) == plan_before
+        assert (state_path.read_bytes() if state_path.exists() else None) == state_before
 
     def test_product_execution_binding_rejects_cross_loop_receipt_without_advancing_target(self) -> None:
         server_a, draft_a = self._product_draft(goal="Goal A")
