@@ -9992,7 +9992,19 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         branch=branch,
                         head=head,
                     )
-                return self._thin_loop_product_result(projection)
+                    product_result = self._thin_loop_product_result(
+                        projection,
+                        project_name=project_name,
+                    )
+                    return self._attach_operation_context_binding(
+                        product_result,
+                        tool_name="run_mcp_workflow",
+                        params=params,
+                    )
+                return self._thin_loop_product_result(
+                    projection,
+                    project_name=project_name,
+                )
 
             result = self._workflow_compatibility_result("handle_run_mcp_workflow", params)
             payload = result.get("result") if isinstance(result, dict) else None
@@ -10018,38 +10030,25 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 projection["thin_loop"]["status"]
                 != THIN_LOOP_PRODUCT_READY_FOR_EXECUTION
             ):
-                return self._thin_loop_product_result(projection)
-            receipt_request = {
-                "workflow": "thin_governed_loop_preview",
-                "phase": "preview",
-                "project_name": project_name,
-                "thin_loop_inputs": {
-                    "thin_loop_id": projection["thin_loop"]["id"],
-                    "execution_binding_id": projection["codex_execution_packet"][
-                        "execution_binding_id"
-                    ],
-                    "execution_receipt": {
-                        "result": "<PASS|BLOCKED>",
-                        "changed_files": [],
-                        "validation": [],
-                        "risk": "<remaining risk or none>",
-                        "continuation": "<COMPLETED|BLOCKED_NEEDS_USER>",
-                    },
-                },
-            }
+                return self._thin_loop_product_result(
+                    projection,
+                    project_name=project_name,
+                )
+            receipt_request = self._thin_loop_execution_receipt_request(
+                projection,
+                project_name=project_name,
+            )
+            if receipt_request is None:
+                return self._thin_loop_product_error(
+                    "THIN_LOOP_EXECUTION_CONTINUATION_UNAVAILABLE",
+                    "The ready thin-loop session did not expose an execution continuation.",
+                )
             compact_payload = {
                 "ok": projection["thin_loop"]["status"] != THIN_LOOP_PRODUCT_BLOCKED,
                 "read_only": True,
                 "side_effects": False,
                 **projection,
-                "next_request_payload": receipt_request,
-                "copy_paste_next_request": receipt_request,
-                "generated_input_bundle_summary": {
-                    "bundle_kind": "server_bound_thin_loop_session",
-                    "reusable_as": "thin_loop_id",
-                    "next_request_shape": receipt_request,
-                    "internal_governance_objects_exposed": False,
-                },
+                **self._thin_loop_execution_continuation_fields(receipt_request),
             }
             result["result"] = compact_payload
             result["status"] = (
@@ -10068,13 +10067,82 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return self._thin_loop_product_error(str(exc), "Thin-loop context or handle validation failed.")
 
     @staticmethod
-    def _thin_loop_product_result(projection: dict[str, Any]) -> dict[str, Any]:
+    def _thin_loop_execution_receipt_request(
+        projection: dict[str, Any],
+        *,
+        project_name: str,
+    ) -> dict[str, Any] | None:
+        thin_loop = projection.get("thin_loop")
+        packet = projection.get("codex_execution_packet")
+        if (
+            not isinstance(thin_loop, dict)
+            or thin_loop.get("status") != THIN_LOOP_PRODUCT_READY_FOR_EXECUTION
+            or not isinstance(packet, dict)
+        ):
+            return None
+        thin_loop_id = thin_loop.get("id")
+        execution_binding_id = packet.get("execution_binding_id")
+        if not isinstance(thin_loop_id, str) or not isinstance(execution_binding_id, str):
+            return None
+        return {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": project_name,
+            "thin_loop_inputs": {
+                "thin_loop_id": thin_loop_id,
+                "execution_binding_id": execution_binding_id,
+                "execution_receipt": {
+                    "result": "<PASS|BLOCKED>",
+                    "changed_files": [],
+                    "validation": [],
+                    "risk": "<remaining risk or none>",
+                    "continuation": "<COMPLETED|BLOCKED_NEEDS_USER>",
+                },
+            },
+        }
+
+    @staticmethod
+    def _thin_loop_execution_continuation_fields(
+        receipt_request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "next_request_payload": receipt_request,
+            "copy_paste_next_request": receipt_request,
+            "generated_input_bundle_summary": {
+                "bundle_kind": "server_bound_thin_loop_session",
+                "reusable_as": "thin_loop_id",
+                "next_request_shape": receipt_request,
+                "internal_governance_objects_exposed": False,
+            },
+        }
+
+    @classmethod
+    def _thin_loop_product_result(
+        cls,
+        projection: dict[str, Any],
+        *,
+        project_name: str,
+    ) -> dict[str, Any]:
         blocked = projection["thin_loop"]["status"] == THIN_LOOP_PRODUCT_BLOCKED
         blocker_codes = [
             str(item.get("code") or "thin_loop_blocked")
             for item in projection.get("blockers", [])
             if isinstance(item, dict)
         ]
+        product_projection = {
+            "ok": not blocked,
+            "read_only": True,
+            "side_effects": False,
+            **projection,
+        }
+        receipt_request = cls._thin_loop_execution_receipt_request(
+            projection,
+            project_name=project_name,
+        )
+        if receipt_request is not None:
+            product_projection.update(
+                cls._thin_loop_execution_continuation_fields(receipt_request)
+            )
         return {
             "ok": not blocked,
             "source": "core_orchestrator",
@@ -10083,12 +10151,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "phase": "preview",
             "status": "blocked" if blocked else "succeeded",
             "risk_level": "info",
-            "result": {
-                "ok": not blocked,
-                "read_only": True,
-                "side_effects": False,
-                **projection,
-            },
+            "result": product_projection,
             "steps": [],
             "changed_files": [],
             "preview_ids": [],

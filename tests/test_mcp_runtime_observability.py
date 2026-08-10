@@ -5310,6 +5310,65 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert packet["execution_boundary"]["commit_or_push_authorized"] is False
         assert packet["copy_paste_codex_prompt"]
 
+    def test_thin_loop_ready_for_execution_inspection_preserves_public_continuation(self) -> None:
+        project = self.make_git_checkout(managed=True)
+        server = MCPPlanningBridgeServer(str(project), service_mode=True)
+        server.project_registry = self.temp_registry()
+        self.register_demo_project(server.project_registry, project)
+
+        draft = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "project_name": "demo-project",
+                "input_mode": "draft",
+                "draft_seed": {
+                    "source_id": "routed-inspection-demo",
+                    "allowed_files": ["docs/demo.md"],
+                    "validation_commands": ["git status --short"],
+                    "review_decision_value": "NEEDS_FIX",
+                },
+            },
+        )
+
+        assert draft["ok"] is True
+        draft_projection = draft["data"]["result"]
+        thin_loop_id = draft_projection["thin_loop"]["id"]
+        execution_binding_id = draft_projection["codex_execution_packet"][
+            "execution_binding_id"
+        ]
+
+        inspected = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "project_name": "demo-project",
+                "thin_loop_inputs": {"thin_loop_id": thin_loop_id},
+            },
+        )
+
+        assert inspected["ok"] is True
+        assert inspected.get("error_code") != "INTERNAL_RESULT_INVALID"
+        inspected_projection = inspected["data"]["result"]
+        assert inspected_projection["thin_loop"]["id"] == thin_loop_id
+        assert inspected_projection["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+        assert inspected_projection["thin_loop"]["execution_completed"] is False
+        assert inspected_projection["thin_loop"]["review_completed"] is False
+        assert (
+            inspected_projection["codex_execution_packet"]["execution_binding_id"]
+            == execution_binding_id
+        )
+        continuation = inspected_projection["next_request_payload"]
+        assert continuation["project_name"] == "demo-project"
+        assert continuation["thin_loop_inputs"]["thin_loop_id"] == thin_loop_id
+        assert (
+            continuation["thin_loop_inputs"]["execution_binding_id"]
+            == execution_binding_id
+        )
+        assert inspected_projection["copy_paste_next_request"] == continuation
+
     def test_list_executor_run_reports_has_standard_success_shape(self) -> None:
         project = self.make_git_checkout(managed=True)
         server = MCPPlanningBridgeServer(str(project), service_mode=True)
