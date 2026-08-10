@@ -3009,6 +3009,7 @@ def build_mcp_tool_definitions(
                 "可接收 external taskbook / execution envelope / local receipt / review feedback 对象，"
                 "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                 "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
+                "project_delivery_preview：验证已 ACCEPT 的 Thin Loop handoff，并只读投影当前 Git delivery facts 与首个安全动作。"
                 "stage_7_9_preview：把 Stage 7 drift evidence、Stage 8 PLAN_ADJUST preview 与 Stage 9 "
                 "continue-readiness report 组合为一条 hash/context-bound 的只读旅程；它只指出下一项人工决策，"
                 "不 apply plan、不 continue、不启动 executor。"
@@ -3018,7 +3019,7 @@ def build_mcp_tool_definitions(
                 "gate_review_request：复用 Work Item Gate 后端执行 inspect/status/preview/apply，"
                 "apply 必须回传完整签名预览、精确绑定参数并显式确认。"
                 "支持 workflow：auto_preview、project_status、source_onboarding、plan_update、"
-                "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、stage_7_9_preview、current_facts、review_manifest、gate_review_request、operator_batch。"
+                "small_project_patch、docs_update、git_commit、git_restore_file、git_revert、git_undo_version、agent_dispatch、prompt_to_plan、thin_governed_loop_preview、project_delivery_preview、stage_7_9_preview、current_facts、review_manifest、gate_review_request、operator_batch。"
                 "写入类默认停 preview；prompt_to_plan/run 只有在显式确认绑定 preview 后才启动 executor。"
                 "operator_batch execute 只执行已由 canonical manifest、artifact digest 和一次性 ticket 绑定的受控步骤；"
                 "不允许 push、发布、stable replacement 或未列入 allowlist 的操作。"
@@ -3036,10 +3037,10 @@ def build_mcp_tool_definitions(
                             "auto_preview", "project_status", "source_onboarding",
                             "plan_update", "small_project_patch", "docs_update",
                             "git_commit", "git_restore_file", "git_revert", "git_undo_version",
-                            "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "stage_7_9_preview", "current_facts",
+                            "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "project_delivery_preview", "stage_7_9_preview", "current_facts",
                             "review_manifest", "result_artifact", "gate_review_request", "operator_batch",
                         ],
-                        "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。stage_7_9_preview 是 Stage 7 drift evidence → Stage 8 PLAN_ADJUST preview → Stage 9 continue-readiness 的 hash/context-bound 只读 journey；只生成 next-human-decision，不 apply、不 continue、不启动 executor。current_facts 从 canonical_project_state 生成脱敏、可分页的当前事实 snapshot；inspect 只读，preview → context-bound apply 才能写入固定 runtime archive。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
+                        "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。project_delivery_preview 验证同进程中已 ACCEPT 的 Thin Loop，并只读返回 Git delivery facts 与一个安全下一动作。stage_7_9_preview 是 Stage 7 drift evidence → Stage 8 PLAN_ADJUST preview → Stage 9 continue-readiness 的 hash/context-bound 只读 journey；只生成 next-human-decision，不 apply、不 continue、不启动 executor。current_facts 从 canonical_project_state 生成脱敏、可分页的当前事实 snapshot；inspect 只读，preview → context-bound apply 才能写入固定 runtime archive。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                     },
                     "phase": {
                         "type": "string",

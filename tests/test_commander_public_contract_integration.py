@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import time
+from unittest.mock import patch
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -1653,6 +1654,393 @@ def test_thin_loop_inspection_preserves_commander_public_continuation(
     )
     public_next_action = inspected["data"]["next_action"]
     assert public_next_action is None or public_next_action["tool"] == "run_mcp_workflow"
+
+
+def _accepted_thin_loop_delivery_handoff(
+    server: MCPPlanningBridgeServer,
+    *,
+    project_name: str,
+) -> tuple[dict[str, object], str, str]:
+    draft = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": project_name,
+            "input_mode": "draft",
+            "draft_seed": {
+                "goal": "Prepare one bounded accepted implementation for delivery.",
+                "allowed_files": ["README.md"],
+                "validation_commands": ["git status --short"],
+            },
+        },
+    )
+    assert draft["ok"] is True
+    validate_commander_response(draft["data"])
+    draft_projection = draft["data"]["facts"]["result"]
+    thin_loop_id = draft_projection["thin_loop"]["id"]
+    execution_binding_id = draft_projection["codex_execution_packet"][
+        "execution_binding_id"
+    ]
+
+    receipt = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": project_name,
+            "thin_loop_inputs": {
+                "thin_loop_id": thin_loop_id,
+                "execution_binding_id": execution_binding_id,
+                "execution_receipt": {
+                    "result": "PASS",
+                    "changed_files": ["README.md"],
+                    "validation": [
+                        {"command": "git status --short", "result": "PASS"}
+                    ],
+                    "risk": "none",
+                    "continuation": "COMPLETED",
+                },
+            },
+        },
+    )
+    assert receipt["ok"] is True
+    validate_commander_response(receipt["data"])
+    receipt_projection = receipt["data"]["facts"]["result"]
+    review_binding_id = receipt_projection["review_packet"]["review_binding_id"]
+
+    accepted = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": project_name,
+            "thin_loop_inputs": {
+                "thin_loop_id": thin_loop_id,
+                "review_binding_id": review_binding_id,
+                "review": {
+                    "decision": "ACCEPT",
+                    "notes": "The bounded implementation is ready for delivery.",
+                },
+            },
+        },
+    )
+    assert accepted["ok"] is True
+    validate_commander_response(accepted["data"])
+    accepted_projection = accepted["data"]["facts"]["result"]
+    assert accepted_projection["thin_loop"]["status"] == "READY_FOR_DELIVERY_GATE"
+    continuation = accepted_projection["next_request_payload"]
+    assert continuation == {
+        "workflow": "project_delivery_preview",
+        "phase": "preview",
+        "project_name": project_name,
+        "thin_loop_id": thin_loop_id,
+    }
+    return continuation, thin_loop_id, execution_binding_id
+
+
+def _delivery_test_server(
+    tmp_path,
+    monkeypatch,
+    *,
+    branch: str,
+) -> tuple[MCPPlanningBridgeServer, object]:
+    project = _make_real_git_project(tmp_path, branch.replace("/", "-"))
+    subprocess.run(
+        ["git", "-C", str(project), "branch", "-M", branch],
+        check=True,
+    )
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / f"{branch.replace('/', '-')}-projects.json"),
+        user_settings_path=str(tmp_path / f"{branch.replace('/', '-')}-settings.json"),
+    )
+    assert registry.register_project(
+        str(project),
+        project_name=PROJECT_NAME,
+        project_mode="managed",
+    )["ok"] is True
+
+    def bounded_draft_result(
+        routed_server: MCPPlanningBridgeServer,
+        _handler_name: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        project_name = str(
+            params.get("__context_binding_project_name")
+            or params.get("project_name")
+            or ""
+        )
+        return {
+            "ok": True,
+            "workflow": "thin_governed_loop_preview",
+            "status": "succeeded",
+            "risk_level": "info",
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": [],
+            "warnings": [],
+            "context_binding": collect_project_context_binding(
+                routed_server.project_root,
+                project_name=project_name,
+                review_unit="operation:workflow:thin_governed_loop_preview",
+                workflow_intent="workflow:thin_governed_loop_preview",
+            ),
+            "result": {
+                "generated_input_bundle": {"source": "p2-a1-bounded-draft"},
+                "codex_execution_packet": {
+                    "packet_status": "ready",
+                    "objective": "Prepare one bounded accepted implementation for delivery.",
+                    "scope": {
+                        "allowed_files": ["README.md"],
+                        "forbidden_files": [],
+                    },
+                    "validation": {"commands": ["git status --short"]},
+                    "blockers": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        MCPPlanningBridgeServer,
+        "_workflow_compatibility_result",
+        bounded_draft_result,
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+    return server, project
+
+
+@pytest.mark.parametrize(
+    ("branch", "dirty", "expected_action", "expected_state"),
+    [
+        ("codex/p2-a1-dirty", True, "commit_readiness", "DELIVERY_ACTION_REQUIRED"),
+        ("codex/p2-a1-clean", False, "push_status", "DELIVERY_ACTION_REQUIRED"),
+        ("main", False, None, "BLOCKED"),
+    ],
+)
+def test_accept_handoff_projects_first_safe_delivery_action(
+    tmp_path,
+    monkeypatch,
+    branch: str,
+    dirty: bool,
+    expected_action: str | None,
+    expected_state: str,
+) -> None:
+    server, project = _delivery_test_server(
+        tmp_path,
+        monkeypatch,
+        branch=branch,
+    )
+    continuation, thin_loop_id, execution_binding_id = (
+        _accepted_thin_loop_delivery_handoff(
+            server,
+            project_name=PROJECT_NAME,
+        )
+    )
+    if dirty:
+        (project / "README.md").write_text("accepted bounded change\n", encoding="utf-8")
+
+    head_before = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inspected = server._call_tool("run_mcp_workflow", continuation)
+    head_after = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    validate_commander_response(inspected["data"])
+    facts = inspected["data"]["facts"]
+    delivery = facts["result"]["delivery"]
+    assert delivery["state"] == expected_state
+    assert delivery["accepted_session_verified"] is True
+    assert delivery["thin_loop_id"] == thin_loop_id
+    assert facts["result"]["thin_loop"]["status"] == "READY_FOR_DELIVERY_GATE"
+    assert facts["result"]["thin_loop"]["execution_completed"] is True
+    assert facts["result"]["thin_loop"]["review_completed"] is True
+    assert head_before == head_after
+
+    post_inspection = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "project_delivery_preview",
+            "phase": "preview",
+            "project_name": PROJECT_NAME,
+            "thin_loop_id": thin_loop_id,
+        },
+    )
+    assert post_inspection["data"]["facts"]["result"]["thin_loop"] == facts["result"]["thin_loop"]
+    assert execution_binding_id
+
+    public_next_action = inspected["data"]["next_action"]
+    if expected_action is None:
+        assert public_next_action["tool"] == "analyze_project_state"
+        assert facts["blockers"] == ["delivery_topic_branch_required"]
+        assert inspected["data"]["outcome"] == "blocked"
+    else:
+        assert inspected["ok"] is True
+        assert public_next_action["tool"] == "manage_git"
+        assert public_next_action["arguments"]["action"] == expected_action
+        assert public_next_action["arguments"]["project_name"] == PROJECT_NAME
+        assert public_next_action["arguments"]["context_binding"]["head"] == head_before
+
+
+def test_delivery_preview_fails_closed_for_unknown_or_nonaccepted_session(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server, _project = _delivery_test_server(
+        tmp_path,
+        monkeypatch,
+        branch="codex/p2-a1-fail-closed",
+    )
+    unknown = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "project_delivery_preview",
+            "phase": "preview",
+            "project_name": PROJECT_NAME,
+            "thin_loop_id": "tlp_unknown_delivery_handoff",
+        },
+    )
+    assert unknown["ok"] is True
+    assert unknown["data"]["facts"]["result"]["delivery"]["state"] == "BLOCKED"
+    assert unknown["data"]["facts"]["blockers"] == ["thin_loop_not_found_or_expired"]
+
+    draft = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": PROJECT_NAME,
+            "input_mode": "draft",
+            "draft_seed": {
+                "goal": "Remain nonaccepted for fail-closed delivery inspection.",
+                "allowed_files": ["README.md"],
+                "validation_commands": ["git status --short"],
+            },
+        },
+    )
+    thin_loop_id = draft["data"]["facts"]["result"]["thin_loop"]["id"]
+    nonaccepted = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "project_delivery_preview",
+            "phase": "preview",
+            "project_name": PROJECT_NAME,
+            "thin_loop_id": thin_loop_id,
+        },
+    )
+    assert nonaccepted["ok"] is True
+    assert nonaccepted["data"]["facts"]["result"]["delivery"]["state"] == "BLOCKED"
+    assert nonaccepted["data"]["facts"]["blockers"] == [
+        "THIN_LOOP_NOT_READY_FOR_DELIVERY_GATE"
+    ]
+
+
+def test_delivery_preview_fails_closed_for_expired_session(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server, _project = _delivery_test_server(
+        tmp_path,
+        monkeypatch,
+        branch="codex/p2-a1-expired",
+    )
+    continuation, _thin_loop_id, _execution_binding_id = (
+        _accepted_thin_loop_delivery_handoff(server, project_name=PROJECT_NAME)
+    )
+    with patch("runner.thin_governed_loop.time.time", return_value=time.time() + 7200):
+        expired = server._call_tool("run_mcp_workflow", continuation)
+
+    assert expired["ok"] is True
+    assert expired["data"]["outcome"] == "blocked"
+    assert expired["data"]["facts"]["result"]["delivery"]["state"] == "BLOCKED"
+    assert expired["data"]["facts"]["blockers"] == ["thin_loop_not_found_or_expired"]
+
+
+def test_delivery_preview_fails_closed_for_wrong_project(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server, _project = _delivery_test_server(
+        tmp_path,
+        monkeypatch,
+        branch="codex/p2-a1-wrong-project",
+    )
+    continuation, _thin_loop_id, _execution_binding_id = (
+        _accepted_thin_loop_delivery_handoff(server, project_name=PROJECT_NAME)
+    )
+    other_project = _make_real_git_project(tmp_path, "other-delivery-project")
+    subprocess.run(
+        ["git", "-C", str(other_project), "branch", "-M", "codex/other-delivery"],
+        check=True,
+    )
+    assert server.project_registry.register_project(
+        str(other_project),
+        project_name="other-delivery-project",
+        project_mode="managed",
+    )["ok"] is True
+    wrong_project_request = {
+        **continuation,
+        "project_name": "other-delivery-project",
+    }
+
+    rejected = server._call_tool("run_mcp_workflow", wrong_project_request)
+
+    assert rejected["ok"] is True
+    assert rejected["data"]["outcome"] == "blocked"
+    assert rejected["data"]["facts"]["blockers"] == ["thin_loop_project_mismatch"]
+
+
+@pytest.mark.parametrize("drift_kind", ["branch", "head"])
+def test_delivery_preview_fails_closed_for_git_identity_drift(
+    tmp_path,
+    monkeypatch,
+    drift_kind: str,
+) -> None:
+    original_branch = f"codex/p2-a1-{drift_kind}-drift"
+    server, project = _delivery_test_server(
+        tmp_path,
+        monkeypatch,
+        branch=original_branch,
+    )
+    continuation, _thin_loop_id, _execution_binding_id = (
+        _accepted_thin_loop_delivery_handoff(server, project_name=PROJECT_NAME)
+    )
+    if drift_kind == "branch":
+        subprocess.run(
+            ["git", "-C", str(project), "switch", "-qc", "codex/drifted-branch"],
+            check=True,
+        )
+        expected_code = "thin_loop_branch_mismatch"
+    else:
+        (project / "drift.txt").write_text("new head\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "add", "drift.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(project), "commit", "-qm", "drift head"],
+            check=True,
+        )
+        expected_code = "thin_loop_head_mismatch"
+
+    rejected = server._call_tool("run_mcp_workflow", continuation)
+
+    assert rejected["ok"] is True
+    assert rejected["data"]["outcome"] == "blocked"
+    assert rejected["data"]["facts"]["result"]["delivery"]["state"] == "BLOCKED"
+    assert rejected["data"]["facts"]["blockers"] == [expected_code]
 
 
 def _make_real_git_project(tmp_path, name: str):
