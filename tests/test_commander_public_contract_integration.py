@@ -17,6 +17,7 @@ from runner.mcp_commander_public import (
     CommanderPublicProjector,
 )
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.project_context_binding import collect_project_context_binding
 from runner.project_registry import ProjectRegistry
 
 
@@ -1523,6 +1524,135 @@ def test_normal_profile_keeps_the_existing_broad_output_schema(tmp_path) -> None
 
     assert tool.output_schema["required"] == ["ok", "tool"]
     assert tool.output_schema["properties"]["data"]["additionalProperties"] is True
+
+
+def test_thin_loop_inspection_preserves_commander_public_continuation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project = _make_real_git_project(tmp_path, "colameta-inspection")
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "projects.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(project),
+        project_name=PROJECT_NAME,
+        project_mode="managed",
+    )
+    assert registered["ok"] is True
+
+    def bounded_draft_result(
+        routed_server: MCPPlanningBridgeServer,
+        _handler_name: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        project_name = str(
+            params.get("__context_binding_project_name")
+            or params.get("project_name")
+            or ""
+        )
+        context_binding = collect_project_context_binding(
+            routed_server.project_root,
+            project_name=project_name,
+            review_unit="operation:workflow:thin_governed_loop_preview",
+            workflow_intent="workflow:thin_governed_loop_preview",
+        )
+        return {
+            "ok": True,
+            "workflow": "thin_governed_loop_preview",
+            "status": "succeeded",
+            "risk_level": "info",
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": [],
+            "warnings": [],
+            "context_binding": context_binding,
+            "result": {
+                "generated_input_bundle": {"source": "bounded-test-draft"},
+                "codex_execution_packet": {
+                    "packet_status": "ready",
+                    "objective": "Inspect the existing bounded Thin Loop session.",
+                    "scope": {
+                        "allowed_files": ["README.md"],
+                        "forbidden_files": [],
+                    },
+                    "validation": {"commands": ["git status --short"]},
+                    "blockers": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        MCPPlanningBridgeServer,
+        "_workflow_compatibility_result",
+        bounded_draft_result,
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+
+    draft = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": PROJECT_NAME,
+            "input_mode": "draft",
+            "draft_seed": {
+                "source_id": "commander-continuation-inspection",
+                "allowed_files": ["docs/USAGE.md"],
+                "validation_commands": ["git status --short"],
+                "review_decision_value": "NEEDS_FIX",
+            },
+        },
+    )
+
+    assert draft["ok"] is True
+    validate_commander_response(draft["data"])
+    draft_projection = draft["data"]["facts"]["result"]
+    thin_loop_id = draft_projection["thin_loop"]["id"]
+    execution_binding_id = draft_projection["codex_execution_packet"][
+        "execution_binding_id"
+    ]
+
+    inspected = server._call_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "project_name": PROJECT_NAME,
+            "thin_loop_inputs": {"thin_loop_id": thin_loop_id},
+        },
+    )
+
+    assert inspected["ok"] is True
+    assert inspected.get("error_code") != "INTERNAL_RESULT_INVALID"
+    validate_commander_response(inspected["data"])
+    inspected_projection = inspected["data"]["facts"]["result"]
+    assert inspected_projection["thin_loop"] == draft_projection["thin_loop"]
+    assert inspected_projection["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+    assert inspected_projection["thin_loop"]["execution_completed"] is False
+    assert inspected_projection["thin_loop"]["review_completed"] is False
+    assert (
+        inspected_projection["codex_execution_packet"]["execution_binding_id"]
+        == execution_binding_id
+    )
+    continuation = inspected_projection["next_request_payload"]
+    assert continuation["project_name"] == PROJECT_NAME
+    assert continuation["thin_loop_inputs"]["thin_loop_id"] == thin_loop_id
+    assert (
+        continuation["thin_loop_inputs"]["execution_binding_id"]
+        == execution_binding_id
+    )
+    public_next_action = inspected["data"]["next_action"]
+    assert public_next_action is None or public_next_action["tool"] == "run_mcp_workflow"
 
 
 def _make_real_git_project(tmp_path, name: str):
