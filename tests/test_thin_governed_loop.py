@@ -28,6 +28,8 @@ class ThinGovernedLoopTests(unittest.TestCase):
         self,
         *,
         goal: str = "Add one bounded project status summary field.",
+        allowed_files: list[str] | None = None,
+        forbidden_files: list[str] | None = None,
     ) -> tuple[MCPPlanningBridgeServer, dict]:
         project_root = str(Path(__file__).resolve().parents[1])
         server = MCPPlanningBridgeServer(project_root)
@@ -39,11 +41,15 @@ class ThinGovernedLoopTests(unittest.TestCase):
                 "draft_seed": {
                     "goal": goal,
                     "task_tier": "M1",
-                    "allowed_files": [
+                    "allowed_files": allowed_files
+                    if allowed_files is not None
+                    else [
                         "runner/thin_governed_loop.py",
                         "tests/test_thin_governed_loop.py",
                     ],
-                    "forbidden_files": [".colameta/plan.json", ".colameta/state.json"],
+                    "forbidden_files": forbidden_files
+                    if forbidden_files is not None
+                    else [".colameta/plan.json", ".colameta/state.json"],
                     "context_files": ["runner/thin_governed_loop.py"],
                     "validation_commands": [
                         "python -m pytest tests/test_thin_governed_loop.py -q",
@@ -246,6 +252,121 @@ class ThinGovernedLoopTests(unittest.TestCase):
                 inspected = self._product_followup(server, thin_loop_id)
                 assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
                 assert inspected["result"]["thin_loop"]["execution_completed"] is False
+
+    def test_product_receipt_canonicalizes_paths_before_forbidden_policy(self) -> None:
+        aliases = (
+            ("./.colameta/plan.json", ".colameta/plan.json"),
+            (".colameta/./plan.json", "./.colameta/plan.json"),
+            (".colameta//plan.json", ".colameta/./plan.json"),
+        )
+
+        for changed_file_alias, forbidden_alias in aliases:
+            with self.subTest(
+                changed_file_alias=changed_file_alias,
+                forbidden_alias=forbidden_alias,
+            ):
+                server, draft = self._product_draft(
+                    allowed_files=["."],
+                    forbidden_files=[forbidden_alias],
+                )
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                output = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=self._passing_receipt(
+                        changed_files=[changed_file_alias]
+                    ),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is False
+                product = output["result"]
+                assert product["thin_loop"]["status"] == "BLOCKED"
+                assert product["thin_loop"]["state_advanced"] is False
+                assert product["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+                assert product["blockers"] == [
+                    {
+                        "code": "thin_loop_forbidden_file_touched",
+                        "path": ".colameta/plan.json",
+                    }
+                ]
+                inspected = self._product_followup(server, thin_loop_id)
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+                assert inspected["result"]["thin_loop"]["execution_completed"] is False
+
+    def test_product_receipt_canonicalizes_allowed_path_aliases(self) -> None:
+        aliases = (
+            ("runner/./thin_governed_loop.py", "./runner//thin_governed_loop.py"),
+            ("runner//thin_governed_loop.py", "runner/./thin_governed_loop.py"),
+        )
+
+        for changed_file_alias, allowed_alias in aliases:
+            with self.subTest(
+                changed_file_alias=changed_file_alias,
+                allowed_alias=allowed_alias,
+            ):
+                server, draft = self._product_draft(allowed_files=[allowed_alias])
+                output = self._product_followup(
+                    server,
+                    draft["result"]["thin_loop"]["id"],
+                    execution_receipt=self._passing_receipt(
+                        changed_files=[changed_file_alias]
+                    ),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is True
+                assert output["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
+                assert output["result"]["review_packet"]["changed_files"] == [
+                    "runner/thin_governed_loop.py"
+                ]
+
+    def test_product_receipt_rejects_traversal_without_advancing(self) -> None:
+        for path in ("../runner/file.py", "runner/../.colameta/plan.json"):
+            with self.subTest(path=path):
+                server, draft = self._product_draft(allowed_files=["."])
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                output = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=self._passing_receipt(changed_files=[path]),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is False
+                product = output["result"]
+                assert product["thin_loop"]["state_advanced"] is False
+                assert product["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+                assert product["blockers"] == [
+                    {"code": "thin_loop_changed_file_invalid", "path": path}
+                ]
+                inspected = self._product_followup(server, thin_loop_id)
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+
+    def test_product_receipt_preserves_root_allowed_file_behavior(self) -> None:
+        server, draft = self._product_draft(
+            allowed_files=["."],
+            forbidden_files=[".colameta/plan.json"],
+        )
+        output = self._product_followup(
+            server,
+            draft["result"]["thin_loop"]["id"],
+            execution_receipt=self._passing_receipt(
+                changed_files=["runner/thin_governed_loop.py"]
+            ),
+            execution_binding_id=draft["result"]["execution_packet"][
+                "execution_binding_id"
+            ],
+        )
+
+        assert output["ok"] is True
+        assert output["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
 
     def test_product_draft_rebinds_packet_head_to_verified_repository_head(self) -> None:
         project_root = str(Path(__file__).resolve().parents[1])

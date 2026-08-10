@@ -6,7 +6,7 @@ import fnmatch
 import secrets
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runner.audit_package_taskbook_binding import (
@@ -211,11 +211,25 @@ class ThinLoopProductSessionStore:
 
             blockers = self._receipt_blockers(session, receipt)
             if blockers:
+                blocker = blockers[0]
+                if blocker["code"] in {
+                    "thin_loop_changed_file_invalid",
+                    "thin_loop_forbidden_file_touched",
+                    "thin_loop_unknown_file_touched",
+                }:
+                    return self._reject_transition(
+                        session,
+                        blocker["code"],
+                        **{key: value for key, value in blocker.items() if key != "code"},
+                    )
                 session["blockers"] = blockers
                 session["status"] = BLOCKED
                 return self._projection(session)
 
-            changed_files = self._string_list(receipt.get("changed_files"))
+            changed_files = [
+                self._canonical_changed_file_path(path)
+                for path in self._string_list(receipt.get("changed_files"))
+            ]
             validation = receipt.get("validation")
             session["execution_binding_id"] = None
             session["execution_receipt"] = {
@@ -348,11 +362,18 @@ class ThinLoopProductSessionStore:
         if receipt.get("changed_files") is not None and not isinstance(receipt.get("changed_files"), list):
             return [{"code": "thin_loop_changed_files_invalid"}]
         packet_scope = session["execution_packet"].get("scope") or {}
-        allowed = self._string_list(packet_scope.get("allowed_files"))
-        forbidden = self._string_list(packet_scope.get("forbidden_files"))
-        for path in changed_files:
-            if self._unsafe_relative_path(path):
-                return [{"code": "thin_loop_changed_file_invalid", "path": path}]
+        allowed = [
+            self._canonical_policy_pattern(pattern)
+            for pattern in self._string_list(packet_scope.get("allowed_files"))
+        ]
+        forbidden = [
+            self._canonical_policy_pattern(pattern)
+            for pattern in self._string_list(packet_scope.get("forbidden_files"))
+        ]
+        for raw_path in changed_files:
+            if self._unsafe_relative_path(raw_path):
+                return [{"code": "thin_loop_changed_file_invalid", "path": raw_path}]
+            path = self._canonical_changed_file_path(raw_path)
             if any(self._path_matches(path, pattern) for pattern in forbidden):
                 return [{"code": "thin_loop_forbidden_file_touched", "path": path}]
             if not any(self._path_matches(path, pattern) for pattern in allowed):
@@ -418,12 +439,22 @@ class ThinLoopProductSessionStore:
 
     @staticmethod
     def _unsafe_relative_path(path: str) -> bool:
-        candidate = Path(path)
+        candidate = PurePosixPath(path)
         return candidate.is_absolute() or ".." in candidate.parts or path.strip() != path
+
+    @staticmethod
+    def _canonical_changed_file_path(path: str) -> str:
+        return PurePosixPath(path).as_posix()
+
+    @staticmethod
+    def _canonical_policy_pattern(pattern: str) -> str:
+        return PurePosixPath(pattern).as_posix()
 
     @staticmethod
     def _path_matches(path: str, pattern: str) -> bool:
         normalized = pattern.rstrip("/")
+        if normalized == ".":
+            return True
         root_glob_match = pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:])
         return (
             path == normalized
@@ -449,7 +480,12 @@ class ThinLoopProductSessionStore:
         session["blockers"] = [{"code": code}]
         return self._projection(session)
 
-    def _reject_transition(self, session: dict[str, Any], code: str) -> dict[str, Any]:
+    def _reject_transition(
+        self,
+        session: dict[str, Any],
+        code: str,
+        **details: Any,
+    ) -> dict[str, Any]:
         projection = self._projection(session)
         projection["thin_loop"] = {
             **projection["thin_loop"],
@@ -461,7 +497,7 @@ class ThinLoopProductSessionStore:
             "type": _THIN_LOOP_NEXT_ACTIONS[BLOCKED],
             "reason": self._next_action_reason(BLOCKED),
         }
-        projection["blockers"] = [{"code": code}]
+        projection["blockers"] = [{"code": code, **details}]
         return projection
 
     @staticmethod
