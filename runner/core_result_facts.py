@@ -44,6 +44,9 @@ def normalize_next_actions(value: Any) -> list[NextAction]:
     if not actions:
         _append_recommended_action(actions, data.get("recommended_next_action"))
         _append_recommended_action(actions, nested.get("recommended_next_action"))
+    if not actions:
+        _append_recommended_action(actions, data.get("next_action"))
+        _append_recommended_action(actions, nested.get("next_action"))
 
     return actions
 
@@ -121,7 +124,7 @@ def _confirmation_from_result_data(
     _non_preview_keys = frozenset({
         "ok", "status", "error_code", "message", "source", "action", "risk_level",
         "steps", "changed_files", "next_actions", "recommended_next_actions",
-        "recommended_next_action", "blockers", "warnings", "commit_blockers",
+        "recommended_next_action", "next_action", "blockers", "warnings", "commit_blockers",
         "commit_warnings", "confirmation", "requires_confirmation",
         "partial", "selected_workflow", "selection_reason", "confidence",
         "stop_reason", "unified_status", "display_summary", "audit", "fact_snapshot",
@@ -159,7 +162,7 @@ def _as_result_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     keys = (
-        "recommended_next_actions", "recommended_next_action", "next_actions",
+        "recommended_next_actions", "recommended_next_action", "next_actions", "next_action",
         "requires_confirmation", "blockers", "commit_blockers", "warnings",
         "commit_warnings", "confirmation", "result", "steps", "preview_id",
         "preview_ids",

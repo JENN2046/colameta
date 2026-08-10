@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import fnmatch
+import secrets
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +75,26 @@ _STAGE_0_REQUIRED_ANCHORS = (
 )
 
 THIN_LOOP_INPUT_SCHEMA_VERSION = "thin_governed_loop_inputs.v1"
+THIN_LOOP_SESSION_TTL_SECONDS = 30 * 60
+THIN_LOOP_SESSION_MAX_ITEMS = 256
+
+READY_FOR_EXECUTION = "READY_FOR_EXECUTION"
+READY_FOR_REVIEW = "READY_FOR_REVIEW"
+REVIEW_NEEDS_FIX = "REVIEW_NEEDS_FIX"
+READY_FOR_DELIVERY_GATE = "READY_FOR_DELIVERY_GATE"
+READY_FOR_PLAN_ADJUST = "READY_FOR_PLAN_ADJUST"
+ABORTED = "ABORTED"
+BLOCKED = "BLOCKED"
+
+_THIN_LOOP_NEXT_ACTIONS = {
+    READY_FOR_EXECUTION: "EXECUTE_WITH_CODEX",
+    READY_FOR_REVIEW: "REVIEW",
+    REVIEW_NEEDS_FIX: "EXECUTE_REWORK",
+    READY_FOR_DELIVERY_GATE: "PREPARE_DELIVERY_GATE",
+    READY_FOR_PLAN_ADJUST: "PREVIEW_PLAN_ADJUST",
+    ABORTED: "STOP",
+    BLOCKED: "STOP",
+}
 _THIN_LOOP_PROVENANCE_SUBJECTS = {
     "local_execution_receipt": "execution",
     "local_execution_receipt.validation_results": "validation",
@@ -78,6 +102,434 @@ _THIN_LOOP_PROVENANCE_SUBJECTS = {
     "review_feedback.master_taskbook_hash": "hash_binding",
     "review_feedback.stage_taskbook_hash": "hash_binding",
 }
+
+
+class ThinLoopProductSessionStore:
+    """Process-local product handle for the existing Stage 0-6 engine.
+
+    The caller receives only an opaque identifier.  Governance objects and
+    context bindings remain server-side and expire quickly; this store is not
+    a work-item database and grants no delivery authority.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = THIN_LOOP_SESSION_TTL_SECONDS,
+        max_items: int = THIN_LOOP_SESSION_MAX_ITEMS,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._max_items = max_items
+        self._lock = threading.RLock()
+        self._sessions: dict[str, dict[str, Any]] = {}
+
+    def create(
+        self,
+        *,
+        project_name: str,
+        branch: str,
+        head: str,
+        goal: str,
+        generated_input_bundle: dict[str, Any],
+        execution_packet: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = time.time()
+        thin_loop_id = f"tlp_{secrets.token_urlsafe(24)}"
+        execution_packet = dict(execution_packet)
+        packet_ready = execution_packet.get("packet_status") == "ready"
+        execution_binding_id = self._new_binding_id("tle") if packet_ready else None
+        if execution_binding_id is not None:
+            execution_packet["execution_binding_id"] = execution_binding_id
+        session = {
+            "thin_loop_id": thin_loop_id,
+            "project_name": project_name,
+            "branch": branch,
+            "head": head,
+            "goal": goal,
+            "status": READY_FOR_EXECUTION if packet_ready else BLOCKED,
+            "created_at": now,
+            "expires_at": now + self._ttl_seconds,
+            "generated_input_bundle": generated_input_bundle,
+            "execution_packet": execution_packet,
+            "execution_generation": 1,
+            "execution_binding_id": execution_binding_id,
+            "execution_receipt": None,
+            "review_generation": 0,
+            "review_binding_id": None,
+            "review": None,
+            "review_packet": None,
+            "blockers": list(execution_packet.get("blockers") or []),
+        }
+        with self._lock:
+            self._prune_expired(now)
+            if len(self._sessions) >= self._max_items:
+                oldest = min(self._sessions, key=lambda key: self._sessions[key]["created_at"])
+                del self._sessions[oldest]
+            self._sessions[thin_loop_id] = session
+        return self._projection(session)
+
+    def inspect(
+        self,
+        thin_loop_id: str,
+        *,
+        project_name: str,
+        branch: str,
+        head: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            session = self._require_session(thin_loop_id)
+            self._require_context(session, project_name=project_name, branch=branch, head=head)
+            return self._projection(session)
+
+    def submit_execution_receipt(
+        self,
+        thin_loop_id: str,
+        receipt: dict[str, Any],
+        *,
+        execution_binding_id: str | None,
+        project_name: str,
+        branch: str,
+        head: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            session = self._require_session(thin_loop_id)
+            self._require_context(session, project_name=project_name, branch=branch, head=head)
+            if not self._binding_matches(
+                session.get("execution_binding_id"),
+                execution_binding_id,
+            ):
+                return self._reject_transition(session, "thin_loop_continuation_binding_mismatch")
+            if session["status"] not in {READY_FOR_EXECUTION, REVIEW_NEEDS_FIX}:
+                return self._reject_transition(session, "thin_loop_receipt_not_expected")
+
+            blockers = self._receipt_blockers(session, receipt)
+            if blockers:
+                session["blockers"] = blockers
+                session["status"] = BLOCKED
+                return self._projection(session)
+
+            changed_files = self._string_list(receipt.get("changed_files"))
+            validation = receipt.get("validation")
+            session["execution_binding_id"] = None
+            session["execution_receipt"] = {
+                "result": str(receipt.get("result") or "").strip(),
+                "changed_files": changed_files,
+                "validation": validation,
+                "risk": receipt.get("risk"),
+                "continuation": receipt.get("continuation"),
+            }
+            session["review_generation"] += 1
+            review_binding_id = self._new_binding_id("tlr")
+            session["review_binding_id"] = review_binding_id
+            session["review_packet"] = {
+                "review_binding_id": review_binding_id,
+                "execution_summary": {
+                    "result": session["execution_receipt"]["result"],
+                    "goal": session["goal"],
+                },
+                "changed_files": changed_files,
+                "validation": validation,
+                "risk": receipt.get("risk"),
+                "evidence_refs": {
+                    "thin_loop_id": session["thin_loop_id"],
+                    "bound_head": session["head"],
+                },
+            }
+            session["blockers"] = []
+            session["status"] = READY_FOR_REVIEW
+            return self._projection(session)
+
+    def submit_review(
+        self,
+        thin_loop_id: str,
+        review: dict[str, Any],
+        *,
+        review_binding_id: str | None,
+        project_name: str,
+        branch: str,
+        head: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            session = self._require_session(thin_loop_id)
+            self._require_context(session, project_name=project_name, branch=branch, head=head)
+            if not self._binding_matches(
+                session.get("review_binding_id"),
+                review_binding_id,
+            ):
+                return self._reject_transition(session, "thin_loop_continuation_binding_mismatch")
+            if session["status"] != READY_FOR_REVIEW:
+                return self._reject_transition(session, "thin_loop_review_not_expected")
+
+            decision = str(review.get("decision") or "").strip().upper()
+            if decision not in {"ACCEPT", "NEEDS_FIX", "PLAN_ADJUST", "ABORT"}:
+                return self._block(session, "thin_loop_review_decision_invalid")
+            notes = review.get("notes")
+            if notes is not None and not isinstance(notes, str):
+                return self._block(session, "thin_loop_review_notes_invalid")
+
+            session["review_binding_id"] = None
+            session["review"] = {"decision": decision, "notes": notes or ""}
+            session["blockers"] = []
+            if decision == "ACCEPT":
+                session["status"] = READY_FOR_DELIVERY_GATE
+            elif decision == "NEEDS_FIX":
+                session["status"] = REVIEW_NEEDS_FIX
+                rework_packet = dict(session["execution_packet"])
+                rework_packet["packet_kind"] = "thin_governed_loop_codex_rework_packet"
+                rework_packet["packet_status"] = "ready"
+                rework_packet["review_feedback"] = {
+                    "decision": decision,
+                    "notes": notes or "",
+                    "scope_expansion_authorized": False,
+                }
+                rework_packet["objective"] = (
+                    f"Address review feedback for the original goal without expanding scope: {session['goal']}"
+                )
+                session["execution_generation"] += 1
+                execution_binding_id = self._new_binding_id("tle")
+                session["execution_binding_id"] = execution_binding_id
+                rework_packet["execution_binding_id"] = execution_binding_id
+                session["rework_packet"] = rework_packet
+            elif decision == "PLAN_ADJUST":
+                session["status"] = READY_FOR_PLAN_ADJUST
+            else:
+                session["status"] = ABORTED
+            return self._projection(session)
+
+    def _require_session(self, thin_loop_id: str) -> dict[str, Any]:
+        if not isinstance(thin_loop_id, str) or not thin_loop_id.startswith("tlp_"):
+            raise ValueError("thin_loop_id_invalid")
+        now = time.time()
+        self._prune_expired(now)
+        session = self._sessions.get(thin_loop_id)
+        if session is None:
+            raise ValueError("thin_loop_not_found_or_expired")
+        return session
+
+    @staticmethod
+    def _require_context(
+        session: dict[str, Any],
+        *,
+        project_name: str,
+        branch: str,
+        head: str,
+    ) -> None:
+        if session["project_name"] != project_name:
+            raise ValueError("thin_loop_project_mismatch")
+        if session["branch"] != branch:
+            raise ValueError("thin_loop_branch_mismatch")
+        if session["head"] != head:
+            raise ValueError("thin_loop_head_mismatch")
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [key for key, value in self._sessions.items() if value["expires_at"] <= now]
+        for key in expired:
+            del self._sessions[key]
+
+    def _receipt_blockers(self, session: dict[str, Any], receipt: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(receipt, dict):
+            return [{"code": "thin_loop_execution_receipt_required"}]
+        receipt_head = receipt.get("head")
+        if receipt_head is not None and receipt_head != session["head"]:
+            return [{"code": "thin_loop_receipt_head_mismatch"}]
+
+        result = str(receipt.get("result") or "").strip().upper()
+        if result not in {"PASS", "PASSED", "SUCCESS", "COMPLETED"}:
+            return [{"code": "thin_loop_execution_result_not_successful"}]
+
+        changed_files = self._string_list(receipt.get("changed_files"))
+        if receipt.get("changed_files") is not None and not isinstance(receipt.get("changed_files"), list):
+            return [{"code": "thin_loop_changed_files_invalid"}]
+        packet_scope = session["execution_packet"].get("scope") or {}
+        allowed = self._string_list(packet_scope.get("allowed_files"))
+        forbidden = self._string_list(packet_scope.get("forbidden_files"))
+        for path in changed_files:
+            if self._unsafe_relative_path(path):
+                return [{"code": "thin_loop_changed_file_invalid", "path": path}]
+            if any(self._path_matches(path, pattern) for pattern in forbidden):
+                return [{"code": "thin_loop_forbidden_file_touched", "path": path}]
+            if not any(self._path_matches(path, pattern) for pattern in allowed):
+                return [{"code": "thin_loop_unknown_file_touched", "path": path}]
+
+        validation = receipt.get("validation")
+        validation_entries = self._validation_entries(validation)
+        if not validation_entries:
+            return [{"code": "thin_loop_validation_missing"}]
+        if any(
+            item["result"] not in {"PASS", "PASSED", "SUCCESS"}
+            for item in validation_entries
+        ):
+            return [{"code": "thin_loop_validation_not_passed"}]
+        expected_commands = self._string_list(
+            (session["execution_packet"].get("validation") or {}).get("commands")
+        )
+        passed_commands = {
+            item["command"]
+            for item in validation_entries
+            if item["command"] and item["result"] in {"PASS", "PASSED", "SUCCESS"}
+        }
+        missing_commands = [command for command in expected_commands if command not in passed_commands]
+        if missing_commands:
+            return [
+                {
+                    "code": "thin_loop_validation_command_missing",
+                    "commands": missing_commands,
+                }
+            ]
+        continuation = receipt.get("continuation")
+        if isinstance(continuation, str) and continuation.strip().upper().startswith("BLOCKED"):
+            return [{"code": "thin_loop_execution_result_inconsistent"}]
+        return []
+
+    @staticmethod
+    def _validation_entries(validation: Any) -> list[dict[str, str]]:
+        if isinstance(validation, dict):
+            values = validation.get("results")
+            if values is None:
+                values = [validation]
+        else:
+            values = validation
+        if not isinstance(values, list) or not values:
+            return []
+        results: list[dict[str, str]] = []
+        for item in values:
+            if isinstance(item, dict):
+                value = item.get("result")
+                command = item.get("command")
+            else:
+                value = item
+                command = None
+            if not isinstance(value, str) or not value.strip():
+                return []
+            results.append(
+                {
+                    "command": command.strip() if isinstance(command, str) else "",
+                    "result": value.strip().upper(),
+                }
+            )
+        return results
+
+    @staticmethod
+    def _unsafe_relative_path(path: str) -> bool:
+        candidate = Path(path)
+        return candidate.is_absolute() or ".." in candidate.parts or path.strip() != path
+
+    @staticmethod
+    def _path_matches(path: str, pattern: str) -> bool:
+        normalized = pattern.rstrip("/")
+        root_glob_match = pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:])
+        return (
+            path == normalized
+            or path.startswith(f"{normalized}/")
+            or fnmatch.fnmatchcase(path, pattern)
+            or root_glob_match
+        )
+
+    @staticmethod
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    def _block(self, session: dict[str, Any], code: str) -> dict[str, Any]:
+        session["status"] = BLOCKED
+        session["blockers"] = [{"code": code}]
+        return self._projection(session)
+
+    def _reject_transition(self, session: dict[str, Any], code: str) -> dict[str, Any]:
+        projection = self._projection(session)
+        projection["thin_loop"] = {
+            **projection["thin_loop"],
+            "status": BLOCKED,
+            "state_advanced": False,
+            "bound_session_status": session["status"],
+        }
+        projection["next_action"] = {
+            "type": _THIN_LOOP_NEXT_ACTIONS[BLOCKED],
+            "reason": self._next_action_reason(BLOCKED),
+        }
+        projection["blockers"] = [{"code": code}]
+        return projection
+
+    @staticmethod
+    def _new_binding_id(prefix: str) -> str:
+        return f"{prefix}_{secrets.token_urlsafe(24)}"
+
+    @staticmethod
+    def _binding_matches(expected: Any, received: Any) -> bool:
+        return (
+            isinstance(expected, str)
+            and isinstance(received, str)
+            and secrets.compare_digest(expected, received)
+        )
+
+    @staticmethod
+    def _projection(session: dict[str, Any]) -> dict[str, Any]:
+        status = session["status"]
+        projection: dict[str, Any] = {
+            "thin_loop": {
+                "id": session["thin_loop_id"],
+                "status": status,
+                "project_name": session["project_name"],
+                "branch": session["branch"],
+                "head": session["head"],
+                "goal": session["goal"],
+                "execution_completed": session.get("execution_receipt") is not None,
+                "review_completed": session.get("review") is not None,
+            },
+            "next_action": {
+                "type": _THIN_LOOP_NEXT_ACTIONS[status],
+                "reason": ThinLoopProductSessionStore._next_action_reason(status),
+            },
+            "blockers": list(session.get("blockers") or []),
+            "authority_boundary": {
+                "delivery_state_written": False,
+                "review_decision_written": False,
+                "gate_event_emitted": False,
+                "commit": False,
+                "push": False,
+            },
+            "advanced_evidence": {
+                "session_kind": "process_local_short_lived",
+                "context_bound": True,
+                "expires_at_epoch": session["expires_at"],
+            },
+        }
+        if status == READY_FOR_EXECUTION:
+            projection["execution_packet"] = session["execution_packet"]
+            projection["codex_execution_packet"] = session["execution_packet"]
+        elif status == READY_FOR_REVIEW:
+            projection["review_packet"] = session["review_packet"]
+        elif status == REVIEW_NEEDS_FIX:
+            projection["execution_packet"] = session["rework_packet"]
+            projection["codex_execution_packet"] = session["rework_packet"]
+            projection["decision_result"] = "READY_FOR_REWORK"
+        elif status == READY_FOR_DELIVERY_GATE:
+            projection["decision_result"] = "READY_FOR_DELIVERY_GATE"
+        elif status == READY_FOR_PLAN_ADJUST:
+            projection["decision_result"] = "READY_FOR_PLAN_ADJUST"
+            projection["stage_7_9_handoff"] = {
+                "workflow": "stage_7_9_preview",
+                "phase": "preview",
+            }
+        elif status == ABORTED:
+            projection["decision_result"] = "LOOP_ABORTED"
+        return projection
+
+    @staticmethod
+    def _next_action_reason(status: str) -> str:
+        return {
+            READY_FOR_EXECUTION: "The bounded packet is ready for direct local Codex execution.",
+            READY_FOR_REVIEW: "The bound execution receipt is ready for reviewer inspection.",
+            REVIEW_NEEDS_FIX: "Review requested bounded rework within the original scope.",
+            READY_FOR_DELIVERY_GATE: "Review accepted; prepare the separate delivery gate without writing delivery state.",
+            READY_FOR_PLAN_ADJUST: "Review requires an existing Stage 7-9 plan-adjust preview.",
+            ABORTED: "The reviewer stopped this loop without source rollback.",
+            BLOCKED: "The loop failed closed because its context or evidence is invalid.",
+        }[status]
+
+
+THIN_LOOP_PRODUCT_SESSIONS = ThinLoopProductSessionStore()
 
 
 def build_draft_evidence_provenance(bound_record: dict[str, Any]) -> dict[str, Any]:
