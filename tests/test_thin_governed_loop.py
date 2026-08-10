@@ -8,6 +8,7 @@ from unittest.mock import patch
 from runner.continuation_snapshot import snapshot_from_fact_bundle
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.master_taskbook_registry import MasterTaskbookRegistryError
+from runner.mcp_server import MCPPlanningBridgeServer
 from runner.thin_governed_loop import (
     BASELINE_ANCHOR_READY,
     MASTER_ANCHOR_VERIFIED,
@@ -23,6 +24,651 @@ from runner.thin_governed_loop import (
 
 
 class ThinGovernedLoopTests(unittest.TestCase):
+    def _product_draft(
+        self,
+        *,
+        goal: str = "Add one bounded project status summary field.",
+        allowed_files: list[str] | None = None,
+        forbidden_files: list[str] | None = None,
+    ) -> tuple[MCPPlanningBridgeServer, dict]:
+        project_root = str(Path(__file__).resolve().parents[1])
+        server = MCPPlanningBridgeServer(project_root)
+        output = server._tool_run_mcp_workflow(
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "input_mode": "draft",
+                "draft_seed": {
+                    "goal": goal,
+                    "task_tier": "M1",
+                    "allowed_files": allowed_files
+                    if allowed_files is not None
+                    else [
+                        "runner/thin_governed_loop.py",
+                        "tests/test_thin_governed_loop.py",
+                    ],
+                    "forbidden_files": forbidden_files
+                    if forbidden_files is not None
+                    else [".colameta/plan.json", ".colameta/state.json"],
+                    "context_files": ["runner/thin_governed_loop.py"],
+                    "validation_commands": [
+                        "python -m pytest tests/test_thin_governed_loop.py -q",
+                        "git diff --check",
+                    ],
+                },
+            }
+        )
+        return server, output
+
+    @staticmethod
+    def _passing_receipt(*, changed_files: list[str] | None = None) -> dict:
+        return {
+            "result": "PASS",
+            "changed_files": changed_files or ["runner/thin_governed_loop.py"],
+            "validation": [
+                {
+                    "command": "python -m pytest tests/test_thin_governed_loop.py -q",
+                    "result": "PASS",
+                },
+                {"command": "git diff --check", "result": "PASS"},
+            ],
+            "risk": "none",
+            "continuation": "COMPLETED",
+        }
+
+    @staticmethod
+    def _product_followup(
+        server: MCPPlanningBridgeServer,
+        thin_loop_id: str,
+        *,
+        execution_receipt: dict | None = None,
+        execution_binding_id: str | None = None,
+        review: dict | None = None,
+        review_binding_id: str | None = None,
+    ) -> dict:
+        product_inputs: dict = {"thin_loop_id": thin_loop_id}
+        if execution_receipt is not None:
+            product_inputs["execution_receipt"] = execution_receipt
+            product_inputs["execution_binding_id"] = execution_binding_id
+        if review is not None:
+            product_inputs["review"] = review
+            product_inputs["review_binding_id"] = review_binding_id
+        return server._tool_run_mcp_workflow(
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "thin_loop_inputs": product_inputs,
+            }
+        )
+
+    def test_product_draft_returns_opaque_bound_session_without_fake_authority(self) -> None:
+        server, output = self._product_draft()
+
+        assert output["ok"] is True
+        product = output["result"]
+        loop = product["thin_loop"]
+        assert loop["status"] == "READY_FOR_EXECUTION"
+        assert loop["id"].startswith("tlp_")
+        assert len(loop["id"]) > 24
+        assert loop["project_name"] == "colameta-self-dev"
+        assert loop["head"] == product["codex_execution_packet"]["current_head"]
+        assert loop["execution_completed"] is False
+        assert loop["review_completed"] is False
+        assert product["next_action"]["type"] == "EXECUTE_WITH_CODEX"
+        assert product["codex_execution_packet"]["packet_status"] == "ready"
+        assert product["codex_execution_packet"]["execution_binding_id"].startswith("tle_")
+        assert "generated_input_bundle" not in product
+        assert product["authority_boundary"] == {
+            "delivery_state_written": False,
+            "review_decision_written": False,
+            "gate_event_emitted": False,
+            "commit": False,
+            "push": False,
+        }
+        schema = next(
+            item.input_schema for item in server.tool_defs if item.name == "run_mcp_workflow"
+        )
+        assert "thin_loop_inputs" in schema["properties"]
+
+    def test_product_blocked_drafts_return_blockers_without_execution_continuation(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        cases = (
+            ({}, {"allowed_files_required", "validation_commands_required"}),
+            (
+                {
+                    "goal": "Update a bounded status field.",
+                    "validation_commands": ["git diff --check"],
+                },
+                {"allowed_files_required"},
+            ),
+            (
+                {
+                    "goal": "Update a bounded status field.",
+                    "allowed_files": ["runner/thin_governed_loop.py"],
+                },
+                {"validation_commands_required"},
+            ),
+        )
+
+        for draft_seed, expected_blockers in cases:
+            with self.subTest(draft_seed=draft_seed):
+                output = MCPPlanningBridgeServer(project_root)._tool_run_mcp_workflow(
+                    {
+                        "workflow": "thin_governed_loop_preview",
+                        "phase": "preview",
+                        "input_mode": "draft",
+                        "draft_seed": draft_seed,
+                    }
+                )
+
+                assert output["ok"] is False
+                assert output["status"] == "blocked"
+                assert "error_code" not in output
+                product = output["result"]
+                assert product["thin_loop"]["status"] == "BLOCKED"
+                assert product["next_action"]["type"] == "STOP"
+                assert {item["code"] for item in product["blockers"]} == expected_blockers
+                assert "codex_execution_packet" not in product
+                assert "next_request_payload" not in product
+                assert "copy_paste_next_request" not in product
+
+    def test_product_receipt_intake_returns_reviewer_handoff(self) -> None:
+        server, draft = self._product_draft()
+        thin_loop_id = draft["result"]["thin_loop"]["id"]
+
+        output = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=self._passing_receipt(),
+            execution_binding_id=draft["result"]["execution_packet"]["execution_binding_id"],
+        )
+
+        assert output["ok"] is True
+        product = output["result"]
+        assert product["thin_loop"]["status"] == "READY_FOR_REVIEW"
+        assert product["thin_loop"]["execution_completed"] is True
+        assert product["thin_loop"]["review_completed"] is False
+        assert product["next_action"]["type"] == "REVIEW"
+        assert product["review_packet"]["changed_files"] == ["runner/thin_governed_loop.py"]
+        assert product["review_packet"]["review_binding_id"].startswith("tlr_")
+
+    def test_product_receipt_fails_closed_for_forbidden_file(self) -> None:
+        server, draft = self._product_draft()
+        thin_loop_id = draft["result"]["thin_loop"]["id"]
+
+        output = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=self._passing_receipt(
+                changed_files=[".colameta/plan.json"]
+            ),
+            execution_binding_id=draft["result"]["execution_packet"]["execution_binding_id"],
+        )
+
+        assert output["ok"] is False
+        assert output["result"]["thin_loop"]["status"] == "BLOCKED"
+        assert output["result"]["blockers"] == [
+            {"code": "thin_loop_forbidden_file_touched", "path": ".colameta/plan.json"}
+        ]
+        assert output["result"]["next_action"]["type"] == "STOP"
+
+    def test_product_receipt_rejects_malformed_changed_file_entries_without_advancing(self) -> None:
+        malformed_values = (
+            [{"path": ".colameta/plan.json"}],
+            ["runner/thin_governed_loop.py", {"path": ".colameta/plan.json"}],
+            [None],
+            [123],
+            [{}],
+            [[]],
+            [""],
+            ["   "],
+            None,
+        )
+
+        for changed_files in malformed_values:
+            with self.subTest(changed_files=changed_files):
+                server, draft = self._product_draft()
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                receipt = self._passing_receipt()
+                receipt["changed_files"] = changed_files
+
+                output = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=receipt,
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is False
+                product = output["result"]
+                assert product["thin_loop"]["status"] == "BLOCKED"
+                assert product["thin_loop"]["state_advanced"] is False
+                assert product["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+                assert product["blockers"] == [
+                    {"code": "thin_loop_changed_files_invalid"}
+                ]
+                inspected = self._product_followup(server, thin_loop_id)
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+                assert inspected["result"]["thin_loop"]["execution_completed"] is False
+
+    def test_product_receipt_canonicalizes_paths_before_forbidden_policy(self) -> None:
+        aliases = (
+            ("./.colameta/plan.json", ".colameta/plan.json"),
+            (".colameta/./plan.json", "./.colameta/plan.json"),
+            (".colameta//plan.json", ".colameta/./plan.json"),
+        )
+
+        for changed_file_alias, forbidden_alias in aliases:
+            with self.subTest(
+                changed_file_alias=changed_file_alias,
+                forbidden_alias=forbidden_alias,
+            ):
+                server, draft = self._product_draft(
+                    allowed_files=["."],
+                    forbidden_files=[forbidden_alias],
+                )
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                output = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=self._passing_receipt(
+                        changed_files=[changed_file_alias]
+                    ),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is False
+                product = output["result"]
+                assert product["thin_loop"]["status"] == "BLOCKED"
+                assert product["thin_loop"]["state_advanced"] is False
+                assert product["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+                assert product["blockers"] == [
+                    {
+                        "code": "thin_loop_forbidden_file_touched",
+                        "path": ".colameta/plan.json",
+                    }
+                ]
+                inspected = self._product_followup(server, thin_loop_id)
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+                assert inspected["result"]["thin_loop"]["execution_completed"] is False
+
+    def test_product_receipt_canonicalizes_allowed_path_aliases(self) -> None:
+        aliases = (
+            ("runner/./thin_governed_loop.py", "./runner//thin_governed_loop.py"),
+            ("runner//thin_governed_loop.py", "runner/./thin_governed_loop.py"),
+        )
+
+        for changed_file_alias, allowed_alias in aliases:
+            with self.subTest(
+                changed_file_alias=changed_file_alias,
+                allowed_alias=allowed_alias,
+            ):
+                server, draft = self._product_draft(allowed_files=[allowed_alias])
+                output = self._product_followup(
+                    server,
+                    draft["result"]["thin_loop"]["id"],
+                    execution_receipt=self._passing_receipt(
+                        changed_files=[changed_file_alias]
+                    ),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is True
+                assert output["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
+                assert output["result"]["review_packet"]["changed_files"] == [
+                    "runner/thin_governed_loop.py"
+                ]
+
+    def test_product_receipt_rejects_traversal_without_advancing(self) -> None:
+        for path in ("../runner/file.py", "runner/../.colameta/plan.json"):
+            with self.subTest(path=path):
+                server, draft = self._product_draft(allowed_files=["."])
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                output = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=self._passing_receipt(changed_files=[path]),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is False
+                product = output["result"]
+                assert product["thin_loop"]["state_advanced"] is False
+                assert product["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+                assert product["blockers"] == [
+                    {"code": "thin_loop_changed_file_invalid", "path": path}
+                ]
+                inspected = self._product_followup(server, thin_loop_id)
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+
+    def test_product_receipt_preserves_root_allowed_file_behavior(self) -> None:
+        server, draft = self._product_draft(
+            allowed_files=["."],
+            forbidden_files=[".colameta/plan.json"],
+        )
+        output = self._product_followup(
+            server,
+            draft["result"]["thin_loop"]["id"],
+            execution_receipt=self._passing_receipt(
+                changed_files=["runner/thin_governed_loop.py"]
+            ),
+            execution_binding_id=draft["result"]["execution_packet"][
+                "execution_binding_id"
+            ],
+        )
+
+        assert output["ok"] is True
+        assert output["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
+
+    def test_product_draft_rebinds_packet_head_to_verified_repository_head(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        server = MCPPlanningBridgeServer(project_root)
+        output = server._tool_run_mcp_workflow(
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "input_mode": "draft",
+                "current_head": "f" * 40,
+                "draft_seed": {
+                    "goal": "Update a bounded status field.",
+                    "task_tier": "M1",
+                    "allowed_files": ["runner/thin_governed_loop.py"],
+                    "forbidden_files": [".colameta/plan.json"],
+                    "context_files": ["runner/thin_governed_loop.py"],
+                    "validation_commands": ["git diff --check"],
+                },
+            }
+        )
+
+        assert output["ok"] is True
+        product = output["result"]
+        verified_head = product["thin_loop"]["head"]
+        assert verified_head != "f" * 40
+        assert product["codex_execution_packet"]["current_head"] == verified_head
+        assert product["advanced_evidence"]["context_bound"] is True
+
+        receipt = {
+            "result": "PASS",
+            "changed_files": ["runner/thin_governed_loop.py"],
+            "validation": [{"command": "git diff --check", "result": "PASS"}],
+            "risk": "none",
+            "continuation": "COMPLETED",
+        }
+        accepted = self._product_followup(
+            server,
+            product["thin_loop"]["id"],
+            execution_receipt=receipt,
+            execution_binding_id=product["execution_packet"]["execution_binding_id"],
+        )
+        assert accepted["ok"] is True
+        assert accepted["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
+
+    def test_product_receipt_fails_closed_on_head_drift(self) -> None:
+        server, draft = self._product_draft()
+        thin_loop_id = draft["result"]["thin_loop"]["id"]
+        bound_branch = draft["result"]["thin_loop"]["branch"]
+
+        with patch(
+            "runner.mcp_server.build_project_identity",
+            return_value={
+                "project_name": "colameta-self-dev",
+                "git_branch": bound_branch,
+                "git_head": "f" * 40,
+            },
+        ):
+            output = self._product_followup(
+                server,
+                thin_loop_id,
+                execution_receipt=self._passing_receipt(),
+                execution_binding_id=draft["result"]["execution_packet"]["execution_binding_id"],
+            )
+
+        assert output["ok"] is False
+        assert output["error_code"] == "thin_loop_head_mismatch"
+        assert output["result"]["thin_loop"]["status"] == "BLOCKED"
+
+    def test_product_receipt_cannot_replace_packet_validation_with_arbitrary_pass(self) -> None:
+        server, draft = self._product_draft()
+        thin_loop_id = draft["result"]["thin_loop"]["id"]
+        receipt = self._passing_receipt()
+        receipt["validation"] = [
+            {"command": "true", "result": "PASS"},
+        ]
+
+        output = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=receipt,
+            execution_binding_id=draft["result"]["execution_packet"]["execution_binding_id"],
+        )
+
+        assert output["ok"] is False
+        assert output["result"]["thin_loop"]["status"] == "BLOCKED"
+        assert output["result"]["blockers"] == [
+            {
+                "code": "thin_loop_validation_command_missing",
+                "commands": [
+                    "python -m pytest tests/test_thin_governed_loop.py -q",
+                    "git diff --check",
+                ],
+            }
+        ]
+
+    def test_product_review_decisions_have_deterministic_non_authoritative_routes(self) -> None:
+        expected = {
+            "ACCEPT": ("READY_FOR_DELIVERY_GATE", "PREPARE_DELIVERY_GATE"),
+            "NEEDS_FIX": ("REVIEW_NEEDS_FIX", "EXECUTE_REWORK"),
+            "PLAN_ADJUST": ("READY_FOR_PLAN_ADJUST", "PREVIEW_PLAN_ADJUST"),
+            "ABORT": ("ABORTED", "STOP"),
+        }
+        plan_path = Path(__file__).resolve().parents[1] / ".colameta" / "plan.json"
+        state_path = Path(__file__).resolve().parents[1] / ".colameta" / "state.json"
+        plan_before = plan_path.read_bytes() if plan_path.exists() else None
+        state_before = state_path.read_bytes() if state_path.exists() else None
+
+        for decision, (status, next_action) in expected.items():
+            with self.subTest(decision=decision):
+                server, draft = self._product_draft()
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                receipt = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=self._passing_receipt(),
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+                assert receipt["ok"] is True
+                reviewed = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    review={"decision": decision, "notes": "Stay within the original scope."},
+                    review_binding_id=receipt["result"]["review_packet"]["review_binding_id"],
+                )
+                product = reviewed["result"]
+                assert product["thin_loop"]["status"] == status
+                assert product["next_action"]["type"] == next_action
+                assert all(value is False for value in product["authority_boundary"].values())
+                if decision == "NEEDS_FIX":
+                    assert product["decision_result"] == "READY_FOR_REWORK"
+                    assert product["execution_packet"]["scope"] == draft["result"]["execution_packet"]["scope"]
+                    assert product["execution_packet"]["review_feedback"]["scope_expansion_authorized"] is False
+                    assert (
+                        product["execution_packet"]["execution_binding_id"]
+                        != draft["result"]["execution_packet"]["execution_binding_id"]
+                    )
+                elif decision == "PLAN_ADJUST":
+                    assert product["stage_7_9_handoff"] == {
+                        "workflow": "stage_7_9_preview",
+                        "phase": "preview",
+                    }
+
+        assert (plan_path.read_bytes() if plan_path.exists() else None) == plan_before
+        assert (state_path.read_bytes() if state_path.exists() else None) == state_before
+
+    def test_product_execution_binding_rejects_cross_loop_receipt_without_advancing_target(self) -> None:
+        server_a, draft_a = self._product_draft(goal="Goal A")
+        server_b, draft_b = self._product_draft(goal="Goal B")
+        loop_b = draft_b["result"]["thin_loop"]["id"]
+
+        swapped = self._product_followup(
+            server_b,
+            loop_b,
+            execution_receipt=self._passing_receipt(),
+            execution_binding_id=draft_a["result"]["execution_packet"][
+                "execution_binding_id"
+            ],
+        )
+
+        assert server_a is not None
+        assert swapped["ok"] is False
+        assert swapped["result"]["thin_loop"]["status"] == "BLOCKED"
+        assert swapped["result"]["thin_loop"]["state_advanced"] is False
+        assert swapped["result"]["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+        inspected = self._product_followup(server_b, loop_b)
+        assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+        assert inspected["result"]["thin_loop"]["execution_completed"] is False
+
+    def test_product_review_binding_rejects_every_cross_loop_decision(self) -> None:
+        for decision in ("ACCEPT", "NEEDS_FIX", "PLAN_ADJUST", "ABORT"):
+            with self.subTest(decision=decision):
+                server_a, draft_a = self._product_draft(goal=f"Goal A {decision}")
+                server_b, draft_b = self._product_draft(goal=f"Goal B {decision}")
+                receipt_a = self._product_followup(
+                    server_a,
+                    draft_a["result"]["thin_loop"]["id"],
+                    execution_receipt=self._passing_receipt(),
+                    execution_binding_id=draft_a["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+                receipt_b = self._product_followup(
+                    server_b,
+                    draft_b["result"]["thin_loop"]["id"],
+                    execution_receipt=self._passing_receipt(),
+                    execution_binding_id=draft_b["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                swapped = self._product_followup(
+                    server_b,
+                    draft_b["result"]["thin_loop"]["id"],
+                    review={"decision": decision, "notes": "Review for A"},
+                    review_binding_id=receipt_a["result"]["review_packet"]["review_binding_id"],
+                )
+
+                assert swapped["ok"] is False
+                assert swapped["result"]["thin_loop"]["status"] == "BLOCKED"
+                assert swapped["result"]["thin_loop"]["state_advanced"] is False
+                assert swapped["result"]["thin_loop"]["bound_session_status"] == "READY_FOR_REVIEW"
+                inspected = self._product_followup(
+                    server_b,
+                    draft_b["result"]["thin_loop"]["id"],
+                )
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
+                assert receipt_b["result"]["review_packet"]["review_binding_id"] != (
+                    receipt_a["result"]["review_packet"]["review_binding_id"]
+                )
+
+    def test_product_transition_bindings_are_consumed_and_replay_safe(self) -> None:
+        server, draft = self._product_draft()
+        thin_loop_id = draft["result"]["thin_loop"]["id"]
+        execution_binding_id = draft["result"]["execution_packet"]["execution_binding_id"]
+        receipt = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=self._passing_receipt(),
+            execution_binding_id=execution_binding_id,
+        )
+
+        receipt_replay = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=self._passing_receipt(),
+            execution_binding_id=execution_binding_id,
+        )
+        assert receipt_replay["ok"] is False
+        assert receipt_replay["result"]["thin_loop"]["bound_session_status"] == "READY_FOR_REVIEW"
+
+        review_binding_id = receipt["result"]["review_packet"]["review_binding_id"]
+        accepted = self._product_followup(
+            server,
+            thin_loop_id,
+            review={"decision": "ACCEPT", "notes": "Accepted once."},
+            review_binding_id=review_binding_id,
+        )
+        assert accepted["result"]["thin_loop"]["status"] == "READY_FOR_DELIVERY_GATE"
+
+        review_replay = self._product_followup(
+            server,
+            thin_loop_id,
+            review={"decision": "ABORT", "notes": "Must not replay."},
+            review_binding_id=review_binding_id,
+        )
+        assert review_replay["ok"] is False
+        assert review_replay["result"]["thin_loop"]["bound_session_status"] == (
+            "READY_FOR_DELIVERY_GATE"
+        )
+
+    def test_product_needs_fix_rotates_binding_and_accepts_one_rework_receipt(self) -> None:
+        server, draft = self._product_draft()
+        thin_loop_id = draft["result"]["thin_loop"]["id"]
+        initial_binding = draft["result"]["execution_packet"]["execution_binding_id"]
+        receipt = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=self._passing_receipt(),
+            execution_binding_id=initial_binding,
+        )
+        rework = self._product_followup(
+            server,
+            thin_loop_id,
+            review={"decision": "NEEDS_FIX", "notes": "Fix within scope."},
+            review_binding_id=receipt["result"]["review_packet"]["review_binding_id"],
+        )
+        rework_binding = rework["result"]["execution_packet"]["execution_binding_id"]
+
+        assert rework["result"]["thin_loop"]["status"] == "REVIEW_NEEDS_FIX"
+        assert rework_binding != initial_binding
+        rework_receipt = self._product_followup(
+            server,
+            thin_loop_id,
+            execution_receipt=self._passing_receipt(),
+            execution_binding_id=rework_binding,
+        )
+        assert rework_receipt["ok"] is True
+        assert rework_receipt["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
+
+    def test_product_surface_keeps_exactly_nine_commander_tools(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        server = MCPPlanningBridgeServer(project_root, exposure_profile="commander")
+        response = server._handle_jsonrpc_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            auth_context=None,
+        )
+        names = [item["name"] for item in response["result"]["tools"]]
+
+        assert names == [
+            "list_registered_projects",
+            "get_apps_connector_smoke_packet",
+            "render_commander_app",
+            "analyze_project_state",
+            "review_manifest",
+            "read_result_artifact",
+            "run_mcp_workflow",
+            "manage_validation_run",
+            "manage_git",
+        ]
+
     def test_stage_0_2_anchors_verify_repository_master_and_stage_bindings(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 

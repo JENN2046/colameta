@@ -97,6 +97,11 @@ from runner.mcp_tool_catalog import (
     build_mcp_tool_definitions,
 )
 from runner.mcp_validation_run import MCPValidationRunManager
+from runner.thin_governed_loop import (
+    BLOCKED as THIN_LOOP_PRODUCT_BLOCKED,
+    READY_FOR_EXECUTION as THIN_LOOP_PRODUCT_READY_FOR_EXECUTION,
+    THIN_LOOP_PRODUCT_SESSIONS,
+)
 from runner.mcp_private_operator import (
     OPERATOR_DISPATCH_CAPABILITY,
     OperatorBatchService,
@@ -9904,7 +9909,231 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         return self._workflow_compatibility_result("handle_result_artifact", params)
 
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._workflow_compatibility_result("handle_run_mcp_workflow", params)
+        workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+        product_inputs = params.get("thin_loop_inputs")
+        if not isinstance(product_inputs, dict):
+            product_inputs = {}
+        thin_loop_id_param = params.get("thin_loop_id") or product_inputs.get("thin_loop_id")
+        execution_binding_id_param = (
+            params.get("execution_binding_id")
+            or product_inputs.get("execution_binding_id")
+        )
+        review_binding_id_param = (
+            params.get("review_binding_id")
+            or product_inputs.get("review_binding_id")
+        )
+        execution_receipt_param = (
+            params.get("execution_receipt")
+            if params.get("execution_receipt") is not None
+            else product_inputs.get("execution_receipt")
+        )
+        review_param = (
+            params.get("review")
+            if params.get("review") is not None
+            else product_inputs.get("review")
+        )
+        product_request = workflow == "thin_governed_loop_preview" and (
+            str(params.get("input_mode") or "").strip().lower() == "draft"
+            or thin_loop_id_param is not None
+            or execution_receipt_param is not None
+            or review_param is not None
+        )
+        if not product_request:
+            return self._workflow_compatibility_result("handle_run_mcp_workflow", params)
+
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool(
+                "run_mcp_workflow",
+                params,
+                require_managed=True,
+            )
+
+        identity = build_project_identity(self.project_root)
+        project_name = str(
+            params.get("__context_binding_project_name")
+            or identity.get("project_name")
+            or ""
+        )
+        branch = str(identity.get("git_branch") or "")
+        head = str(identity.get("git_head") or "")
+        thin_loop_id = thin_loop_id_param
+
+        try:
+            if isinstance(thin_loop_id, str) and thin_loop_id:
+                execution_receipt = execution_receipt_param
+                review = review_param
+                if execution_receipt is not None and review is not None:
+                    return self._thin_loop_product_error(
+                        "THIN_LOOP_INPUT_AMBIGUOUS",
+                        "Submit execution_receipt or review, not both.",
+                    )
+                if execution_receipt is not None:
+                    projection = THIN_LOOP_PRODUCT_SESSIONS.submit_execution_receipt(
+                        thin_loop_id,
+                        execution_receipt,
+                        execution_binding_id=execution_binding_id_param,
+                        project_name=project_name,
+                        branch=branch,
+                        head=head,
+                    )
+                elif review is not None:
+                    projection = THIN_LOOP_PRODUCT_SESSIONS.submit_review(
+                        thin_loop_id,
+                        review,
+                        review_binding_id=review_binding_id_param,
+                        project_name=project_name,
+                        branch=branch,
+                        head=head,
+                    )
+                else:
+                    projection = THIN_LOOP_PRODUCT_SESSIONS.inspect(
+                        thin_loop_id,
+                        project_name=project_name,
+                        branch=branch,
+                        head=head,
+                    )
+                return self._thin_loop_product_result(projection)
+
+            result = self._workflow_compatibility_result("handle_run_mcp_workflow", params)
+            payload = result.get("result") if isinstance(result, dict) else None
+            if not isinstance(payload, dict):
+                return result
+            bundle = payload.get("generated_input_bundle")
+            packet = payload.get("codex_execution_packet")
+            if not isinstance(bundle, dict) or not isinstance(packet, dict):
+                return self._thin_loop_product_error(
+                    "THIN_LOOP_DRAFT_PROJECTION_UNAVAILABLE",
+                    "The existing Stage 0-6 draft did not produce a bounded execution packet.",
+                )
+            goal = str(packet.get("objective") or "").strip()
+            projection = THIN_LOOP_PRODUCT_SESSIONS.create(
+                project_name=project_name,
+                branch=branch,
+                head=head,
+                goal=goal,
+                generated_input_bundle=bundle,
+                execution_packet=packet,
+            )
+            if (
+                projection["thin_loop"]["status"]
+                != THIN_LOOP_PRODUCT_READY_FOR_EXECUTION
+            ):
+                return self._thin_loop_product_result(projection)
+            receipt_request = {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "project_name": project_name,
+                "thin_loop_inputs": {
+                    "thin_loop_id": projection["thin_loop"]["id"],
+                    "execution_binding_id": projection["codex_execution_packet"][
+                        "execution_binding_id"
+                    ],
+                    "execution_receipt": {
+                        "result": "<PASS|BLOCKED>",
+                        "changed_files": [],
+                        "validation": [],
+                        "risk": "<remaining risk or none>",
+                        "continuation": "<COMPLETED|BLOCKED_NEEDS_USER>",
+                    },
+                },
+            }
+            compact_payload = {
+                "ok": projection["thin_loop"]["status"] != THIN_LOOP_PRODUCT_BLOCKED,
+                "read_only": True,
+                "side_effects": False,
+                **projection,
+                "next_request_payload": receipt_request,
+                "copy_paste_next_request": receipt_request,
+                "generated_input_bundle_summary": {
+                    "bundle_kind": "server_bound_thin_loop_session",
+                    "reusable_as": "thin_loop_id",
+                    "next_request_shape": receipt_request,
+                    "internal_governance_objects_exposed": False,
+                },
+            }
+            result["result"] = compact_payload
+            result["status"] = (
+                "blocked"
+                if projection["thin_loop"]["status"] == THIN_LOOP_PRODUCT_BLOCKED
+                else "succeeded"
+            )
+            result["ok"] = result["status"] == "succeeded"
+            result["blockers"] = [
+                str(item.get("code") or "thin_loop_blocked")
+                for item in projection.get("blockers", [])
+                if isinstance(item, dict)
+            ]
+            return result
+        except ValueError as exc:
+            return self._thin_loop_product_error(str(exc), "Thin-loop context or handle validation failed.")
+
+    @staticmethod
+    def _thin_loop_product_result(projection: dict[str, Any]) -> dict[str, Any]:
+        blocked = projection["thin_loop"]["status"] == THIN_LOOP_PRODUCT_BLOCKED
+        blocker_codes = [
+            str(item.get("code") or "thin_loop_blocked")
+            for item in projection.get("blockers", [])
+            if isinstance(item, dict)
+        ]
+        return {
+            "ok": not blocked,
+            "source": "core_orchestrator",
+            "action": "thin_governed_loop_preview",
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "status": "blocked" if blocked else "succeeded",
+            "risk_level": "info",
+            "result": {
+                "ok": not blocked,
+                "read_only": True,
+                "side_effects": False,
+                **projection,
+            },
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": blocker_codes,
+            "warnings": [],
+        }
+
+    @staticmethod
+    def _thin_loop_product_error(error_code: str, message: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "core_orchestrator",
+            "action": "thin_governed_loop_preview",
+            "workflow": "thin_governed_loop_preview",
+            "phase": "preview",
+            "status": "blocked",
+            "risk_level": "blocked",
+            "error_code": error_code,
+            "message": message,
+            "result": {
+                "ok": False,
+                "read_only": True,
+                "side_effects": False,
+                "thin_loop": {"status": THIN_LOOP_PRODUCT_BLOCKED},
+                "next_action": {"type": "STOP", "reason": message},
+                "blockers": [{"code": error_code}],
+                "authority_boundary": {
+                    "delivery_state_written": False,
+                    "review_decision_written": False,
+                    "gate_event_emitted": False,
+                    "commit": False,
+                    "push": False,
+                },
+            },
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": [error_code],
+            "warnings": [],
+        }
+
 
     def _tool_list_workflow_runs(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("project_name") is not None:
