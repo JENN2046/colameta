@@ -99,6 +99,7 @@ from runner.mcp_tool_catalog import (
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.thin_governed_loop import (
     BLOCKED as THIN_LOOP_PRODUCT_BLOCKED,
+    READY_FOR_EXECUTION as THIN_LOOP_PRODUCT_READY_FOR_EXECUTION,
     THIN_LOOP_PRODUCT_SESSIONS,
 )
 from runner.mcp_private_operator import (
@@ -10013,6 +10014,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 generated_input_bundle=bundle,
                 execution_packet=packet,
             )
+            if (
+                projection["thin_loop"]["status"]
+                != THIN_LOOP_PRODUCT_READY_FOR_EXECUTION
+            ):
+                return self._thin_loop_product_result(projection)
             receipt_request = {
                 "workflow": "thin_governed_loop_preview",
                 "phase": "preview",

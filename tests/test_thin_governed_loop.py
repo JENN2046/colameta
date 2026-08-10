@@ -124,6 +124,48 @@ class ThinGovernedLoopTests(unittest.TestCase):
         )
         assert "thin_loop_inputs" in schema["properties"]
 
+    def test_product_blocked_drafts_return_blockers_without_execution_continuation(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        cases = (
+            ({}, {"allowed_files_required", "validation_commands_required"}),
+            (
+                {
+                    "goal": "Update a bounded status field.",
+                    "validation_commands": ["git diff --check"],
+                },
+                {"allowed_files_required"},
+            ),
+            (
+                {
+                    "goal": "Update a bounded status field.",
+                    "allowed_files": ["runner/thin_governed_loop.py"],
+                },
+                {"validation_commands_required"},
+            ),
+        )
+
+        for draft_seed, expected_blockers in cases:
+            with self.subTest(draft_seed=draft_seed):
+                output = MCPPlanningBridgeServer(project_root)._tool_run_mcp_workflow(
+                    {
+                        "workflow": "thin_governed_loop_preview",
+                        "phase": "preview",
+                        "input_mode": "draft",
+                        "draft_seed": draft_seed,
+                    }
+                )
+
+                assert output["ok"] is False
+                assert output["status"] == "blocked"
+                assert "error_code" not in output
+                product = output["result"]
+                assert product["thin_loop"]["status"] == "BLOCKED"
+                assert product["next_action"]["type"] == "STOP"
+                assert {item["code"] for item in product["blockers"]} == expected_blockers
+                assert "codex_execution_packet" not in product
+                assert "next_request_payload" not in product
+                assert "copy_paste_next_request" not in product
+
     def test_product_receipt_intake_returns_reviewer_handoff(self) -> None:
         server, draft = self._product_draft()
         thin_loop_id = draft["result"]["thin_loop"]["id"]
@@ -163,6 +205,90 @@ class ThinGovernedLoopTests(unittest.TestCase):
             {"code": "thin_loop_forbidden_file_touched", "path": ".colameta/plan.json"}
         ]
         assert output["result"]["next_action"]["type"] == "STOP"
+
+    def test_product_receipt_rejects_malformed_changed_file_entries_without_advancing(self) -> None:
+        malformed_values = (
+            [{"path": ".colameta/plan.json"}],
+            ["runner/thin_governed_loop.py", {"path": ".colameta/plan.json"}],
+            [None],
+            [123],
+            [{}],
+            [[]],
+            [""],
+            ["   "],
+            None,
+        )
+
+        for changed_files in malformed_values:
+            with self.subTest(changed_files=changed_files):
+                server, draft = self._product_draft()
+                thin_loop_id = draft["result"]["thin_loop"]["id"]
+                receipt = self._passing_receipt()
+                receipt["changed_files"] = changed_files
+
+                output = self._product_followup(
+                    server,
+                    thin_loop_id,
+                    execution_receipt=receipt,
+                    execution_binding_id=draft["result"]["execution_packet"][
+                        "execution_binding_id"
+                    ],
+                )
+
+                assert output["ok"] is False
+                product = output["result"]
+                assert product["thin_loop"]["status"] == "BLOCKED"
+                assert product["thin_loop"]["state_advanced"] is False
+                assert product["thin_loop"]["bound_session_status"] == "READY_FOR_EXECUTION"
+                assert product["blockers"] == [
+                    {"code": "thin_loop_changed_files_invalid"}
+                ]
+                inspected = self._product_followup(server, thin_loop_id)
+                assert inspected["result"]["thin_loop"]["status"] == "READY_FOR_EXECUTION"
+                assert inspected["result"]["thin_loop"]["execution_completed"] is False
+
+    def test_product_draft_rebinds_packet_head_to_verified_repository_head(self) -> None:
+        project_root = str(Path(__file__).resolve().parents[1])
+        server = MCPPlanningBridgeServer(project_root)
+        output = server._tool_run_mcp_workflow(
+            {
+                "workflow": "thin_governed_loop_preview",
+                "phase": "preview",
+                "input_mode": "draft",
+                "current_head": "f" * 40,
+                "draft_seed": {
+                    "goal": "Update a bounded status field.",
+                    "task_tier": "M1",
+                    "allowed_files": ["runner/thin_governed_loop.py"],
+                    "forbidden_files": [".colameta/plan.json"],
+                    "context_files": ["runner/thin_governed_loop.py"],
+                    "validation_commands": ["git diff --check"],
+                },
+            }
+        )
+
+        assert output["ok"] is True
+        product = output["result"]
+        verified_head = product["thin_loop"]["head"]
+        assert verified_head != "f" * 40
+        assert product["codex_execution_packet"]["current_head"] == verified_head
+        assert product["advanced_evidence"]["context_bound"] is True
+
+        receipt = {
+            "result": "PASS",
+            "changed_files": ["runner/thin_governed_loop.py"],
+            "validation": [{"command": "git diff --check", "result": "PASS"}],
+            "risk": "none",
+            "continuation": "COMPLETED",
+        }
+        accepted = self._product_followup(
+            server,
+            product["thin_loop"]["id"],
+            execution_receipt=receipt,
+            execution_binding_id=product["execution_packet"]["execution_binding_id"],
+        )
+        assert accepted["ok"] is True
+        assert accepted["result"]["thin_loop"]["status"] == "READY_FOR_REVIEW"
 
     def test_product_receipt_fails_closed_on_head_drift(self) -> None:
         server, draft = self._product_draft()

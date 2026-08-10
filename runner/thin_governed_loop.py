@@ -136,6 +136,7 @@ class ThinLoopProductSessionStore:
         now = time.time()
         thin_loop_id = f"tlp_{secrets.token_urlsafe(24)}"
         execution_packet = dict(execution_packet)
+        execution_packet["current_head"] = head
         packet_ready = execution_packet.get("packet_status") == "ready"
         execution_binding_id = self._new_binding_id("tle") if packet_ready else None
         if execution_binding_id is not None:
@@ -201,6 +202,12 @@ class ThinLoopProductSessionStore:
                 return self._reject_transition(session, "thin_loop_continuation_binding_mismatch")
             if session["status"] not in {READY_FOR_EXECUTION, REVIEW_NEEDS_FIX}:
                 return self._reject_transition(session, "thin_loop_receipt_not_expected")
+            if (
+                isinstance(receipt, dict)
+                and "changed_files" in receipt
+                and not self._changed_files_are_valid(receipt["changed_files"])
+            ):
+                return self._reject_transition(session, "thin_loop_changed_files_invalid")
 
             blockers = self._receipt_blockers(session, receipt)
             if blockers:
@@ -430,6 +437,12 @@ class ThinLoopProductSessionStore:
         if not isinstance(value, list):
             return []
         return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    @staticmethod
+    def _changed_files_are_valid(value: Any) -> bool:
+        return isinstance(value, list) and all(
+            isinstance(item, str) and bool(item.strip()) for item in value
+        )
 
     def _block(self, session: dict[str, Any], code: str) -> dict[str, Any]:
         session["status"] = BLOCKED
