@@ -34,6 +34,7 @@ from runner.project_registry import ProjectRegistry
 from runner.execution_standards import get_execution_standards
 from runner.plan_standards_linter import PlanStandardsLinter
 from runner.mcp_git_commit import MCPGitCommitManager
+from runner.mcp_git_branch import MCPGitBranchManager
 from runner.mcp_git_remote import MCPGitRemoteManager
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.mcp_decisions import MCPDecisionRecordsManager
@@ -868,11 +869,26 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
                         "mcp:read",
                     ),
                     **dict.fromkeys(
-                        ("commit_preview", "push_preview", "pull_preview", "restore_file_preview", "revert_preview"),
+                        (
+                            "topic_branch_preview",
+                            "commit_preview",
+                            "push_preview",
+                            "pull_preview",
+                            "restore_file_preview",
+                            "revert_preview",
+                        ),
                         "mcp:preview",
                     ),
                     **dict.fromkeys(
-                        ("commit_apply", "push_apply", "pull_apply", "fetch_apply", "restore_file_apply", "revert_apply"),
+                        (
+                            "topic_branch_apply",
+                            "commit_apply",
+                            "push_apply",
+                            "pull_apply",
+                            "fetch_apply",
+                            "restore_file_apply",
+                            "revert_apply",
+                        ),
                         "mcp:commit",
                     ),
                 },
@@ -7244,7 +7260,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if tool_name in {"manage_git", "manage_git_commit"}:
             action_raw = params.get("action")
             action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
-            if action in {
+            if action in {"topic_branch_preview", "topic_branch_apply"}:
+                intent = "git_topic_branch"
+            elif action in {
                 "commit_readiness",
                 "commit_message",
                 "commit_preview",
@@ -7312,6 +7330,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return action == "run"
         if tool_name == "manage_git":
             return action in {
+                "topic_branch_apply",
                 "commit_apply",
                 "push_apply",
                 "pull_apply",
@@ -7577,6 +7596,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
         apply_action = {
             "commit_preview": "commit_apply",
+            "topic_branch_preview": "topic_branch_apply",
             "push_preview": "push_apply",
             "pull_preview": "pull_apply",
             "restore_file_preview": "restore_file_apply",
@@ -7602,10 +7622,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             for item in actions
         ):
             return
+        apply_params = {"action": apply_action, "preview_id": preview_id.strip()}
+        preview_digest = result.get("preview_digest")
+        if isinstance(preview_digest, str) and preview_digest.strip():
+            apply_params["preview_digest"] = preview_digest.strip()
         actions.append(
             {
                 "tool": "manage_git",
-                "params": {"action": apply_action, "preview_id": preview_id.strip()},
+                "params": apply_params,
                 "reason": "确认并执行已生成的受控 Git preview。",
                 "requires_confirmation": True,
             }
@@ -7644,6 +7668,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
         all_actions = {
             "status", "diff", "review_context",
+            "topic_branch_preview", "topic_branch_apply",
             "commit_readiness", "commit_message", "commit_preview", "commit_apply",
             "push_status", "push_preview", "push_apply",
             "pull_status", "pull_preview", "pull_apply",
@@ -7716,6 +7741,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     delegate_params[key] = params[key]
             result = self._delegate_manage_git_commit(delegate_params, record=False)
             return record_and_return(result, "manage_git_commit")
+
+        # --- topic branch admission -> bounded branch preview/apply ---
+        if action in {"topic_branch_preview", "topic_branch_apply"}:
+            if params.get("project_name") is not None:
+                return self._route_project_name_tool(
+                    "manage_git",
+                    params,
+                    require_managed=True,
+                )
+            result = self._delegate_manage_git_branch(action, params)
+            return record_and_return(result, "mcp_git_branch")
 
         # --- commit_message -> manage_git_commit suggest_commit_message ---
         if action == "commit_message":
@@ -7790,6 +7826,62 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "message": f"manage_git action '{action}' 暂无安全的路由目标，不自行创建新行为。",
             "action": action,
         }
+
+    def _delegate_manage_git_branch(
+        self,
+        action: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        manager = MCPGitBranchManager(self.project_root)
+        if action == "topic_branch_preview":
+            branch_name = params.get("branch_name")
+            return manager.topic_branch_preview(
+                branch_name if isinstance(branch_name, str) else ""
+            )
+
+        preview_id = params.get("preview_id")
+        preview_digest = params.get("preview_digest")
+        result = manager.topic_branch_apply(
+            preview_id if isinstance(preview_id, str) else "",
+            preview_digest if isinstance(preview_digest, str) else "",
+        )
+        if result.get("ok") is not True:
+            return result
+
+        next_action = (
+            "push_status"
+            if result.get("working_tree_clean") is True
+            else "commit_readiness"
+        )
+        intent = "git_push" if next_action == "push_status" else "git_commit"
+        project_name = self._context_binding_project_name(params)
+        binding = collect_project_context_binding(
+            self.project_root,
+            project_name=project_name,
+            review_unit=f"operation:{intent}",
+            workflow_intent=intent,
+        )
+        result["next_actions"] = [
+            {
+                "tool": "manage_git",
+                "params": {
+                    "action": next_action,
+                    **(
+                        {"project_name": project_name}
+                        if isinstance(project_name, str) and project_name
+                        else {}
+                    ),
+                    "context_binding": binding,
+                },
+                "reason": (
+                    "Inspect commit readiness on the new delivery topic branch."
+                    if next_action == "commit_readiness"
+                    else "Inspect push readiness on the clean delivery topic branch."
+                ),
+                "requires_confirmation": False,
+            }
+        ]
+        return result
 
     def _delegate_manage_git_commit(self, delegate_params: dict[str, Any], *, record: bool = True) -> dict[str, Any]:
         project_name = delegate_params.get("project_name")
@@ -10323,8 +10415,27 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         next_actions: list[dict[str, Any]] = []
         delivery_state = "DELIVERY_ACTION_REQUIRED"
         if branch_blocker is not None:
-            delivery_state = "BLOCKED"
-            blockers.append("delivery_topic_branch_required")
+            target_digest = hashlib.sha256(thin_loop_id.encode("utf-8")).hexdigest()[:12]
+            target_branch = f"codex/delivery-{target_digest}"
+            topic_context_binding = collect_project_context_binding(
+                self.project_root,
+                project_name=project_name,
+                review_unit="operation:git_topic_branch",
+                workflow_intent="git_topic_branch",
+            )
+            next_actions.append(
+                {
+                    "tool": "manage_git",
+                    "params": {
+                        "action": "topic_branch_preview",
+                        "branch_name": target_branch,
+                        "project_name": project_name,
+                        "context_binding": topic_context_binding,
+                    },
+                    "reason": "Preview creation of a delivery-safe topic branch.",
+                    "requires_confirmation": False,
+                }
+            )
         else:
             action = "push_status" if working_tree_clean else "commit_readiness"
             intent = "git_push" if working_tree_clean else "git_commit"

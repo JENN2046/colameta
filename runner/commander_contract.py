@@ -524,6 +524,7 @@ _STATUS_KEYS = (
 _MUTATING_GIT_ACTIONS = frozenset(
     {
         "commit_apply",
+        "topic_branch_apply",
         "pull_apply",
         "push_apply",
         "restore_file_apply",
@@ -2933,6 +2934,8 @@ def _default_confirmation_decision(
         decisions = {
             "commit_preview": "是否创建当前预览绑定的本地 Git commit",
             "commit_apply": "是否创建当前预览绑定的本地 Git commit",
+            "topic_branch_preview": "是否创建并切换到当前预览绑定的交付 topic branch",
+            "topic_branch_apply": "是否创建并切换到当前预览绑定的交付 topic branch",
             "push_preview": "是否推送当前预览绑定的 Git 分支",
             "push_apply": "是否推送当前预览绑定的 Git 分支",
             "pull_preview": "是否执行当前预览绑定的 Git pull",
@@ -2958,6 +2961,8 @@ def _default_confirmation_impact(
             return ["将执行受控 Git push。", "不会替换稳定服务或发布软件包。"]
         if action.startswith("pull_"):
             return ["将执行受控 Git pull。", "执行前会重新验证项目上下文。"]
+        if action.startswith("topic_branch_"):
+            return ["将创建并切换一个新的本地 Git branch。", "不会修改文件、commit 或 push。"]
         if action.startswith(("restore_file_", "revert_")):
             return ["将修改当前 Git 工作区或历史。", "不会执行 Git push。"]
         return ["将创建一个本地 Git commit。", "不会执行 Git push。"]

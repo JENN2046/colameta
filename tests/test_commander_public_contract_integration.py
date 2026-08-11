@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import subprocess
@@ -17,7 +18,7 @@ from runner.mcp_commander_public import (
     COMMANDER_EXPOSED_TOOLS,
     CommanderPublicProjector,
 )
-from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_server import MCPPlanningBridgeServer, THIN_LOOP_PRODUCT_SESSIONS
 from runner.project_context_binding import collect_project_context_binding
 from runner.project_registry import ProjectRegistry
 
@@ -1822,7 +1823,7 @@ def _delivery_test_server(
     [
         ("codex/p2-a1-dirty", True, "commit_readiness", "DELIVERY_ACTION_REQUIRED"),
         ("codex/p2-a1-clean", False, "push_status", "DELIVERY_ACTION_REQUIRED"),
-        ("main", False, None, "BLOCKED"),
+        ("main", False, "topic_branch_preview", "DELIVERY_ACTION_REQUIRED"),
     ],
 )
 def test_accept_handoff_projects_first_safe_delivery_action(
@@ -1871,6 +1872,7 @@ def test_accept_handoff_projects_first_safe_delivery_action(
     assert facts["result"]["thin_loop"]["execution_completed"] is True
     assert facts["result"]["thin_loop"]["review_completed"] is True
     assert head_before == head_after
+    public_next_action = inspected["data"]["next_action"]
 
     post_inspection = server._call_tool(
         "run_mcp_workflow",
@@ -1882,19 +1884,23 @@ def test_accept_handoff_projects_first_safe_delivery_action(
         },
     )
     assert post_inspection["data"]["facts"]["result"]["thin_loop"] == facts["result"]["thin_loop"]
+    if branch == "main":
+        assert post_inspection["data"]["next_action"]["arguments"][
+            "branch_name"
+        ] == public_next_action["arguments"]["branch_name"]
     assert execution_binding_id
 
-    public_next_action = inspected["data"]["next_action"]
-    if expected_action is None:
-        assert public_next_action["tool"] == "analyze_project_state"
-        assert facts["blockers"] == ["delivery_topic_branch_required"]
-        assert inspected["data"]["outcome"] == "blocked"
-    else:
-        assert inspected["ok"] is True
-        assert public_next_action["tool"] == "manage_git"
-        assert public_next_action["arguments"]["action"] == expected_action
-        assert public_next_action["arguments"]["project_name"] == PROJECT_NAME
-        assert public_next_action["arguments"]["context_binding"]["head"] == head_before
+    assert inspected["ok"] is True
+    assert public_next_action["tool"] == "manage_git"
+    assert public_next_action["arguments"]["action"] == expected_action
+    assert public_next_action["arguments"]["project_name"] == PROJECT_NAME
+    assert public_next_action["arguments"]["context_binding"]["head"] == head_before
+    if expected_action == "topic_branch_preview":
+        suggested = public_next_action["arguments"]["branch_name"]
+        assert suggested.startswith("codex/delivery-")
+        assert len(suggested) == len("codex/delivery-") + 12
+        assert facts["blockers"] == []
+        assert inspected["data"]["outcome"] == "completed"
 
 
 def test_delivery_preview_fails_closed_for_unknown_or_nonaccepted_session(
@@ -1948,6 +1954,66 @@ def test_delivery_preview_fails_closed_for_unknown_or_nonaccepted_session(
     assert nonaccepted["data"]["facts"]["blockers"] == [
         "THIN_LOOP_NOT_READY_FOR_DELIVERY_GATE"
     ]
+
+
+def test_accepted_main_delivery_handoff_creates_topic_branch_without_mutating_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    server, project = _delivery_test_server(tmp_path, monkeypatch, branch="main")
+    continuation, thin_loop_id, _execution_binding_id = (
+        _accepted_thin_loop_delivery_handoff(server, project_name=PROJECT_NAME)
+    )
+    (project / "README.md").write_text("accepted delivery change\n", encoding="utf-8")
+    head_before = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    thin_loop_before = copy.deepcopy(
+        THIN_LOOP_PRODUCT_SESSIONS._sessions[thin_loop_id]
+    )
+
+    delivery = server._call_tool("run_mcp_workflow", continuation)
+    validate_commander_response(delivery["data"])
+    preview_arguments = delivery["data"]["next_action"]["arguments"]
+    assert preview_arguments["action"] == "topic_branch_preview"
+    assert preview_arguments["branch_name"].startswith("codex/delivery-")
+
+    preview = server._call_tool("manage_git", preview_arguments)
+    validate_commander_response(preview["data"])
+    assert preview["data"]["outcome"] == "confirmation_required"
+    apply_arguments = preview["data"]["next_action"]["arguments"]
+    assert len(apply_arguments["preview_digest"]) == 64
+    assert apply_arguments["preview_digest"] == preview["data"]["facts"][
+        "preview_digest"
+    ]
+
+    applied = server._call_tool("manage_git", apply_arguments)
+    validate_commander_response(applied["data"])
+
+    current_branch = subprocess.run(
+        ["git", "-C", str(project), "branch", "--show-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    head_after = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert current_branch == preview_arguments["branch_name"]
+    assert head_after == head_before
+    assert applied["data"]["next_action"]["arguments"]["action"] == (
+        "commit_readiness"
+    )
+    assert applied["data"]["next_action"]["arguments"]["context_binding"][
+        "branch"
+    ] == current_branch
+    assert THIN_LOOP_PRODUCT_SESSIONS._sessions[thin_loop_id] == thin_loop_before
 
 
 def test_delivery_preview_fails_closed_for_expired_session(
