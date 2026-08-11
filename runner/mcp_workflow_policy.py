@@ -110,7 +110,7 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     if workflow == "project_delivery_preview":
         return "mcp:read" if phase == "preview" else None
     if workflow == "github_delivery":
-        if phase == "pr_status":
+        if phase in {"pr_status", "merge_status"}:
             return "mcp:read"
         if phase == "pr_preview":
             return "mcp:preview"

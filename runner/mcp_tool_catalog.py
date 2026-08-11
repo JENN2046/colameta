@@ -3023,7 +3023,7 @@ def build_mcp_tool_definitions(
                 "draft 模式会直接返回 M0-M2 本地 Codex 可执行包 codex_execution_packet，"
                 "不产生执行、ReviewDecision、GateEvent 或 Delivery State 变更。"
                 "project_delivery_preview：验证已 ACCEPT 的 Thin Loop handoff，并只读投影当前 Git delivery facts 与首个安全动作。"
-                "github_delivery：对已同步的 codex/* branch 执行 PR status → preview → confirmed Draft PR create。"
+                "github_delivery：对已同步的 codex/* branch 执行 Draft PR admission，并只读观察 exact-head CI/review/base readiness；最终 merge authority 保持 external。"
                 "stage_7_9_preview：把 Stage 7 drift evidence、Stage 8 PLAN_ADJUST preview 与 Stage 9 "
                 "continue-readiness report 组合为一条 hash/context-bound 的只读旅程；它只指出下一项人工决策，"
                 "不 apply plan、不 continue、不启动 executor。"
@@ -3058,7 +3058,7 @@ def build_mcp_tool_definitions(
                     },
                     "phase": {
                         "type": "string",
-                        "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status", "pr_status", "pr_preview", "pr_apply"],
+                        "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status", "pr_status", "pr_preview", "pr_apply", "merge_status"],
                         "description": "工作流阶段。inspect/read/status/verify 只读；stage_7_9_preview 只支持 inspect（返回冻结 taskbook/hash/input template 与 stage_7_9_context）和 preview（必须回传该 context 与三段 Stage 输入，输出只读 next-human-decision），其他 phase 一律拒绝；current_facts 的 inspect 创建可恢复 artifact，preview 不写入，apply 必须同时携带同一 preview_id 和匹配 context_binding 才能写入固定 `.colameta/reports/current-facts/` runtime archive；review_manifest 的 inspect 建立受控阅读会话，read 仅返回一个已声明 subject 的已绑定页并重新核对上下文和该 subject hash，verify 重新核对当前上下文和所有 subject hash；result_artifact 只支持 read，按已有 artifact_id 和 artifact_page 返回一页并保留同一 SHA-256/expiry 合同；preview/run_preview/plan_preview 只生成预览；普通 apply/commit/run/plan_apply/apply_all 只确认受控预览 ID。operator_batch execute 可执行一次性 ticket 中绑定的受控 manifest，但不允许 push、发布或 stable replacement。prompt_to_plan 推荐主流程：preview → apply_all → run_preview → run。旧 phase apply/plan_preview/plan_apply 仍保留兼容。apply_all 一键完成 prompt 保存 + plan 登记。run_preview 生成执行器运行预览，不运行执行器。run 使用 run_preview 返回的 preview_id 执行一次执行器。",
                     },
                     "preview_id": {

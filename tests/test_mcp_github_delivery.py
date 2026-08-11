@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,38 @@ class FakeCommands:
         self.create_calls = 0
         self.verify_create = True
         self.create_return_code = 0
+        self.base_head = head
+        self.workflow_runs: list[dict[str, object]] = [
+            {
+                "id": 700,
+                "workflow_id": 70,
+                "name": "CI",
+                "event": "pull_request",
+                "head_sha": head,
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+        self.jobs: list[dict[str, object]] = [
+            {
+                "id": 701,
+                "name": "tests",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+        self.check_runs: list[dict[str, object]] = []
+        self.commit_statuses: list[dict[str, object]] = []
+        self.commit_status_pages: list[list[dict[str, object]]] | None = None
+        self.review_threads_pages: list[list[dict[str, object]]] = [[]]
+        self.review_pages: list[list[dict[str, object]]] = [[]]
+        self.review_decision = ""
+        self.mergeable = "MERGEABLE"
+        self.compare_status = "ahead"
+        self.pr_view_override: dict[str, object] | None = None
+        self.ready_calls = 0
+        self.merge_calls = 0
 
     def __call__(
         self, args: list[str], cwd: str
@@ -54,6 +87,42 @@ class FakeCommands:
             )
         if args[:3] == ["gh", "pr", "list"]:
             return self._completed(args, 0, json.dumps(self.pull_requests))
+        if args[:3] == ["gh", "pr", "view"]:
+            number = int(args[3])
+            pull_request = next(
+                (item for item in self.pull_requests if item.get("number") == number),
+                None,
+            )
+            if pull_request is None:
+                return self._completed(args, 1)
+            projected = {
+                **pull_request,
+                **(self.pr_view_override or {}),
+                "mergeable": self.mergeable,
+                "mergeStateStatus": "CLEAN",
+                "reviewDecision": self.review_decision,
+            }
+            return self._completed(args, 0, json.dumps(projected))
+        if args[:3] == ["gh", "pr", "ready"]:
+            self.ready_calls += 1
+            number = int(args[3])
+            for item in self.pull_requests:
+                if item.get("number") == number:
+                    item["isDraft"] = False
+            return self._completed(args, 0)
+        if args[:3] == ["gh", "pr", "merge"]:
+            self.merge_calls += 1
+            expected = args[args.index("--match-head-commit") + 1]
+            if expected != self.remote_head:
+                return self._completed(args, 1)
+            number = int(args[3])
+            for item in self.pull_requests:
+                if item.get("number") == number:
+                    item["state"] = "MERGED"
+                    item["mergedAt"] = datetime.now(timezone.utc).isoformat()
+                    item["mergeCommit"] = {"oid": "f" * 40}
+            self.base_head = "f" * 40
+            return self._completed(args, 0)
         if args[:3] == ["gh", "pr", "create"]:
             self.create_calls += 1
             branch = args[args.index("--head") + 1]
@@ -78,6 +147,77 @@ class FakeCommands:
                 self.create_return_code,
                 created[0]["url"] + "\n" if self.create_return_code == 0 else "",
             )
+        if args[:2] == ["gh", "api"] and len(args) >= 3:
+            endpoint = args[2]
+            if endpoint == "graphql":
+                query = next(
+                    (value.removeprefix("query=") for value in args if value.startswith("query=")),
+                    "",
+                )
+                cursor_value = next(
+                    (value.removeprefix("cursor=") for value in args if value.startswith("cursor=")),
+                    None,
+                )
+                page_index = int(cursor_value or "0")
+                pages = (
+                    self.review_threads_pages
+                    if "ReviewThreads" in query
+                    else self.review_pages
+                )
+                nodes = pages[page_index] if page_index < len(pages) else []
+                has_next = page_index + 1 < len(pages)
+                connection = "reviewThreads" if "ReviewThreads" in query else "reviews"
+                return self._completed(
+                    args,
+                    0,
+                    json.dumps(
+                        {
+                            "data": {
+                                "repository": {
+                                    "pullRequest": {
+                                        connection: {
+                                            "nodes": nodes,
+                                            "pageInfo": {
+                                                "hasNextPage": has_next,
+                                                "endCursor": str(page_index + 1) if has_next else None,
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ),
+                )
+            if "/git/ref/heads/" in endpoint:
+                return self._completed(
+                    args, 0, json.dumps({"object": {"sha": self.base_head}})
+                )
+            if "/compare/" in endpoint:
+                return self._completed(args, 0, self.compare_status + "\n")
+            if "/actions/runs/" in endpoint and "/jobs?" in endpoint:
+                return self._completed(args, 0, json.dumps({"jobs": self.jobs}))
+            if "/actions/runs?" in endpoint:
+                return self._completed(
+                    args, 0, json.dumps({"workflow_runs": self.workflow_runs})
+                )
+            if endpoint.endswith("/check-runs") or "/check-runs?" in endpoint:
+                return self._completed(
+                    args, 0, json.dumps({"check_runs": self.check_runs})
+                )
+            if endpoint.endswith("/status") or "/status?" in endpoint:
+                page_match = re.search(r"[?&]page=(\d+)", endpoint)
+                page = int(page_match.group(1)) if page_match else 1
+                statuses = (
+                    self.commit_status_pages[page - 1]
+                    if self.commit_status_pages is not None
+                    and page <= len(self.commit_status_pages)
+                    else []
+                    if self.commit_status_pages is not None
+                    else self.commit_statuses
+                )
+                return self._completed(
+                    args, 0, json.dumps({"statuses": statuses})
+                )
         return subprocess.run(
             args,
             cwd=cwd,
@@ -700,3 +840,349 @@ def test_unsynchronized_push_status_has_no_github_continuation() -> None:
         project_name="sample",
     )
     assert "next_actions" not in result
+
+
+def _merge_manager(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> tuple[MCPGitHubDeliveryManager, FakeCommands]:
+    project, commands = synchronized_project
+    commands.pull_requests = [_exact_pr(commands)]
+    return _manager(project, commands), commands
+
+
+def test_pr_present_continues_to_merge_status(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, _commands = _merge_manager(synchronized_project)
+    result = manager.pr_status(project_name="sample")
+    assert result["state"] == "PR_PRESENT"
+    assert result["next_actions"][0]["params"]["phase"] == "merge_status"
+
+
+def test_merge_status_ready_binds_exact_pr_base_ci_and_review(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    result = manager.merge_status(project_name="sample")
+    assert result["state"] == "READY_FOR_EXTERNAL_MERGE"
+    assert result["draft"] is True
+    assert result["base_head_sha"] == commands.base_head
+    assert result["head_sha"] == commands.remote_head
+    assert result["ci"]["state"] == "PASS"
+    assert result["review"]["state"] == "PASS"
+    assert result["next_actions"] == []
+    assert result["merge_authority"] == {
+        "mode": "external",
+        "atomic_provider_guard_available": False,
+        "observation_is_point_in_time": True,
+    }
+    assert result["merge_handoff"]["observed_base_sha"] == commands.base_head
+    assert result["merge_handoff"]["head_sha"] == commands.remote_head
+    assert "fresh_recheck_required_before_external_merge" in result["warnings"]
+    assert commands.ready_calls == 0
+    assert commands.merge_calls == 0
+
+
+def test_merge_status_rejects_non_draft_and_foreign_entry(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.pull_requests[0]["isDraft"] = False
+    non_draft = manager.merge_status(project_name="sample")
+    assert non_draft["blockers"] == ["GITHUB_PR_STATE_OUTSIDE_AUTHORITY"]
+    commands.pull_requests = [_foreign_pr(commands)]
+    foreign = manager.merge_status(project_name="sample")
+    assert foreign["blockers"] == ["GITHUB_PR_NOT_FOUND"]
+    assert foreign["warnings"] == ["foreign_head_pr_ignored"]
+
+
+def test_merge_status_blocks_wrong_pr_identity_and_stale_base(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.pull_requests[0]["baseRefName"] = "production"
+    wrong_base = manager.merge_status(project_name="sample")
+    assert wrong_base["blockers"] == ["GITHUB_PR_CONTEXT_AMBIGUOUS"]
+    commands.pull_requests[0]["baseRefName"] = "main"
+    commands.compare_status = "diverged"
+    stale = manager.merge_status(project_name="sample")
+    assert stale["blockers"] == ["GITHUB_HEAD_NOT_UP_TO_DATE"]
+
+
+def test_merge_status_blocks_non_mergeable_pr_without_provider_mutation(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.mergeable = "CONFLICTING"
+    result = manager.merge_status(project_name="sample")
+    assert result["blockers"] == ["GITHUB_PR_NOT_MERGEABLE"]
+    assert commands.ready_calls == 0
+    assert commands.merge_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("baseRefName", "production"),
+        ("headRefName", "codex/foreign"),
+        ("headRefOid", "a" * 40),
+        ("isDraft", False),
+    ],
+)
+def test_merge_status_fails_closed_when_pr_details_drift_after_list(
+    synchronized_project: tuple[Path, FakeCommands],
+    field: str,
+    value: object,
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.pr_view_override = {field: value}
+    result = manager.merge_status(project_name="sample")
+    assert result["blockers"] == ["GITHUB_PR_CONTEXT_AMBIGUOUS"]
+    assert commands.ready_calls == 0
+    assert commands.merge_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "expected", "blocker"),
+    [
+        ("in_progress", None, "WAITING_FOR_EXTERNAL_GATE", None),
+        ("completed", "failure", "BLOCKED", "GITHUB_CI_FAILED"),
+    ],
+)
+def test_merge_status_normalizes_exact_head_ci(
+    synchronized_project: tuple[Path, FakeCommands],
+    status: str,
+    conclusion: str | None,
+    expected: str,
+    blocker: str | None,
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.workflow_runs[0]["status"] = status
+    commands.workflow_runs[0]["conclusion"] = conclusion
+    result = manager.merge_status(project_name="sample")
+    assert result["state"] == expected
+    if blocker:
+        assert result["blockers"] == [blocker]
+
+
+def test_no_exact_head_run_waits_and_latest_rerun_supersedes_failure(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.workflow_runs = []
+    assert manager.merge_status(project_name="sample")["state"] == "WAITING_FOR_EXTERNAL_GATE"
+    commands.workflow_runs = [
+        {
+            "id": 700,
+            "workflow_id": 70,
+            "name": "CI",
+            "event": "pull_request",
+            "head_sha": commands.remote_head,
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+        {
+            "id": 702,
+            "workflow_id": 70,
+            "name": "CI",
+            "event": "pull_request",
+            "head_sha": commands.remote_head,
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+        },
+    ]
+    rerun = manager.merge_status(project_name="sample")
+    assert rerun["state"] == "READY_FOR_EXTERNAL_MERGE"
+    assert rerun["ci"]["workflow_runs"][0]["run_id"] == 702
+
+
+@pytest.mark.parametrize(
+    ("classic_state", "expected"),
+    [("pending", "WAITING_FOR_EXTERNAL_GATE"), ("failure", "BLOCKED")],
+)
+def test_classic_commit_status_participates_in_gate(
+    synchronized_project: tuple[Path, FakeCommands],
+    classic_state: str,
+    expected: str,
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.commit_statuses = [{"context": "external", "state": classic_state}]
+    assert manager.merge_status(project_name="sample")["state"] == expected
+
+
+def test_provider_envelope_inconsistency_requires_adjudication(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.jobs = [
+        {
+            "id": 701,
+            "name": "Quality gates",
+            "status": "in_progress",
+            "conclusion": None,
+            "steps": [
+                {
+                    "name": "Complete job",
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+            ],
+        }
+    ]
+    result = manager.merge_status(project_name="sample")
+    assert result["blockers"] == ["GITHUB_PROVIDER_STATE_INCONSISTENCY"]
+
+
+def test_review_pagination_and_effective_review_state(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.review_threads_pages = [
+        [{"id": "T1", "isResolved": True}],
+        [{"id": "T2", "isResolved": False}],
+    ]
+    blocked = manager.merge_status(project_name="sample")
+    assert blocked["blockers"] == ["GITHUB_REVIEW_THREAD_UNRESOLVED"]
+    commands.review_threads_pages = [[]]
+    commands.review_pages = [
+        [
+            {
+                "id": "R1",
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-08-11T00:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+            {
+                "id": "R2",
+                "state": "APPROVED",
+                "submittedAt": "2026-08-11T01:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ]
+    ]
+    assert manager.merge_status(project_name="sample")["state"] == "READY_FOR_EXTERNAL_MERGE"
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected", "blocker"),
+    [
+        ("REVIEW_REQUIRED", "WAITING_FOR_EXTERNAL_GATE", None),
+        ("CHANGES_REQUESTED", "BLOCKED", "GITHUB_REVIEW_CHANGES_REQUESTED"),
+    ],
+)
+def test_review_decision_is_authoritative(
+    synchronized_project: tuple[Path, FakeCommands],
+    decision: str,
+    expected: str,
+    blocker: str | None,
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.review_decision = decision
+    result = manager.merge_status(project_name="sample")
+    assert result["state"] == expected
+    if blocker:
+        assert result["blockers"] == [blocker]
+
+
+def test_merge_mutation_surface_is_absent(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    assert not hasattr(manager, "merge_preview")
+    assert not hasattr(manager, "merge_apply")
+    assert manager.merge_status(project_name="sample")["state"] == (
+        "READY_FOR_EXTERNAL_MERGE"
+    )
+    assert commands.ready_calls == 0
+    assert commands.merge_calls == 0
+
+
+def test_old_head_success_cannot_satisfy_exact_head_pending_or_failure(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    old_success = {
+        "id": 699,
+        "workflow_id": 70,
+        "name": "CI",
+        "event": "pull_request",
+        "head_sha": "a" * 40,
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+    }
+    commands.workflow_runs = [old_success, {**commands.workflow_runs[0], "status": "in_progress", "conclusion": None}]
+    assert manager.merge_status(project_name="sample")["state"] == "WAITING_FOR_EXTERNAL_GATE"
+    commands.workflow_runs[1]["status"] = "completed"
+    commands.workflow_runs[1]["conclusion"] = "failure"
+    assert manager.merge_status(project_name="sample")["blockers"] == ["GITHUB_CI_FAILED"]
+
+
+def test_latest_check_run_supersedes_old_failed_check(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.check_runs = [
+        {
+            "id": 1,
+            "name": "external",
+            "status": "completed",
+            "conclusion": "failure",
+            "app": {"slug": "checks"},
+        },
+        {
+            "id": 2,
+            "name": "external",
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"slug": "checks"},
+        },
+    ]
+    result = manager.merge_status(project_name="sample")
+    assert result["state"] == "READY_FOR_EXTERNAL_MERGE"
+    assert [item["check_id"] for item in result["ci"]["checks"] if "check_id" in item] == [2]
+
+
+def test_review_pagination_incomplete_fails_closed(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.review_threads_pages = [
+        [{"id": f"T{index}", "isResolved": True}] for index in range(11)
+    ]
+    result = manager.merge_status(project_name="sample")
+    assert result["blockers"] == ["GITHUB_REVIEW_DATA_INCOMPLETE"]
+
+
+def test_closed_or_merged_pr_is_outside_observation_authority(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    commands.pull_requests[0]["state"] = "CLOSED"
+    closed = manager.merge_status(project_name="sample")
+    assert closed["blockers"] == ["GITHUB_PR_STATE_OUTSIDE_AUTHORITY"]
+    commands.pull_requests[0]["mergedAt"] = "2026-08-11T00:00:00Z"
+    commands.pull_requests[0]["mergeCommit"] = {"oid": "f" * 40}
+    merged = manager.merge_status(project_name="sample")
+    assert merged["blockers"] == ["GITHUB_PR_STATE_OUTSIDE_AUTHORITY"]
+
+
+def test_ready_state_is_read_only_for_all_observed_gate_outcomes(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    manager, commands = _merge_manager(synchronized_project)
+    assert manager.merge_status(project_name="sample")["state"] == (
+        "READY_FOR_EXTERNAL_MERGE"
+    )
+    commands.workflow_runs[0]["status"] = "in_progress"
+    commands.workflow_runs[0]["conclusion"] = None
+    assert manager.merge_status(project_name="sample")["state"] == (
+        "WAITING_FOR_EXTERNAL_GATE"
+    )
+    commands.workflow_runs[0]["status"] = "completed"
+    commands.workflow_runs[0]["conclusion"] = "failure"
+    assert manager.merge_status(project_name="sample")["state"] == "BLOCKED"
+    assert commands.ready_calls == 0
+    assert commands.merge_calls == 0

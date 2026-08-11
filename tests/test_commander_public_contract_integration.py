@@ -2446,6 +2446,40 @@ def test_github_delivery_preview_apply_uses_commander_confirmation_contract(
                 "warnings": [],
             }
 
+        def merge_status(self, *, project_name: str):
+            assert project_name == PROJECT_NAME
+            return {
+                "ok": True,
+                "action": "merge_status",
+                "workflow": "github_delivery",
+                "phase": "merge_status",
+                "status": "succeeded",
+                "state": "READY_FOR_EXTERNAL_MERGE",
+                "read_only": True,
+                "side_effects": False,
+                "merge_authority": {
+                    "mode": "external",
+                    "atomic_provider_guard_available": False,
+                    "observation_is_point_in_time": True,
+                },
+                "merge_handoff": {
+                    "repository": "OWNER/repo",
+                    "pr_number": 91,
+                    "base_branch": "main",
+                    "observed_base_sha": head,
+                    "head_repository": "OWNER/repo",
+                    "head_branch": "codex/delivery-test",
+                    "head_sha": head,
+                    "draft": True,
+                    "ci_state": "PASS",
+                    "review_state": "PASS",
+                    "observed_at": "2026-08-11T00:00:00+00:00",
+                },
+                "next_actions": [],
+                "blockers": [],
+                "warnings": ["fresh_recheck_required_before_external_merge"],
+            }
+
     registry = ProjectRegistry(
         registry_path=str(tmp_path.parent / "github-delivery-projects.json"),
         user_settings_path=str(tmp_path.parent / "github-delivery-settings.json"),
@@ -2490,6 +2524,30 @@ def test_github_delivery_preview_apply_uses_commander_confirmation_contract(
         assert applied["ok"] is True, applied
         validate_commander_response(applied["data"])
         assert applied["data"]["facts"]["state"] == "PR_PRESENT"
+        merge_status = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "github_delivery",
+                "phase": "merge_status",
+                "project_name": PROJECT_NAME,
+            },
+        )
+        assert merge_status["ok"] is True
+        merge_contract = merge_status["data"]
+        validate_commander_response(merge_contract)
+        assert merge_contract["outcome"] == "completed"
+        assert merge_contract["facts"]["state"] == "READY_FOR_EXTERNAL_MERGE"
+        assert merge_contract["facts"]["merge_authority"]["mode"] == "external"
+        for phase in ("merge_preview", "merge_apply"):
+            rejected = server.call_tool_for_agent(
+                "run_mcp_workflow",
+                {
+                    "workflow": "github_delivery",
+                    "phase": phase,
+                    "project_name": PROJECT_NAME,
+                },
+            )
+            assert rejected["ok"] is False
 
 
 def test_projection_omits_kubernetes_secret_objects_and_redacts_text() -> None:
