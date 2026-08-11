@@ -136,6 +136,7 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
             ("github_delivery", "pr_status"): "mcp:read",
             ("github_delivery", "pr_preview"): "mcp:preview",
             ("github_delivery", "pr_apply"): "mcp:commit",
+            ("github_delivery", "merge_status"): "mcp:read",
             ("current_facts", "inspect"): "mcp:read",
             ("current_facts", "preview"): "mcp:preview",
             ("current_facts", "apply"): "mcp:commit",

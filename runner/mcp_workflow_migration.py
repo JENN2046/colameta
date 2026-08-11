@@ -336,12 +336,18 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
         target_owner_status="existing",
         public_typed_entrypoint=None,
         local_handoff_entrypoint=None,
-        supported_phases=("pr_status", "pr_preview", "pr_apply"),
+        supported_phases=(
+            "pr_status",
+            "pr_preview",
+            "pr_apply",
+            "merge_status",
+        ),
         required_fields=("workflow", "phase", "project_name"),
         scope_contract=(
             "pr_status:mcp:read",
             "pr_preview:mcp:preview",
             "pr_apply:mcp:commit",
+            "merge_status:mcp:read",
         ),
         compatibility_status="compatibility_only",
         regression_tests=(

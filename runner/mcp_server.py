@@ -10599,10 +10599,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 preview_id=preview_id.strip(),
                 preview_digest=preview_digest.strip(),
             )
+        elif phase == "merge_status":
+            result = manager.merge_status(project_name=project_name)
         else:
             return self._github_delivery_error(
                 "GITHUB_DELIVERY_PHASE_NOT_SUPPORTED",
-                "github_delivery supports pr_status, pr_preview, and pr_apply only.",
+                "github_delivery supports PR admission and read-only merge_status only.",
             )
         return self._attach_operation_context_binding(
             result,

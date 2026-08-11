@@ -21,13 +21,29 @@ CommandRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
 
 class MCPGitHubDeliveryManager:
-    """Bound one synchronized delivery branch to one Draft GitHub PR."""
+    """Bound synchronized Git truth to bounded GitHub PR delivery actions."""
 
     _MAX_PREVIEW_BYTES = 1024 * 1024
     _PREVIEW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
     _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
     _OWNER_REPO_RE = re.compile(
         r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)$"
+    )
+    _MAX_PROVIDER_PAGES = 10
+    _MAX_PROVIDER_ITEMS = 1000
+    _PENDING_STATES = frozenset(
+        {"queued", "waiting", "pending", "in_progress", "requested"}
+    )
+    _FAILED_CONCLUSIONS = frozenset(
+        {
+            "failure",
+            "cancelled",
+            "timed_out",
+            "action_required",
+            "startup_failure",
+            "stale",
+            "error",
+        }
     )
 
     def __init__(
@@ -326,6 +342,766 @@ class MCPGitHubDeliveryManager:
             partial_mutation=True,
         )
 
+    def merge_status(self, *, project_name: str) -> dict[str, Any]:
+        readiness = self._merge_readiness(project_name=project_name)
+        return self._merge_status_result(readiness, project_name=project_name)
+
+    def _merge_readiness(
+        self,
+        *,
+        project_name: str,
+    ) -> dict[str, Any]:
+        context = self._merge_context()
+        if context.get("ok") is not True:
+            return self._readiness_error(context)
+        pull_requests, error = self._all_pull_requests(context)
+        if error is not None:
+            return self._readiness_error(error)
+        identity, identity_error, warnings = self._classify_canonical_identity(
+            pull_requests,
+            context,
+        )
+        if identity_error is not None:
+            return self._blocked_readiness(identity_error, context, warnings)
+        if identity is None:
+            return self._blocked_readiness(
+                "GITHUB_PR_NOT_FOUND",
+                context,
+                warnings,
+            )
+        if identity.get("state") != "open" or identity.get("draft") is not True:
+            return self._blocked_readiness(
+                "GITHUB_PR_STATE_OUTSIDE_AUTHORITY",
+                context,
+                warnings,
+                pull_request=identity,
+            )
+
+        details, details_error = self._pull_request_details(context, identity)
+        if details_error is not None:
+            return self._readiness_error(details_error)
+        if details is None:
+            return self._blocked_readiness(
+                "GITHUB_PR_STATUS_INVALID", context, warnings
+            )
+        if details.get("state") != "open" or details.get("draft") is not True:
+            return self._blocked_readiness(
+                "GITHUB_PR_STATE_OUTSIDE_AUTHORITY",
+                context,
+                warnings,
+                pull_request=details,
+            )
+
+        ancestry = self._run(
+            [
+                "gh",
+                "api",
+                f"repos/{context['repository']}/compare/{context['base_head_sha']}...{context['head_sha']}",
+                "--jq",
+                ".status",
+            ]
+        )
+        if ancestry.returncode != 0 or ancestry.stdout.strip() not in {
+            "ahead",
+            "identical",
+        }:
+            return self._blocked_readiness(
+                "GITHUB_HEAD_NOT_UP_TO_DATE",
+                context,
+                warnings,
+                pull_request=details,
+            )
+
+        ci = self._observe_ci(context)
+        if ci.get("state") == "INCOMPLETE":
+            return self._blocked_readiness(
+                str(ci.get("error_code") or "GITHUB_CI_DATA_INCOMPLETE"),
+                context,
+                warnings,
+                pull_request=details,
+                ci=ci,
+            )
+        if ci.get("state") == "INCONSISTENT":
+            return self._blocked_readiness(
+                "GITHUB_PROVIDER_STATE_INCONSISTENCY",
+                context,
+                warnings,
+                pull_request=details,
+                ci=ci,
+                next="COMMANDER_ADJUDICATION_REQUIRED",
+            )
+        if ci.get("state") == "BLOCKED":
+            return self._blocked_readiness(
+                "GITHUB_CI_FAILED",
+                context,
+                warnings,
+                pull_request=details,
+                ci=ci,
+            )
+        review = self._observe_review(context, details)
+        if review.get("state") == "INCOMPLETE":
+            return self._blocked_readiness(
+                "GITHUB_REVIEW_DATA_INCOMPLETE",
+                context,
+                warnings,
+                pull_request=details,
+                ci=ci,
+                review=review,
+            )
+        if review.get("state") == "BLOCKED":
+            return self._blocked_readiness(
+                str(review.get("error_code") or "GITHUB_REVIEW_BLOCKED"),
+                context,
+                warnings,
+                pull_request=details,
+                ci=ci,
+                review=review,
+            )
+        if ci.get("state") == "WAITING" or review.get("state") == "WAITING":
+            return {
+                "state": "WAITING_FOR_EXTERNAL_GATE",
+                "context": context,
+                "pull_request": details,
+                "ci": ci,
+                "review": review,
+                "warnings": warnings,
+            }
+        if details.get("mergeable") != "MERGEABLE":
+            return self._blocked_readiness(
+                "GITHUB_PR_NOT_MERGEABLE",
+                context,
+                warnings,
+                pull_request=details,
+                ci=ci,
+                review=review,
+            )
+        observed_at = datetime.now(timezone.utc).isoformat()
+        return {
+            "state": "READY_FOR_EXTERNAL_MERGE",
+            "context": context,
+            "pull_request": details,
+            "ci": ci,
+            "review": review,
+            "draft": True,
+            "project_name": project_name,
+            "merge_authority": {
+                "mode": "external",
+                "atomic_provider_guard_available": False,
+                "observation_is_point_in_time": True,
+            },
+            "merge_handoff": {
+                "repository": context["repository"],
+                "pr_number": details["number"],
+                "base_branch": context["base_branch"],
+                "observed_base_sha": context["base_head_sha"],
+                "head_repository": context["head_repository"],
+                "head_branch": context["head_branch"],
+                "head_sha": context["head_sha"],
+                "draft": True,
+                "ci_state": ci["state"],
+                "review_state": review["state"],
+                "observed_at": observed_at,
+            },
+            "warnings": [*warnings, "fresh_recheck_required_before_external_merge"],
+        }
+
+    def _merge_context(self) -> dict[str, Any]:
+        context = self._delivery_context()
+        if context.get("ok") is not True:
+            return context
+        base = self._run(
+            [
+                "gh",
+                "api",
+                f"repos/{context['repository']}/git/ref/heads/{context['base_branch']}",
+            ]
+        )
+        if base.returncode != 0:
+            return self._error(
+                "merge_status",
+                "GITHUB_BASE_HEAD_UNAVAILABLE",
+                "GitHub base branch HEAD is unavailable.",
+            )
+        try:
+            base_head_sha = str(json.loads(base.stdout)["object"]["sha"]).lower()
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            base_head_sha = ""
+        if re.fullmatch(r"[0-9a-f]{40,64}", base_head_sha) is None:
+            return self._error(
+                "merge_status",
+                "GITHUB_BASE_HEAD_UNAVAILABLE",
+                "GitHub base branch HEAD is unavailable.",
+            )
+        return {**context, "base_head_sha": base_head_sha}
+
+    def _all_pull_requests(
+        self,
+        context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        completed = self._run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                str(context["repository"]),
+                "--state",
+                "all",
+                "--head",
+                str(context["head_branch"]),
+                "--limit",
+                "100",
+                "--json",
+                "number,url,state,isDraft,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,mergedAt,mergeCommit",
+            ]
+        )
+        if completed.returncode != 0:
+            return [], self._error(
+                "merge_status",
+                "GITHUB_PR_STATUS_FAILED",
+                "GitHub pull-request state is unavailable.",
+            )
+        try:
+            raw = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            raw = None
+        if not isinstance(raw, list) or len(raw) >= 100:
+            return [], self._error(
+                "merge_status",
+                "GITHUB_PR_STATUS_INVALID",
+                "GitHub pull-request state is incomplete or invalid.",
+            )
+        normalized: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                return [], self._error(
+                    "merge_status",
+                    "GITHUB_PR_STATUS_INVALID",
+                    "GitHub pull-request state is invalid.",
+                )
+            pull_request = self._normalize_pr(
+                item,
+                str(context["repository"]),
+                allow_closed=True,
+            )
+            if pull_request is None:
+                return [], self._error(
+                    "merge_status",
+                    "GITHUB_PR_STATUS_INVALID",
+                    "GitHub pull-request state is invalid.",
+                )
+            normalized.append(pull_request)
+        return normalized, None
+
+    def _pull_request_details(
+        self,
+        context: dict[str, Any],
+        identity: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        completed = self._run(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(identity["number"]),
+                "--repo",
+                str(context["repository"]),
+                "--json",
+                "number,url,state,isDraft,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision,mergedAt,mergeCommit",
+            ]
+        )
+        if completed.returncode != 0:
+            return None, self._error(
+                "merge_status",
+                "GITHUB_PR_STATUS_FAILED",
+                "GitHub pull-request details are unavailable.",
+            )
+        try:
+            raw = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            raw = None
+        if not isinstance(raw, dict):
+            return None, self._error(
+                "merge_status",
+                "GITHUB_PR_STATUS_INVALID",
+                "GitHub pull-request details are invalid.",
+            )
+        normalized = self._normalize_pr(
+            raw,
+            str(context["repository"]),
+            allow_closed=True,
+        )
+        expected_identity = {
+            "number": identity.get("number"),
+            "base_repository": context.get("repository"),
+            "base_branch": context.get("base_branch"),
+            "head_repository": context.get("head_repository"),
+            "head_branch": context.get("head_branch"),
+            "head_sha": context.get("head_sha"),
+            "state": "open",
+            "draft": True,
+        }
+        identity_changed = normalized is None or any(
+            (
+                str(normalized.get(key) or "").casefold()
+                != str(value or "").casefold()
+                if key in {"base_repository", "head_repository"}
+                else normalized.get(key) != value
+            )
+            for key, value in expected_identity.items()
+        )
+        if identity_changed:
+            return None, self._error(
+                "merge_status",
+                "GITHUB_PR_CONTEXT_AMBIGUOUS",
+                "GitHub pull-request identity changed.",
+            )
+        normalized.update(
+            {
+                "mergeable": str(raw.get("mergeable") or "").upper(),
+                "merge_state_status": str(raw.get("mergeStateStatus") or "").upper(),
+                "review_decision": str(raw.get("reviewDecision") or "").upper(),
+            }
+        )
+        return normalized, None
+
+    def _observe_ci(self, context: dict[str, Any]) -> dict[str, Any]:
+        runs, runs_error = self._paged_rest_items(
+            f"repos/{context['repository']}/actions/runs",
+            "workflow_runs",
+            query={"event": "pull_request", "head_sha": context["head_sha"]},
+        )
+        if runs_error is not None:
+            return {"state": "INCOMPLETE", "error_code": runs_error}
+        exact_runs = [
+            item
+            for item in runs
+            if str(item.get("head_sha") or "").lower() == context["head_sha"]
+            and str(item.get("event") or "") == "pull_request"
+        ]
+        current: dict[str, dict[str, Any]] = {}
+        for item in exact_runs:
+            workflow_key = str(item.get("workflow_id") or item.get("name") or "")
+            if not workflow_key:
+                return {"state": "INCOMPLETE", "error_code": "GITHUB_CI_DATA_INCOMPLETE"}
+            attempt = int(item.get("run_attempt") or 0)
+            run_id = int(item.get("id") or 0)
+            previous = current.get(workflow_key)
+            previous_key = (
+                int(previous.get("run_attempt") or 0),
+                int(previous.get("id") or 0),
+            ) if previous else (-1, -1)
+            if (attempt, run_id) > previous_key:
+                current[workflow_key] = item
+        workflow_projection: list[dict[str, Any]] = []
+        checks_projection: list[dict[str, Any]] = []
+        inconsistent = False
+        waiting = not current
+        blocked = False
+        for item in sorted(current.values(), key=lambda value: int(value.get("id") or 0)):
+            run_id = int(item.get("id") or 0)
+            status = str(item.get("status") or "").lower()
+            conclusion = self._normalize_conclusion(item.get("conclusion"))
+            workflow_projection.append(
+                {
+                    "workflow": str(item.get("name") or item.get("workflow_id") or ""),
+                    "run_id": run_id,
+                    "attempt": int(item.get("run_attempt") or 0),
+                    "status": status,
+                    "conclusion": conclusion,
+                }
+            )
+            if status in self._PENDING_STATES or status != "completed":
+                waiting = True
+            elif conclusion in self._FAILED_CONCLUSIONS:
+                blocked = True
+            elif conclusion != "success":
+                blocked = True
+            jobs, jobs_error = self._paged_rest_items(
+                f"repos/{context['repository']}/actions/runs/{run_id}/jobs",
+                "jobs",
+            )
+            if jobs_error is not None:
+                return {"state": "INCOMPLETE", "error_code": jobs_error}
+            for job in jobs:
+                job_status = str(job.get("status") or "").lower()
+                job_conclusion = self._normalize_conclusion(job.get("conclusion"))
+                checks_projection.append(
+                    {
+                        "name": str(job.get("name") or ""),
+                        "app": "github_actions",
+                        "status": job_status,
+                        "conclusion": job_conclusion,
+                        "run_id": run_id,
+                        "job_id": int(job.get("id") or 0),
+                    }
+                )
+                if status == "completed" and conclusion == "success" and (
+                    job_status in self._PENDING_STATES or not job_conclusion
+                ):
+                    inconsistent = True
+                elif job_status in self._PENDING_STATES or job_status != "completed":
+                    waiting = True
+                elif job_conclusion in self._FAILED_CONCLUSIONS:
+                    blocked = True
+                elif job_conclusion not in {"success", "skipped", "neutral"}:
+                    blocked = True
+
+        check_runs, checks_error = self._paged_rest_items(
+            f"repos/{context['repository']}/commits/{context['head_sha']}/check-runs",
+            "check_runs",
+        )
+        if checks_error is not None:
+            return {"state": "INCOMPLETE", "error_code": checks_error}
+        latest_checks: dict[tuple[str, str], dict[str, Any]] = {}
+        for check in check_runs:
+            app = check.get("app")
+            app_slug = str(app.get("slug") or "unknown") if isinstance(app, dict) else "unknown"
+            check_key = (str(check.get("name") or ""), app_slug)
+            previous = latest_checks.get(check_key)
+            if previous is None or int(check.get("id") or 0) > int(previous.get("id") or 0):
+                latest_checks[check_key] = check
+        for check in latest_checks.values():
+            check_status = str(check.get("status") or "").lower()
+            check_conclusion = self._normalize_conclusion(check.get("conclusion"))
+            app = check.get("app")
+            projected = {
+                "name": str(check.get("name") or ""),
+                "app": str(app.get("slug") or "unknown") if isinstance(app, dict) else "unknown",
+                "status": check_status,
+                "conclusion": check_conclusion,
+                "check_id": int(check.get("id") or 0),
+            }
+            checks_projection.append(projected)
+            if check_status in self._PENDING_STATES or check_status != "completed":
+                waiting = True
+            elif check_conclusion in self._FAILED_CONCLUSIONS:
+                blocked = True
+            elif check_conclusion not in {"success", "skipped", "neutral"}:
+                blocked = True
+
+        raw_statuses, statuses_error = self._paged_rest_items(
+            f"repos/{context['repository']}/commits/{context['head_sha']}/status",
+            "statuses",
+        )
+        if statuses_error is not None:
+            return {"state": "INCOMPLETE", "error_code": "GITHUB_CI_DATA_INCOMPLETE"}
+        commit_statuses: list[dict[str, Any]] = []
+        latest_status: dict[str, dict[str, Any]] = {}
+        for item in raw_statuses:
+            if not isinstance(item, dict):
+                return {"state": "INCOMPLETE", "error_code": "GITHUB_CI_DATA_INCOMPLETE"}
+            context_name = str(item.get("context") or "")
+            previous = latest_status.get(context_name)
+            if context_name and (
+                previous is None
+                or int(item.get("id") or 0) > int(previous.get("id") or 0)
+            ):
+                latest_status[context_name] = item
+        for context_name in sorted(latest_status):
+            state = str(latest_status[context_name].get("state") or "").lower()
+            commit_statuses.append({"context": context_name, "state": state})
+            if state == "pending":
+                waiting = True
+            elif state in {"failure", "error"}:
+                blocked = True
+            elif state != "success":
+                blocked = True
+        state = (
+            "INCONSISTENT"
+            if inconsistent
+            else "BLOCKED"
+            if blocked
+            else "WAITING"
+            if waiting
+            else "PASS"
+        )
+        return {
+            "head_sha": context["head_sha"],
+            "state": state,
+            "workflow_runs": workflow_projection,
+            "checks": sorted(
+                checks_projection,
+                key=lambda value: (
+                    str(value.get("name") or ""),
+                    int(value.get("job_id") or value.get("check_id") or 0),
+                ),
+            ),
+            "commit_statuses": commit_statuses,
+        }
+
+    def _observe_review(
+        self,
+        context: dict[str, Any],
+        pull_request: dict[str, Any],
+    ) -> dict[str, Any]:
+        threads, threads_error = self._paged_graphql_connection(
+            repository=str(context["repository"]),
+            pr_number=int(pull_request["number"]),
+            connection="reviewThreads",
+        )
+        if threads_error is not None:
+            return {"state": "INCOMPLETE", "error_code": threads_error}
+        reviews, reviews_error = self._paged_graphql_connection(
+            repository=str(context["repository"]),
+            pr_number=int(pull_request["number"]),
+            connection="reviews",
+        )
+        if reviews_error is not None:
+            return {"state": "INCOMPLETE", "error_code": reviews_error}
+        unresolved = sum(
+            1 for item in threads if item.get("isResolved") is not True
+        )
+        normalized_reviews: list[dict[str, Any]] = []
+        for item in reviews:
+            author = item.get("author")
+            reviewer = str(author.get("login") or "") if isinstance(author, dict) else ""
+            state = str(item.get("state") or "").upper()
+            if not reviewer or state not in {
+                "APPROVED",
+                "CHANGES_REQUESTED",
+                "DISMISSED",
+                "COMMENTED",
+            }:
+                return {"state": "INCOMPLETE", "error_code": "GITHUB_REVIEW_DATA_INCOMPLETE"}
+            normalized_reviews.append(
+                {
+                    "reviewer": reviewer,
+                    "state": state,
+                    "submitted_at": str(item.get("submittedAt") or ""),
+                }
+            )
+        normalized_reviews.sort(
+            key=lambda item: (str(item["submitted_at"]), str(item["reviewer"]))
+        )
+        effective: dict[str, str] = {}
+        for item in normalized_reviews:
+            if item["state"] in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+                effective[str(item["reviewer"])] = str(item["state"])
+        decision = str(pull_request.get("review_decision") or "").upper()
+        if unresolved:
+            state = "BLOCKED"
+            error_code = "GITHUB_REVIEW_THREAD_UNRESOLVED"
+        elif decision == "CHANGES_REQUESTED" or "CHANGES_REQUESTED" in effective.values():
+            state = "BLOCKED"
+            error_code = "GITHUB_REVIEW_CHANGES_REQUESTED"
+        elif decision == "REVIEW_REQUIRED":
+            state = "WAITING"
+            error_code = None
+        else:
+            state = "PASS"
+            error_code = None
+        return {
+            "state": state,
+            "error_code": error_code,
+            "review_decision": decision,
+            "unresolved_thread_count": unresolved,
+            "effective_reviews": [
+                {"reviewer": reviewer, "state": effective[reviewer]}
+                for reviewer in sorted(effective)
+            ],
+            "reviews": normalized_reviews,
+        }
+
+    def _paged_rest_items(
+        self,
+        endpoint: str,
+        key: str,
+        *,
+        query: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        items: list[dict[str, Any]] = []
+        for page in range(1, self._MAX_PROVIDER_PAGES + 1):
+            separator = "&" if "?" in endpoint else "?"
+            query_parts = [f"per_page=100", f"page={page}"]
+            if query:
+                query_parts.extend(
+                    f"{name}={value}" for name, value in sorted(query.items())
+                )
+            completed = self._run(
+                ["gh", "api", f"{endpoint}{separator}{'&'.join(query_parts)}"]
+            )
+            if completed.returncode != 0:
+                return [], "GITHUB_PROVIDER_DATA_INCOMPLETE"
+            try:
+                payload = json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                return [], "GITHUB_PROVIDER_DATA_INCOMPLETE"
+            page_items = payload.get(key) if isinstance(payload, dict) else None
+            if not isinstance(page_items, list) or not all(
+                isinstance(item, dict) for item in page_items
+            ):
+                return [], "GITHUB_PROVIDER_DATA_INCOMPLETE"
+            items.extend(page_items)
+            if len(items) > self._MAX_PROVIDER_ITEMS:
+                return [], "GITHUB_PROVIDER_DATA_INCOMPLETE"
+            if len(page_items) < 100:
+                return items, None
+        return [], "GITHUB_PROVIDER_DATA_INCOMPLETE"
+
+    def _paged_graphql_connection(
+        self,
+        *,
+        repository: str,
+        pr_number: int,
+        connection: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        if connection not in {"reviewThreads", "reviews"}:
+            return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+        owner, name = repository.split("/", 1)
+        cursor: str | None = None
+        items: list[dict[str, Any]] = []
+        if connection == "reviewThreads":
+            query = (
+                "query ReviewThreads($owner:String!,$name:String!,$number:Int!,$cursor:String) {"
+                " repository(owner:$owner,name:$name) { pullRequest(number:$number) {"
+                " reviewThreads(first:100,after:$cursor) { nodes { id isResolved }"
+                " pageInfo { hasNextPage endCursor } } } } }"
+            )
+        else:
+            query = (
+                "query Reviews($owner:String!,$name:String!,$number:Int!,$cursor:String) {"
+                " repository(owner:$owner,name:$name) { pullRequest(number:$number) {"
+                " reviews(first:100,after:$cursor) { nodes { id state submittedAt author { login } }"
+                " pageInfo { hasNextPage endCursor } } } } }"
+            )
+        for _page in range(self._MAX_PROVIDER_PAGES):
+            args = [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+                "-F",
+                f"number={pr_number}",
+            ]
+            if cursor is not None:
+                args.extend(["-F", f"cursor={cursor}"])
+            completed = self._run(args)
+            if completed.returncode != 0:
+                return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+            try:
+                payload = json.loads(completed.stdout)
+                connection_payload = payload["data"]["repository"]["pullRequest"][connection]
+                nodes = connection_payload["nodes"]
+                page_info = connection_payload["pageInfo"]
+            except (KeyError, TypeError, json.JSONDecodeError):
+                return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+            if not isinstance(nodes, list) or not all(
+                isinstance(item, dict) for item in nodes
+            ) or not isinstance(page_info, dict):
+                return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+            items.extend(nodes)
+            if len(items) > self._MAX_PROVIDER_ITEMS:
+                return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+            has_next = page_info.get("hasNextPage")
+            end_cursor = page_info.get("endCursor")
+            if has_next is False:
+                return items, None
+            if has_next is not True or not isinstance(end_cursor, str) or not end_cursor:
+                return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+            cursor = end_cursor
+        return [], "GITHUB_REVIEW_DATA_INCOMPLETE"
+
+    @staticmethod
+    def _normalize_conclusion(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def _classify_canonical_identity(
+        pull_requests: list[dict[str, Any]],
+        context: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+        canonical_repository = str(context.get("repository") or "")
+        canonical = [
+            item
+            for item in pull_requests
+            if isinstance(item.get("head_repository"), str)
+            and str(item["head_repository"]).casefold()
+            == canonical_repository.casefold()
+        ]
+        warnings = (
+            ["foreign_head_pr_ignored"]
+            if len(canonical) != len(pull_requests)
+            else []
+        )
+        exact = [
+            item
+            for item in canonical
+            if str(item.get("base_repository") or "").casefold()
+            == canonical_repository.casefold()
+            and item.get("base_branch") == context.get("base_branch")
+            and item.get("head_branch") == context.get("head_branch")
+            and item.get("head_sha") == context.get("head_sha")
+        ]
+        if len(exact) > 1 or len(canonical) != len(exact):
+            return None, "GITHUB_PR_CONTEXT_AMBIGUOUS", warnings
+        return (exact[0] if exact else None), None, warnings
+
+    def _merge_status_result(
+        self,
+        readiness: dict[str, Any],
+        *,
+        project_name: str,
+    ) -> dict[str, Any]:
+        state = str(readiness.get("state") or "BLOCKED")
+        context = readiness.get("context") if isinstance(readiness.get("context"), dict) else {}
+        read_only = True
+        result: dict[str, Any] = {
+            "ok": state in {"READY_FOR_EXTERNAL_MERGE", "WAITING_FOR_EXTERNAL_GATE"},
+            "action": "merge_status",
+            "workflow": "github_delivery",
+            "phase": "merge_status",
+            "status": "blocked" if state == "BLOCKED" else "succeeded",
+            "state": state,
+            "read_only": read_only,
+            "side_effects": False,
+            "repository": context.get("repository"),
+            "base_branch": context.get("base_branch"),
+            "base_head_sha": context.get("base_head_sha"),
+            "head_repository": context.get("head_repository"),
+            "head_branch": context.get("head_branch"),
+            "head_sha": context.get("head_sha"),
+            "pull_request": readiness.get("pull_request"),
+            "ci": readiness.get("ci"),
+            "review": readiness.get("review"),
+            "draft": readiness.get("draft"),
+            "merge_authority": readiness.get("merge_authority"),
+            "merge_handoff": readiness.get("merge_handoff"),
+            "next_actions": [],
+            "blockers": list(readiness.get("blockers") or []),
+            "warnings": list(readiness.get("warnings") or []),
+        }
+        return result
+
+    @staticmethod
+    def _readiness_error(error: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "state": "BLOCKED",
+            "blockers": [str(error.get("error_code") or "GITHUB_DELIVERY_BLOCKED")],
+            "warnings": list(error.get("warnings") or []),
+            "error": error,
+        }
+
+    @staticmethod
+    def _blocked_readiness(
+        error_code: str,
+        context: dict[str, Any],
+        warnings: list[str],
+        **details: Any,
+    ) -> dict[str, Any]:
+        return {
+            "state": "BLOCKED",
+            "context": context,
+            "blockers": [error_code],
+            "warnings": warnings,
+            **details,
+        }
+
     def _delivery_context(self) -> dict[str, Any]:
         authority = self._authority_preflight()
         if authority is not None:
@@ -485,7 +1261,7 @@ class MCPGitHubDeliveryManager:
 
     @staticmethod
     def _normalize_pr(
-        item: dict[str, Any], repository: str
+        item: dict[str, Any], repository: str, *, allow_closed: bool = False
     ) -> dict[str, Any] | None:
         number = item.get("number")
         state = str(item.get("state") or "").lower()
@@ -511,7 +1287,7 @@ class MCPGitHubDeliveryManager:
             not isinstance(number, int)
             or isinstance(number, bool)
             or number <= 0
-            or state != "open"
+            or state not in ({"open", "closed", "merged"} if allow_closed else {"open"})
             or not isinstance(item.get("isDraft"), bool)
             or parsed.scheme != "https"
             or parsed.netloc != "github.com"
@@ -522,6 +1298,18 @@ class MCPGitHubDeliveryManager:
             or not re.fullmatch(r"[A-Za-z0-9._/-]{1,255}", head_branch)
             or not re.fullmatch(r"[0-9a-f]{40,64}", head_sha)
         ):
+            return None
+        merged_at = item.get("mergedAt")
+        merge_commit = item.get("mergeCommit")
+        merge_sha = (
+            str(merge_commit.get("oid") or "").lower()
+            if isinstance(merge_commit, dict)
+            else ""
+        )
+        merged = state == "merged" or (
+            state == "closed" and isinstance(merged_at, str) and bool(merged_at)
+        )
+        if merged and re.fullmatch(r"[0-9a-f]{40,64}", merge_sha) is None:
             return None
         return {
             "present": True,
@@ -534,38 +1322,24 @@ class MCPGitHubDeliveryManager:
             "head_repository": head_repository,
             "head_branch": head_branch,
             "head_sha": head_sha,
+            "merged": merged,
+            "merge_sha": merge_sha if merged else None,
         }
 
     @staticmethod
     def _classify_pull_requests(
         pull_requests: list[dict[str, Any]], context: dict[str, Any]
     ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
-        canonical_repository = str(context.get("repository") or "")
-        canonical = [
-            item
-            for item in pull_requests
-            if isinstance(item.get("head_repository"), str)
-            and str(item["head_repository"]).casefold()
-            == canonical_repository.casefold()
-        ]
-        foreign_count = len(pull_requests) - len(canonical)
-        warnings = ["foreign_head_pr_ignored"] if foreign_count else []
-        exact = [
-            item
-            for item in canonical
-            if str(item.get("base_repository") or "").casefold()
-            == canonical_repository.casefold()
-            and item.get("state") == "open"
-            and item.get("base_branch") == context.get("base_branch")
-            and item.get("head_branch") == context.get("head_branch")
-            and item.get("head_sha") == context.get("head_sha")
-        ]
-        if len(exact) > 1 or len(canonical) != len(exact):
-            return None, "GITHUB_PR_CONTEXT_AMBIGUOUS", warnings
-        if len(exact) == 1:
-            if exact[0].get("draft") is not True:
+        exact, error, warnings = MCPGitHubDeliveryManager._classify_canonical_identity(
+            pull_requests,
+            context,
+        )
+        if error is not None:
+            return None, error, warnings
+        if exact is not None:
+            if exact.get("state") != "open" or exact.get("draft") is not True:
                 return None, "GITHUB_PR_STATE_OUTSIDE_AUTHORITY", warnings
-            return exact[0], None, warnings
+            return exact, None, warnings
         return None, None, warnings
 
     def _pr_present(
@@ -597,10 +1371,10 @@ class MCPGitHubDeliveryManager:
                     "tool": "run_mcp_workflow",
                     "params": {
                         "workflow": "github_delivery",
-                        "phase": "pr_status",
+                        "phase": "merge_status",
                         "project_name": project_name,
                     },
-                    "reason": "Re-read the exact pull-request identity.",
+                    "reason": "Observe exact-head CI and review merge readiness.",
                     "requires_confirmation": False,
                 }
             ],

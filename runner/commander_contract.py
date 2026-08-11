@@ -3347,7 +3347,7 @@ def _is_poll_action(action: dict[str, Any]) -> bool:
     if tool == "manage_git":
         return action_name in _POLL_GIT_ACTIONS
     if tool == "run_mcp_workflow":
-        return phase in {"status", "pr_status"}
+        return phase in {"status", "pr_status", "merge_status"}
     if tool == "review_manifest":
         return phase == "status"
     return False

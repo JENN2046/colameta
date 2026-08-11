@@ -289,7 +289,7 @@ def _action_kind(action: dict[str, Any]) -> str:
         return "evidence"
     if (
         action_name in {"status", "push_status", "pull_status"}
-        or phase in {"status", "pr_status"}
+        or phase in {"status", "pr_status", "merge_status"}
         or tool == "analyze_project_state"
     ):
         return "poll"
