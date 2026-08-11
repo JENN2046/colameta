@@ -1433,6 +1433,13 @@ def build_mcp_tool_definitions(
                         "type": "string",
                         "description": "apply 类 action 必填。来自对应 preview 的 preview_id。",
                     },
+                    "preview_digest": {
+                        "type": "string",
+                        "description": (
+                            "对应 preview 返回的精确 digest；"
+                            "topic_branch_apply 必填。"
+                        ),
+                    },
                     "branch_name": {
                         "type": "string",
                         "description": "topic_branch_preview 的 delivery-safe codex/* target branch。",

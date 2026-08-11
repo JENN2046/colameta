@@ -17,6 +17,8 @@ from runner.runner_paths import resolve_project_runner_path
 class MCPGitBranchManager:
     """Preview-bound creation of one delivery-safe topic branch."""
 
+    _MAX_PREVIEW_BYTES = 1024 * 1024
+
     def __init__(self, project_root: str):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self.preview_dir = resolve_project_runner_path(
@@ -62,11 +64,13 @@ class MCPGitBranchManager:
             "expires_at": expires_at.isoformat(),
             "consumed": False,
         }
+        preview_digest = self._preview_digest(payload)
         preview_file = self._write_preview(preview_id, payload)
         return {
             "ok": True,
             "action": "topic_branch_preview",
             "preview_id": preview_id,
+            "preview_digest": preview_digest,
             "source_branch": state["branch"],
             "source_head": state["head"],
             "target_branch": target_branch,
@@ -84,7 +88,11 @@ class MCPGitBranchManager:
             "warnings": [],
         }
 
-    def topic_branch_apply(self, preview_id: str) -> dict[str, Any]:
+    def topic_branch_apply(
+        self,
+        preview_id: str,
+        preview_digest: str = "",
+    ) -> dict[str, Any]:
         normalized_id = self._validate_preview_id(preview_id)
         if normalized_id is None:
             return self._error(
@@ -92,12 +100,45 @@ class MCPGitBranchManager:
                 error_code="INVALID_PREVIEW_ID",
                 message="preview_id is invalid.",
             )
-        preview = self._read_preview(normalized_id)
-        if preview is None:
+        normalized_digest = self._validate_preview_digest(preview_digest)
+        if normalized_digest is None:
+            error_code = (
+                "PREVIEW_DIGEST_REQUIRED"
+                if not isinstance(preview_digest, str) or not preview_digest.strip()
+                else "PREVIEW_DIGEST_INVALID"
+            )
             return self._error(
                 action="topic_branch_apply",
-                error_code="PREVIEW_NOT_FOUND",
-                message="The topic-branch preview does not exist.",
+                error_code=error_code,
+                message=(
+                    "preview_digest is required."
+                    if error_code == "PREVIEW_DIGEST_REQUIRED"
+                    else "preview_digest is invalid."
+                ),
+                preview_id=normalized_id,
+            )
+        preview, read_error = self._read_preview_secure(normalized_id)
+        if read_error is not None or preview is None:
+            error_code = read_error or "PREVIEW_INVALID"
+            return self._error(
+                action="topic_branch_apply",
+                error_code=error_code,
+                message=self._preview_read_error_message(error_code),
+                preview_id=normalized_id,
+            )
+        actual_digest = self._preview_digest(preview)
+        if actual_digest is None:
+            return self._error(
+                action="topic_branch_apply",
+                error_code="PREVIEW_INVALID",
+                message="The topic-branch preview is invalid.",
+                preview_id=normalized_id,
+            )
+        if not secrets.compare_digest(normalized_digest, actual_digest):
+            return self._error(
+                action="topic_branch_apply",
+                error_code="PREVIEW_DIGEST_MISMATCH",
+                message="The topic-branch preview no longer matches the confirmed digest.",
                 preview_id=normalized_id,
             )
         if preview.get("action") != "topic_branch_preview":
@@ -411,16 +452,80 @@ class MCPGitBranchManager:
             raise
         return path
 
-    def _read_preview(self, preview_id: str) -> dict[str, Any] | None:
+    def _read_preview_secure(
+        self,
+        preview_id: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        path = self._preview_path(preview_id)
+        preview_root = os.path.realpath(self.preview_dir)
+        if os.path.realpath(os.path.dirname(path)) != preview_root:
+            return None, "PREVIEW_UNSAFE"
         try:
-            with open(self._preview_path(preview_id), encoding="utf-8") as handle:
-                value = json.load(handle)
-        except (OSError, ValueError):
-            return None
-        return value if isinstance(value, dict) else None
+            before = os.lstat(path)
+        except FileNotFoundError:
+            return None, "PREVIEW_NOT_FOUND"
+        except OSError:
+            return None, "PREVIEW_INVALID"
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            return None, "PREVIEW_UNSAFE"
+        if before.st_size > self._MAX_PREVIEW_BYTES:
+            return None, "PREVIEW_INVALID"
+
+        flags = os.O_RDONLY
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        if isinstance(no_follow, int):
+            flags |= no_follow
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            return None, "PREVIEW_NOT_FOUND"
+        except OSError:
+            return None, "PREVIEW_UNSAFE"
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+            ):
+                return None, "PREVIEW_UNSAFE"
+            chunks: list[bytes] = []
+            remaining = self._MAX_PREVIEW_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+        except OSError:
+            return None, "PREVIEW_INVALID"
+        finally:
+            os.close(descriptor)
+        if len(raw) > self._MAX_PREVIEW_BYTES:
+            return None, "PREVIEW_INVALID"
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return None, "PREVIEW_INVALID"
+        return (value, None) if isinstance(value, dict) else (None, "PREVIEW_INVALID")
 
     def _preview_path(self, preview_id: str) -> str:
         return os.path.join(self.preview_dir, f"{preview_id}.json")
+
+    @staticmethod
+    def _preview_digest(payload: dict[str, Any]) -> str | None:
+        try:
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return None
+        return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _validate_preview_id(value: Any) -> str | None:
@@ -433,6 +538,25 @@ class MCPGitBranchManager:
         ):
             return None
         return normalized
+
+    @staticmethod
+    def _validate_preview_digest(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        if len(normalized) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized
+        ):
+            return None
+        return normalized
+
+    @staticmethod
+    def _preview_read_error_message(error_code: str) -> str:
+        return {
+            "PREVIEW_NOT_FOUND": "The topic-branch preview does not exist.",
+            "PREVIEW_UNSAFE": "The topic-branch preview is not a safe regular file.",
+            "PREVIEW_INVALID": "The topic-branch preview is invalid.",
+        }.get(error_code, "The topic-branch preview could not be read safely.")
 
     @staticmethod
     def _parse_time(value: Any) -> datetime | None:

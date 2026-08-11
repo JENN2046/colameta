@@ -7622,10 +7622,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             for item in actions
         ):
             return
+        apply_params = {"action": apply_action, "preview_id": preview_id.strip()}
+        preview_digest = result.get("preview_digest")
+        if isinstance(preview_digest, str) and preview_digest.strip():
+            apply_params["preview_digest"] = preview_digest.strip()
         actions.append(
             {
                 "tool": "manage_git",
-                "params": {"action": apply_action, "preview_id": preview_id.strip()},
+                "params": apply_params,
                 "reason": "确认并执行已生成的受控 Git preview。",
                 "requires_confirmation": True,
             }
@@ -7836,8 +7840,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             )
 
         preview_id = params.get("preview_id")
+        preview_digest = params.get("preview_digest")
         result = manager.topic_branch_apply(
-            preview_id if isinstance(preview_id, str) else ""
+            preview_id if isinstance(preview_id, str) else "",
+            preview_digest if isinstance(preview_digest, str) else "",
         )
         if result.get("ok") is not True:
             return result

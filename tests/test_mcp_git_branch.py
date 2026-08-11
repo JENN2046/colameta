@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -73,7 +72,12 @@ def test_topic_branch_preview_and_apply_preserve_complete_worktree(tmp_path) -> 
     assert _git(repo, "rev-parse", "HEAD") == head_before
     assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == status_before
 
-    applied = manager.topic_branch_apply(preview["preview_id"])
+    assert len(preview["preview_digest"]) == 64
+    assert preview["preview_digest"] == preview["preview_digest"].lower()
+    applied = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
 
     assert applied["ok"] is True
     assert applied["preview_consumed"] is True
@@ -88,9 +92,21 @@ def test_topic_branch_preview_and_apply_preserve_complete_worktree(tmp_path) -> 
         path: (repo / path).read_bytes()
         for path in ("README.md", "staged.txt", "untracked.txt")
     } == contents_before
-    replay = manager.topic_branch_apply(preview["preview_id"])
+    replay = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
     assert replay["ok"] is False
-    assert replay["error_code"] == "PREVIEW_CONSUMED"
+    assert replay["error_code"] == "PREVIEW_DIGEST_MISMATCH"
+    artifact = Path(manager.preview_dir) / f"{preview['preview_id']}.json"
+    consumed_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    consumed_payload["consumed"] = False
+    artifact.write_text(json.dumps(consumed_payload), encoding="utf-8")
+    rewritten_replay = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
+    assert rewritten_replay["error_code"] == "PREVIEW_DIGEST_MISMATCH"
     assert _git(repo, "branch", "--show-current") == "codex/delivery-test"
 
 
@@ -197,7 +213,10 @@ def test_topic_branch_apply_rejects_preview_drift(
     else:
         (repo / "untracked.txt").write_text("after\n", encoding="utf-8")
 
-    result = manager.topic_branch_apply(preview["preview_id"])
+    result = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
 
     assert result["ok"] is False
     assert result["error_code"] == error_code
@@ -209,16 +228,20 @@ def test_topic_branch_apply_rejects_expired_and_target_created_after_preview(
 ) -> None:
     repo = _repo(tmp_path)
     manager = MCPGitBranchManager(str(repo))
+    manager.preview_ttl_seconds = -1
     expired = manager.topic_branch_preview("codex/delivery-expired")
-    preview_path = Path(manager.preview_dir) / f"{expired['preview_id']}.json"
-    payload = json.loads(preview_path.read_text(encoding="utf-8"))
-    payload["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-    preview_path.write_text(json.dumps(payload), encoding="utf-8")
-    assert manager.topic_branch_apply(expired["preview_id"])["error_code"] == "PREVIEW_EXPIRED"
+    assert manager.topic_branch_apply(
+        expired["preview_id"],
+        expired["preview_digest"],
+    )["error_code"] == "PREVIEW_EXPIRED"
 
+    manager.preview_ttl_seconds = 1800
     existing = manager.topic_branch_preview("codex/delivery-late-existing")
     _git(repo, "branch", "codex/delivery-late-existing")
-    result = manager.topic_branch_apply(existing["preview_id"])
+    result = manager.topic_branch_apply(
+        existing["preview_id"],
+        existing["preview_digest"],
+    )
     assert result["error_code"] == "TOPIC_BRANCH_ALREADY_EXISTS"
 
 
@@ -233,9 +256,106 @@ def test_topic_branch_apply_rejects_git_operation_started_after_preview(
         marker = repo / marker
     marker.write_text(_git(repo, "rev-parse", "HEAD") + "\n", encoding="utf-8")
 
-    result = manager.topic_branch_apply(preview["preview_id"])
+    result = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
 
     assert result["error_code"] == "GIT_OPERATION_IN_PROGRESS"
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("target_branch", "codex/delivery-substituted"),
+        ("source_head", "f" * 40),
+        ("working_tree_fingerprint", "0" * 64),
+        ("expires_at", "2099-01-01T00:00:00+00:00"),
+        ("consumed", True),
+        ("unexpected_authority", {"target_branch": "codex/delivery-other"}),
+    ],
+)
+def test_topic_branch_apply_rejects_preview_artifact_substitution(
+    tmp_path,
+    field: str,
+    replacement: object,
+) -> None:
+    repo = _repo(tmp_path)
+    manager = MCPGitBranchManager(str(repo))
+    preview = manager.topic_branch_preview("codex/delivery-confirmed")
+    artifact = Path(manager.preview_dir) / f"{preview['preview_id']}.json"
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload[field] = replacement
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    branch_before = _git(repo, "branch", "--show-current")
+    head_before = _git(repo, "rev-parse", "HEAD")
+    status_before = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+    result = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "PREVIEW_DIGEST_MISMATCH"
+    assert _git(repo, "branch", "--show-current") == branch_before
+    assert _git(repo, "rev-parse", "HEAD") == head_before
+    assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == status_before
+
+
+def test_topic_branch_apply_requires_valid_exact_preview_digest(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    manager = MCPGitBranchManager(str(repo))
+    preview = manager.topic_branch_preview("codex/delivery-digest")
+
+    assert manager.topic_branch_apply(preview["preview_id"])["error_code"] == (
+        "PREVIEW_DIGEST_REQUIRED"
+    )
+    assert manager.topic_branch_apply(preview["preview_id"], "ABC")[
+        "error_code"
+    ] == "PREVIEW_DIGEST_INVALID"
+    assert manager.topic_branch_apply(preview["preview_id"], "0" * 64)[
+        "error_code"
+    ] == "PREVIEW_DIGEST_MISMATCH"
+    assert _git(repo, "branch", "--show-current") == "main"
+
+
+def test_topic_branch_apply_rejects_symlink_preview(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    manager = MCPGitBranchManager(str(repo))
+    preview = manager.topic_branch_preview("codex/delivery-symlink")
+    artifact = Path(manager.preview_dir) / f"{preview['preview_id']}.json"
+    outside = tmp_path / "substituted-preview.json"
+    outside.write_text(artifact.read_text(encoding="utf-8"), encoding="utf-8")
+    artifact.unlink()
+    try:
+        artifact.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    result = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
+
+    assert result["error_code"] == "PREVIEW_UNSAFE"
+    assert _git(repo, "branch", "--show-current") == "main"
+
+
+def test_topic_branch_apply_rejects_oversized_preview(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    manager = MCPGitBranchManager(str(repo))
+    preview = manager.topic_branch_preview("codex/delivery-oversized")
+    artifact = Path(manager.preview_dir) / f"{preview['preview_id']}.json"
+    artifact.write_bytes(b"x" * (manager._MAX_PREVIEW_BYTES + 1))
+
+    result = manager.topic_branch_apply(
+        preview["preview_id"],
+        preview["preview_digest"],
+    )
+
+    assert result["error_code"] == "PREVIEW_INVALID"
+    assert _git(repo, "branch", "--show-current") == "main"
 
 
 @pytest.mark.parametrize("dirty", [False, True])
@@ -266,6 +386,8 @@ def test_commander_manage_git_topic_branch_confirmation_and_continuation(
         for tool in server._filter_tools_by_exposure_profile(server.tool_defs)
     ) == COMMANDER_EXPOSED_TOOLS
     assert len(COMMANDER_EXPOSED_TOOLS) == 9
+    manage_git = next(tool for tool in server.tool_defs if tool.name == "manage_git")
+    assert "preview_digest" in manage_git.input_schema["properties"]
     assert server.get_required_scope_for_tool(
         "manage_git",
         {"action": "topic_branch_preview"},
@@ -297,6 +419,9 @@ def test_commander_manage_git_topic_branch_confirmation_and_continuation(
     assert preview["data"]["next_action"]["tool"] == "manage_git"
     apply_arguments = preview["data"]["next_action"]["arguments"]
     assert apply_arguments["action"] == "topic_branch_apply"
+    assert apply_arguments["preview_digest"] == preview["data"]["facts"][
+        "preview_digest"
+    ]
     assert apply_arguments["context_binding"]["branch"] == "main"
     head_before = _git(repo, "rev-parse", "HEAD")
 

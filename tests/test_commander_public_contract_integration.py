@@ -1985,6 +1985,10 @@ def test_accepted_main_delivery_handoff_creates_topic_branch_without_mutating_lo
     validate_commander_response(preview["data"])
     assert preview["data"]["outcome"] == "confirmation_required"
     apply_arguments = preview["data"]["next_action"]["arguments"]
+    assert len(apply_arguments["preview_digest"]) == 64
+    assert apply_arguments["preview_digest"] == preview["data"]["facts"][
+        "preview_digest"
+    ]
 
     applied = server._call_tool("manage_git", apply_arguments)
     validate_commander_response(applied["data"])
