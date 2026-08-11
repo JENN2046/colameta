@@ -539,6 +539,7 @@ _CONFIRMATION_WORKFLOW_PHASES = frozenset(
         "execute",
         "plan_apply",
         "run",
+        "pr_apply",
     }
 )
 _POLL_GIT_ACTIONS = frozenset({"status", "push_status", "pull_status"})
@@ -3346,7 +3347,7 @@ def _is_poll_action(action: dict[str, Any]) -> bool:
     if tool == "manage_git":
         return action_name in _POLL_GIT_ACTIONS
     if tool == "run_mcp_workflow":
-        return phase == "status"
+        return phase in {"status", "pr_status"}
     if tool == "review_manifest":
         return phase == "status"
     return False

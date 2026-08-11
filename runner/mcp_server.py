@@ -35,6 +35,7 @@ from runner.execution_standards import get_execution_standards
 from runner.plan_standards_linter import PlanStandardsLinter
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_git_branch import MCPGitBranchManager
+from runner.mcp_github_delivery import MCPGitHubDeliveryManager
 from runner.mcp_git_remote import MCPGitRemoteManager
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.mcp_decisions import MCPDecisionRecordsManager
@@ -7955,9 +7956,59 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             result = manager.pull_apply(preview_id.strip())
         else:
             return {"ok": False, "error_code": "INVALID_ACTION", "message": f"未知 manage_git_remote action：{action}"}
+        self._add_github_delivery_continuation(
+            result,
+            action=action,
+            project_name=str(params.get("__context_binding_project_name") or ""),
+        )
         if record:
             self._record_workflow_if_needed("manage_git_remote", action, params, result)
         return result
+
+    @staticmethod
+    def _add_github_delivery_continuation(
+        result: dict[str, Any],
+        *,
+        action: str,
+        project_name: str,
+    ) -> None:
+        status = result
+        if action == "push_apply":
+            nested = result.get("status_after")
+            if result.get("synced") is not True or not isinstance(nested, dict):
+                return
+            status = nested
+        if action not in {"push_status", "push_apply"} or status.get("ok") is not True:
+            return
+        branch = status.get("branch") or result.get("branch")
+        if (
+            not isinstance(branch, str)
+            or not branch.startswith("codex/")
+            or status.get("remote_name") != "origin"
+            or status.get("upstream") != f"origin/{branch}"
+            or status.get("ahead") != 0
+            or status.get("behind") != 0
+            or status.get("blocking_working_tree_clean") is not True
+            or any(
+                str(item) != "nothing_to_push"
+                for item in (status.get("blockers") or [])
+            )
+        ):
+            return
+        next_params: dict[str, Any] = {
+            "workflow": "github_delivery",
+            "phase": "pr_status",
+        }
+        if project_name:
+            next_params["project_name"] = project_name
+        result["next_actions"] = [
+            {
+                "tool": "run_mcp_workflow",
+                "params": next_params,
+                "reason": "Inspect exact-head GitHub pull-request admission.",
+                "requires_confirmation": False,
+            }
+        ]
 
     def _tool_manage_git_commit(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")
@@ -10003,6 +10054,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+        if workflow == "github_delivery":
+            if params.get("project_name") is not None:
+                return self._route_project_name_tool(
+                    "run_mcp_workflow",
+                    params,
+                    require_managed=True,
+                )
+            return self._github_delivery(params)
         if workflow == "project_delivery_preview":
             if params.get("project_name") is not None:
                 return self._route_project_name_tool(
@@ -10504,6 +10563,78 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             tool_name="run_mcp_workflow",
             params=params,
         )
+
+    def _github_delivery(self, params: dict[str, Any]) -> dict[str, Any]:
+        phase_raw = params.get("phase")
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+        verified_binding = self._require_operation_context_binding(
+            "run_mcp_workflow",
+            params,
+        )
+        project_name = str(
+            params.get("__context_binding_project_name")
+            or build_project_identity(self.project_root).get("project_name")
+            or ""
+        )
+        manager = MCPGitHubDeliveryManager(self.project_root)
+        if phase == "pr_status":
+            result = manager.pr_status(project_name=project_name)
+        elif phase == "pr_preview":
+            result = manager.pr_preview(project_name=project_name)
+        elif phase == "pr_apply":
+            preview_id = params.get("preview_id")
+            preview_digest = params.get("preview_digest")
+            if not isinstance(preview_id, str) or not preview_id.strip():
+                return self._github_delivery_error(
+                    "INVALID_PREVIEW_ID",
+                    "github_delivery pr_apply requires preview_id.",
+                )
+            if not isinstance(preview_digest, str) or not preview_digest.strip():
+                return self._github_delivery_error(
+                    "PREVIEW_DIGEST_REQUIRED",
+                    "github_delivery pr_apply requires preview_digest.",
+                )
+            result = manager.pr_apply(
+                project_name=project_name,
+                preview_id=preview_id.strip(),
+                preview_digest=preview_digest.strip(),
+            )
+        else:
+            return self._github_delivery_error(
+                "GITHUB_DELIVERY_PHASE_NOT_SUPPORTED",
+                "github_delivery supports pr_status, pr_preview, and pr_apply only.",
+            )
+        return self._attach_operation_context_binding(
+            result,
+            tool_name="run_mcp_workflow",
+            params=params,
+            verified_binding=verified_binding,
+        )
+
+    @staticmethod
+    def _github_delivery_error(error_code: str, message: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "github_delivery",
+            "action": "github_delivery",
+            "workflow": "github_delivery",
+            "status": "blocked",
+            "risk_level": "blocked",
+            "message": message,
+            "result": {
+                "ok": False,
+                "read_only": True,
+                "side_effects": False,
+                "github_delivery": {"state": "BLOCKED"},
+            },
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": [error_code],
+            "warnings": [],
+        }
 
     @staticmethod
     def _project_delivery_error(error_code: str, message: str) -> dict[str, Any]:

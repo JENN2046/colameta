@@ -35,6 +35,7 @@ _WORKFLOW_JOURNEY_STAGES = {
     "prompt_to_plan": "plan",
     "thin_governed_loop_preview": "plan",
     "project_delivery_preview": "close",
+    "github_delivery": "close",
     "stage_7_9_preview": "plan",
     "auto_preview": "plan",
     "small_project_patch": "execute",
@@ -274,6 +275,7 @@ def _action_kind(action: dict[str, Any]) -> str:
         "run",
         "commit",
         "execute",
+        "pr_apply",
     }:
         return "confirmation"
     if tool == "manage_validation_run" and action_name == "run":
@@ -287,7 +289,7 @@ def _action_kind(action: dict[str, Any]) -> str:
         return "evidence"
     if (
         action_name in {"status", "push_status", "pull_status"}
-        or phase == "status"
+        or phase in {"status", "pr_status"}
         or tool == "analyze_project_state"
     ):
         return "poll"

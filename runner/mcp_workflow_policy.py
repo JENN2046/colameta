@@ -35,6 +35,7 @@ WORKFLOW_CONTEXT_MUTATION_PHASES: dict[str, frozenset[str]] = {
     "prompt_to_plan": frozenset({"apply", "apply_all", "plan_apply", "run"}),
     CURRENT_FACTS_WORKFLOW: frozenset({"apply"}),
     OPERATOR_BATCH_WORKFLOW: frozenset({"execute"}),
+    "github_delivery": frozenset({"pr_apply"}),
 }
 
 
@@ -108,6 +109,14 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         return "mcp:read"
     if workflow == "project_delivery_preview":
         return "mcp:read" if phase == "preview" else None
+    if workflow == "github_delivery":
+        if phase == "pr_status":
+            return "mcp:read"
+        if phase == "pr_preview":
+            return "mcp:preview"
+        if phase == "pr_apply":
+            return "mcp:commit"
+        return None
     if workflow == REVIEW_MANIFEST_WORKFLOW:
         if phase in {"", "inspect", "read", "verify", "status"}:
             return "mcp:read"

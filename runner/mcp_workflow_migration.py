@@ -22,6 +22,7 @@ from runner.review_manifest import REVIEW_MANIFEST_WORKFLOW
 RESULT_ARTIFACT_WORKFLOW = "result_artifact"
 OPERATOR_BATCH_WORKFLOW = "operator_batch"
 PROJECT_DELIVERY_PREVIEW_WORKFLOW = "project_delivery_preview"
+GITHUB_DELIVERY_WORKFLOW = "github_delivery"
 
 MigrationClassification = Literal[
     "public_typed",
@@ -325,6 +326,29 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
         compatibility_status="compatibility_only",
         regression_tests=("tests/test_commander_public_contract_integration.py",),
     ),
+    GITHUB_DELIVERY_WORKFLOW: _entry(
+        GITHUB_DELIVERY_WORKFLOW,
+        "public_compatibility",
+        current_owner_module="runner.mcp_server",
+        current_owner_symbol="MCPPlanningBridgeServer._github_delivery",
+        target_owner_module="runner.mcp_github_delivery",
+        target_owner_symbol="MCPGitHubDeliveryManager",
+        target_owner_status="existing",
+        public_typed_entrypoint=None,
+        local_handoff_entrypoint=None,
+        supported_phases=("pr_status", "pr_preview", "pr_apply"),
+        required_fields=("workflow", "phase", "project_name"),
+        scope_contract=(
+            "pr_status:mcp:read",
+            "pr_preview:mcp:preview",
+            "pr_apply:mcp:commit",
+        ),
+        compatibility_status="compatibility_only",
+        regression_tests=(
+            "tests/test_mcp_github_delivery.py",
+            "tests/test_commander_public_contract_integration.py",
+        ),
+    ),
     CURRENT_FACTS_WORKFLOW: _entry(
         CURRENT_FACTS_WORKFLOW,
         "public_compatibility",
@@ -441,6 +465,7 @@ def declared_run_mcp_workflows() -> frozenset[str]:
             GATE_REVIEW_WORKFLOW,
             OPERATOR_BATCH_WORKFLOW,
             PROJECT_DELIVERY_PREVIEW_WORKFLOW,
+            GITHUB_DELIVERY_WORKFLOW,
         }
     )
 
