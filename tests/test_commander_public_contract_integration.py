@@ -2351,6 +2351,147 @@ def test_real_validation_preview_and_poll_use_the_public_contract(tmp_path) -> N
     assert current["facts"]["passed"] is True
 
 
+def test_github_delivery_preview_apply_uses_commander_confirmation_contract(
+    tmp_path,
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "delivery@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Delivery Fixture"],
+        check=True,
+    )
+    (tmp_path / ".gitignore").write_text(".colameta/runtime/\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("delivery\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-qm", "fixture"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    preview_id = "github_preview_1234567890"
+    preview_digest = "d" * 64
+
+    class FakeGitHubDeliveryManager:
+        def __init__(self, project_root: str):
+            assert project_root == str(tmp_path)
+
+        def pr_preview(self, *, project_name: str):
+            return {
+                "ok": True,
+                "action": "pr_preview",
+                "workflow": "github_delivery",
+                "phase": "pr_preview",
+                "status": "succeeded",
+                "state": "PR_PREVIEW_READY",
+                "preview_id": preview_id,
+                "preview_digest": preview_digest,
+                "requires_confirmation": True,
+                "repository": "OWNER/repo",
+                "base_branch": "main",
+                "head_branch": "codex/delivery-test",
+                "head_sha": head,
+                "next_actions": [
+                    {
+                        "tool": "run_mcp_workflow",
+                        "params": {
+                            "workflow": "github_delivery",
+                            "phase": "pr_apply",
+                            "project_name": project_name,
+                            "preview_id": preview_id,
+                            "preview_digest": preview_digest,
+                        },
+                        "reason": "Confirm the exact Draft PR.",
+                        "requires_confirmation": True,
+                    }
+                ],
+                "blockers": [],
+                "warnings": [],
+            }
+
+        def pr_apply(
+            self,
+            *,
+            project_name: str,
+            preview_id: str,
+            preview_digest: str,
+        ):
+            assert preview_id == "github_preview_1234567890"
+            assert preview_digest == "d" * 64
+            return {
+                "ok": True,
+                "action": "pr_apply",
+                "workflow": "github_delivery",
+                "phase": "pr_apply",
+                "status": "succeeded",
+                "state": "PR_PRESENT",
+                "pull_request": {
+                    "present": True,
+                    "number": 91,
+                    "state": "open",
+                    "draft": True,
+                    "url": "https://github.com/OWNER/repo/pull/91",
+                    "base_branch": "main",
+                    "head_branch": "codex/delivery-test",
+                    "head_sha": head,
+                },
+                "blockers": [],
+                "warnings": [],
+            }
+
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path.parent / "github-delivery-projects.json"),
+        user_settings_path=str(tmp_path.parent / "github-delivery-settings.json"),
+    )
+    assert registry.register_project(
+        str(tmp_path),
+        project_name=PROJECT_NAME,
+        project_mode="managed",
+    )["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+    with patch(
+        "runner.mcp_server.MCPGitHubDeliveryManager",
+        FakeGitHubDeliveryManager,
+    ):
+        preview = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "github_delivery",
+                "phase": "pr_preview",
+                "project_name": PROJECT_NAME,
+            },
+        )
+        assert preview["ok"] is True
+        contract = preview["data"]
+        validate_commander_response(contract)
+        assert contract["outcome"] == "confirmation_required"
+        assert contract["next_action"]["tool"] == "run_mcp_workflow"
+        assert contract["next_action"]["arguments"]["preview_digest"] == preview_digest
+        wrong_context = copy.deepcopy(contract["next_action"]["arguments"])
+        wrong_context["context_binding"]["head"] = "f" * 40
+        denied = server.call_tool_for_agent("run_mcp_workflow", wrong_context)
+        assert denied["ok"] is False
+        applied = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            contract["next_action"]["arguments"],
+        )
+        assert applied["ok"] is True, applied
+        validate_commander_response(applied["data"])
+        assert applied["data"]["facts"]["state"] == "PR_PRESENT"
+
+
 def test_projection_omits_kubernetes_secret_objects_and_redacts_text() -> None:
     secret = {
         "apiVersion": "v1",

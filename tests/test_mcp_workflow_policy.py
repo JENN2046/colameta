@@ -70,4 +70,5 @@ def test_context_binding_tracks_only_real_mutation_boundaries() -> None:
         "prompt_to_plan": frozenset({"apply", "apply_all", "plan_apply", "run"}),
         "current_facts": frozenset({"apply"}),
         "operator_batch": frozenset({"execute"}),
+        "github_delivery": frozenset({"pr_apply"}),
     }
