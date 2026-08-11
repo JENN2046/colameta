@@ -34,6 +34,7 @@ _WORKFLOW_JOURNEY_STAGES = {
     "plan_update": "plan",
     "prompt_to_plan": "plan",
     "thin_governed_loop_preview": "plan",
+    "project_delivery_preview": "close",
     "stage_7_9_preview": "plan",
     "auto_preview": "plan",
     "small_project_patch": "execute",

@@ -7,6 +7,7 @@ from runner.commander_workflow_policy import (
     journey_stage_for,
     select_commander_next_action,
 )
+from runner.mcp_workflow_policy import run_mcp_workflow_policy_scope
 from runner.mcp_commander_public import COMMANDER_EXPOSED_TOOLS
 
 
@@ -83,6 +84,23 @@ def test_thin_governed_loop_uses_observed_stage_or_plan_default() -> None:
         )
         == "plan"
     )
+
+
+def test_project_delivery_preview_is_close_stage() -> None:
+    assert (
+        journey_stage_for(
+            "run_mcp_workflow",
+            {"workflow": "project_delivery_preview", "phase": "preview"},
+            {},
+        )
+        == "close"
+    )
+    assert run_mcp_workflow_policy_scope(
+        {"workflow": "project_delivery_preview", "phase": "preview"}
+    ) == "mcp:read"
+    assert run_mcp_workflow_policy_scope(
+        {"workflow": "project_delivery_preview", "phase": "apply"}
+    ) is None
 
 
 @pytest.mark.parametrize(

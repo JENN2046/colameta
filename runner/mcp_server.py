@@ -99,6 +99,7 @@ from runner.mcp_tool_catalog import (
 from runner.mcp_validation_run import MCPValidationRunManager
 from runner.thin_governed_loop import (
     BLOCKED as THIN_LOOP_PRODUCT_BLOCKED,
+    READY_FOR_DELIVERY_GATE as THIN_LOOP_PRODUCT_READY_FOR_DELIVERY_GATE,
     READY_FOR_EXECUTION as THIN_LOOP_PRODUCT_READY_FOR_EXECUTION,
     THIN_LOOP_PRODUCT_SESSIONS,
 )
@@ -9910,6 +9911,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+        if workflow == "project_delivery_preview":
+            if params.get("project_name") is not None:
+                return self._route_project_name_tool(
+                    "run_mcp_workflow",
+                    params,
+                    require_managed=True,
+                )
+            return self._project_delivery_preview(params)
+
         product_inputs = params.get("thin_loop_inputs")
         if not isinstance(product_inputs, dict):
             product_inputs = {}
@@ -10001,9 +10011,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         tool_name="run_mcp_workflow",
                         params=params,
                     )
-                return self._thin_loop_product_result(
+                product_result = self._thin_loop_product_result(
                     projection,
                     project_name=project_name,
+                )
+                return self._attach_operation_context_binding(
+                    product_result,
+                    tool_name="run_mcp_workflow",
+                    params=params,
                 )
 
             result = self._workflow_compatibility_result("handle_run_mcp_workflow", params)
@@ -10116,6 +10131,41 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             },
         }
 
+    @staticmethod
+    def _thin_loop_delivery_preview_request(
+        projection: dict[str, Any],
+        *,
+        project_name: str,
+    ) -> dict[str, Any] | None:
+        thin_loop = projection.get("thin_loop")
+        if (
+            not isinstance(thin_loop, dict)
+            or thin_loop.get("status") != THIN_LOOP_PRODUCT_READY_FOR_DELIVERY_GATE
+        ):
+            return None
+        thin_loop_id = thin_loop.get("id")
+        if not isinstance(thin_loop_id, str) or not thin_loop_id:
+            return None
+        return {
+            "workflow": "project_delivery_preview",
+            "phase": "preview",
+            "project_name": project_name,
+            "thin_loop_id": thin_loop_id,
+        }
+
+    @staticmethod
+    def _thin_loop_delivery_continuation_fields(
+        delivery_request: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "next_request_payload": delivery_request,
+            "copy_paste_next_request": delivery_request,
+            "delivery_continuation": {
+                "tool": "run_mcp_workflow",
+                "arguments": delivery_request,
+            },
+        }
+
     @classmethod
     def _thin_loop_product_result(
         cls,
@@ -10143,6 +10193,21 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             product_projection.update(
                 cls._thin_loop_execution_continuation_fields(receipt_request)
             )
+        delivery_request = cls._thin_loop_delivery_preview_request(
+            projection,
+            project_name=project_name,
+        )
+        next_actions: list[dict[str, Any]] = []
+        if delivery_request is not None:
+            product_projection.update(
+                cls._thin_loop_delivery_continuation_fields(delivery_request)
+            )
+            next_actions.append({
+                "tool": "run_mcp_workflow",
+                "params": delivery_request,
+                "reason": "Inspect the accepted implementation's bounded delivery readiness.",
+                "requires_confirmation": False,
+            })
         return {
             "ok": not blocked,
             "source": "core_orchestrator",
@@ -10155,9 +10220,210 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "steps": [],
             "changed_files": [],
             "preview_ids": [],
-            "next_actions": [],
+            "next_actions": next_actions,
             "requires_confirmation": False,
             "blockers": blocker_codes,
+            "warnings": [],
+        }
+
+    def _project_delivery_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        phase_raw = params.get("phase")
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+        if phase != "preview":
+            return self._project_delivery_error(
+                "PROJECT_DELIVERY_PHASE_NOT_SUPPORTED",
+                "project_delivery_preview supports phase=preview only.",
+            )
+
+        thin_loop_id_raw = params.get("thin_loop_id")
+        thin_loop_id = (
+            thin_loop_id_raw.strip()
+            if isinstance(thin_loop_id_raw, str)
+            else ""
+        )
+        if not thin_loop_id:
+            return self._project_delivery_error(
+                "THIN_LOOP_ID_REQUIRED",
+                "project_delivery_preview requires the accepted thin_loop_id.",
+            )
+
+        identity = build_project_identity(self.project_root)
+        project_name = str(
+            params.get("__context_binding_project_name")
+            or identity.get("project_name")
+            or ""
+        )
+        branch = str(identity.get("git_branch") or "")
+        head = str(identity.get("git_head") or "")
+        try:
+            projection = THIN_LOOP_PRODUCT_SESSIONS.inspect(
+                thin_loop_id,
+                project_name=project_name,
+                branch=branch,
+                head=head,
+            )
+        except ValueError as exc:
+            return self._project_delivery_error(
+                str(exc),
+                "Accepted Thin Loop handoff evidence is unavailable or no longer matches the project context.",
+            )
+
+        thin_loop = projection.get("thin_loop")
+        if (
+            not isinstance(thin_loop, dict)
+            or thin_loop.get("status") != THIN_LOOP_PRODUCT_READY_FOR_DELIVERY_GATE
+        ):
+            return self._project_delivery_error(
+                "THIN_LOOP_NOT_READY_FOR_DELIVERY_GATE",
+                "The referenced Thin Loop has not reached READY_FOR_DELIVERY_GATE.",
+            )
+
+        readiness = MCPGitCommitManager(self.project_root).readiness(
+            include_diff_summary=False,
+            max_diff_chars=1,
+        )
+        if readiness.get("ok") is not True:
+            return self._project_delivery_error(
+                str(readiness.get("error_code") or "DELIVERY_GIT_FACTS_UNAVAILABLE"),
+                str(readiness.get("message") or "Local Git delivery facts are unavailable."),
+            )
+        if readiness.get("current_head") != head:
+            return self._project_delivery_error(
+                "THIN_LOOP_HEAD_MISMATCH",
+                "Local Git HEAD changed while deriving delivery readiness.",
+            )
+
+        remote_manager = MCPGitRemoteManager(self.project_root)
+        push_status = remote_manager.push_status()
+        branch_blocker = remote_manager._push_branch_policy_blocker(branch)
+        working_tree_clean = readiness.get("working_tree_clean") is True
+        git_facts = {
+            "branch": branch,
+            "head": head,
+            "worktree_clean": working_tree_clean,
+            "changed_file_count": len(readiness.get("changed_files") or []),
+            "untracked_file_count": len(readiness.get("untracked_files") or []),
+        }
+        remote_facts = {
+            "configured": bool(
+                push_status.get("remote_name")
+                and not push_status.get("remote_missing")
+            ),
+            "push_status": {
+                "ok": push_status.get("ok") is True,
+                "upstream": push_status.get("upstream"),
+                "ahead": push_status.get("ahead"),
+                "behind": push_status.get("behind"),
+                "first_push_available": push_status.get("first_push_available", False),
+                "blockers": list(push_status.get("blockers") or []),
+            },
+        }
+
+        blockers: list[str] = []
+        next_actions: list[dict[str, Any]] = []
+        delivery_state = "DELIVERY_ACTION_REQUIRED"
+        if branch_blocker is not None:
+            delivery_state = "BLOCKED"
+            blockers.append("delivery_topic_branch_required")
+        else:
+            action = "push_status" if working_tree_clean else "commit_readiness"
+            intent = "git_push" if working_tree_clean else "git_commit"
+            git_context_binding = collect_project_context_binding(
+                self.project_root,
+                project_name=project_name,
+                review_unit=f"operation:{intent}",
+                workflow_intent=intent,
+            )
+            next_actions.append({
+                "tool": "manage_git",
+                "params": {
+                    "action": action,
+                    "project_name": project_name,
+                    "context_binding": git_context_binding,
+                },
+                "reason": (
+                    "Inspect commit readiness for the accepted delivery candidate."
+                    if action == "commit_readiness"
+                    else "Inspect push readiness for the accepted topic branch."
+                ),
+                "requires_confirmation": False,
+            })
+
+        result = {
+            "ok": delivery_state != "BLOCKED",
+            "source": "core_orchestrator",
+            "action": "project_delivery_preview",
+            "workflow": "project_delivery_preview",
+            "phase": "preview",
+            "status": "blocked" if delivery_state == "BLOCKED" else "succeeded",
+            "risk_level": "blocked" if delivery_state == "BLOCKED" else "info",
+            "result": {
+                "ok": delivery_state != "BLOCKED",
+                "read_only": True,
+                "side_effects": False,
+                "delivery": {
+                    "state": delivery_state,
+                    "accepted_session_verified": True,
+                    "thin_loop_id": thin_loop_id,
+                    "project_name": project_name,
+                    "branch": branch,
+                    "head": head,
+                },
+                "thin_loop": thin_loop,
+                "git": git_facts,
+                "remote": remote_facts,
+                "authority_boundary": {
+                    "delivery_state_written": False,
+                    "review_decision_written": False,
+                    "gate_event_emitted": False,
+                    "commit": False,
+                    "push": False,
+                },
+            },
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": next_actions,
+            "requires_confirmation": False,
+            "blockers": blockers,
+            "warnings": [],
+        }
+        return self._attach_operation_context_binding(
+            result,
+            tool_name="run_mcp_workflow",
+            params=params,
+        )
+
+    @staticmethod
+    def _project_delivery_error(error_code: str, message: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "core_orchestrator",
+            "action": "project_delivery_preview",
+            "workflow": "project_delivery_preview",
+            "phase": "preview",
+            "status": "blocked",
+            "risk_level": "blocked",
+            "message": message,
+            "result": {
+                "ok": False,
+                "read_only": True,
+                "side_effects": False,
+                "delivery": {"state": "BLOCKED"},
+                "authority_boundary": {
+                    "delivery_state_written": False,
+                    "review_decision_written": False,
+                    "gate_event_emitted": False,
+                    "commit": False,
+                    "push": False,
+                },
+            },
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": [error_code],
             "warnings": [],
         }
 

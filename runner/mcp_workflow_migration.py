@@ -21,6 +21,7 @@ from runner.review_manifest import REVIEW_MANIFEST_WORKFLOW
 
 RESULT_ARTIFACT_WORKFLOW = "result_artifact"
 OPERATOR_BATCH_WORKFLOW = "operator_batch"
+PROJECT_DELIVERY_PREVIEW_WORKFLOW = "project_delivery_preview"
 
 MigrationClassification = Literal[
     "public_typed",
@@ -308,6 +309,22 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
         compatibility_status="compatibility_only",
         regression_tests=("tests/test_thin_governed_loop.py", "tests/test_mcp_operation_context_binding.py"),
     ),
+    PROJECT_DELIVERY_PREVIEW_WORKFLOW: _entry(
+        PROJECT_DELIVERY_PREVIEW_WORKFLOW,
+        "public_compatibility",
+        current_owner_module="runner.mcp_server",
+        current_owner_symbol="MCPPlanningBridgeServer._project_delivery_preview",
+        target_owner_module="runner.mcp_server",
+        target_owner_symbol="MCPPlanningBridgeServer._project_delivery_preview",
+        target_owner_status="existing",
+        public_typed_entrypoint=None,
+        local_handoff_entrypoint=None,
+        supported_phases=("preview",),
+        required_fields=("workflow", "phase", "project_name", "thin_loop_id"),
+        scope_contract=("preview:mcp:read",),
+        compatibility_status="compatibility_only",
+        regression_tests=("tests/test_commander_public_contract_integration.py",),
+    ),
     CURRENT_FACTS_WORKFLOW: _entry(
         CURRENT_FACTS_WORKFLOW,
         "public_compatibility",
@@ -423,6 +440,7 @@ def declared_run_mcp_workflows() -> frozenset[str]:
             RESULT_ARTIFACT_WORKFLOW,
             GATE_REVIEW_WORKFLOW,
             OPERATOR_BATCH_WORKFLOW,
+            PROJECT_DELIVERY_PREVIEW_WORKFLOW,
         }
     )
 
