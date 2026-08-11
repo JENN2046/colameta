@@ -1402,6 +1402,8 @@ def build_mcp_tool_definitions(
                             "status",
                             "diff",
                             "review_context",
+                            "topic_branch_preview",
+                            "topic_branch_apply",
                             "commit_readiness",
                             "commit_message",
                             "commit_preview",
@@ -1430,6 +1432,10 @@ def build_mcp_tool_definitions(
                     "preview_id": {
                         "type": "string",
                         "description": "apply 类 action 必填。来自对应 preview 的 preview_id。",
+                    },
+                    "branch_name": {
+                        "type": "string",
+                        "description": "topic_branch_preview 的 delivery-safe codex/* target branch。",
                     },
                     "message": {
                         "type": "string",

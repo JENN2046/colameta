@@ -1629,6 +1629,11 @@ class MCPGitRemoteManager:
             return None
 
     def _push_branch_policy_blocker(self, branch: Any) -> str | None:
+        return self.delivery_branch_policy_blocker(branch)
+
+    def delivery_branch_policy_blocker(self, branch: Any) -> str | None:
+        """Return the existing push-policy blocker for a delivery branch."""
+
         if not isinstance(branch, str) or not branch.strip() or branch == "HEAD":
             return None
         normalized = branch.strip()
