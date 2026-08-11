@@ -665,11 +665,68 @@ class MCPGitHubDeliveryManager:
         )
         return normalized, None
 
-    def _observe_ci(self, context: dict[str, Any]) -> dict[str, Any]:
+    def observe_exact_ci(
+        self,
+        *,
+        repository: str,
+        head_sha: str,
+        event: str,
+        branch: str | None = None,
+        workflow_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Observe bounded GitHub CI truth for one trusted exact SHA."""
+        repository_value = str(repository or "").strip()
+        normalized_repository = (
+            repository_value
+            if self._OWNER_REPO_RE.fullmatch(repository_value)
+            else self._normalize_github_origin(repository_value)
+        )
+        normalized_head = str(head_sha or "").strip().lower()
+        normalized_event = str(event or "").strip().lower()
+        normalized_branch = str(branch or "").strip()
+        normalized_workflow_path = str(workflow_path or "").strip()
+        if (
+            normalized_repository is None
+            or re.fullmatch(r"[0-9a-f]{40,64}", normalized_head) is None
+            or normalized_event not in {"pull_request", "push"}
+            or (normalized_event == "push" and not normalized_branch)
+            or (
+                normalized_workflow_path
+                and re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", normalized_workflow_path)
+                is None
+            )
+        ):
+            return {
+                "state": "INCOMPLETE",
+                "error_code": "GITHUB_CI_OBSERVATION_CONTEXT_INVALID",
+            }
+        return self._observe_ci(
+            {"repository": normalized_repository, "head_sha": normalized_head},
+            event=normalized_event,
+            branch=normalized_branch or None,
+            workflow_path=normalized_workflow_path or None,
+        )
+
+    def _observe_ci(
+        self,
+        context: dict[str, Any],
+        *,
+        event: str = "pull_request",
+        branch: str | None = None,
+        workflow_path: str | None = None,
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"event": event, "head_sha": context["head_sha"]}
+        if branch is not None:
+            query["branch"] = branch
+        runs_endpoint = (
+            f"repos/{context['repository']}/actions/workflows/{workflow_path.removeprefix('.github/workflows/')}/runs"
+            if workflow_path is not None
+            else f"repos/{context['repository']}/actions/runs"
+        )
         runs, runs_error = self._paged_rest_items(
-            f"repos/{context['repository']}/actions/runs",
+            runs_endpoint,
             "workflow_runs",
-            query={"event": "pull_request", "head_sha": context["head_sha"]},
+            query=query,
         )
         if runs_error is not None:
             return {"state": "INCOMPLETE", "error_code": runs_error}
@@ -677,7 +734,12 @@ class MCPGitHubDeliveryManager:
             item
             for item in runs
             if str(item.get("head_sha") or "").lower() == context["head_sha"]
-            and str(item.get("event") or "") == "pull_request"
+            and str(item.get("event") or "") == event
+            and (branch is None or str(item.get("head_branch") or "") == branch)
+            and (
+                workflow_path is None
+                or str(item.get("path") or "") == workflow_path
+            )
         ]
         current: dict[str, dict[str, Any]] = {}
         for item in exact_runs:
