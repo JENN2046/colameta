@@ -36,6 +36,7 @@ _WORKFLOW_JOURNEY_STAGES = {
     "thin_governed_loop_preview": "plan",
     "project_delivery_preview": "close",
     "github_delivery": "close",
+    "managed_runtime_closeout": "close",
     "stage_7_9_preview": "plan",
     "auto_preview": "plan",
     "small_project_patch": "execute",

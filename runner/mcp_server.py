@@ -36,6 +36,10 @@ from runner.plan_standards_linter import PlanStandardsLinter
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_git_branch import MCPGitBranchManager
 from runner.mcp_github_delivery import MCPGitHubDeliveryManager
+from runner.mcp_managed_runtime_closeout import (
+    MANAGED_RUNTIME_CLOSEOUT_WORKFLOW,
+    MCPManagedRuntimeCloseoutManager,
+)
 from runner.mcp_git_remote import MCPGitRemoteManager
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.mcp_decisions import MCPDecisionRecordsManager
@@ -10054,6 +10058,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
     def _tool_run_mcp_workflow(self, params: dict[str, Any]) -> dict[str, Any]:
         workflow = _normalize_run_mcp_workflow_name(params.get("workflow"))
+        if workflow == MANAGED_RUNTIME_CLOSEOUT_WORKFLOW:
+            if params.get("project_name") is not None:
+                return self._route_project_name_tool(
+                    "run_mcp_workflow",
+                    params,
+                    require_managed=True,
+                )
+            return self._managed_runtime_closeout(params)
         if workflow == "github_delivery":
             if params.get("project_name") is not None:
                 return self._route_project_name_tool(
@@ -10612,6 +10624,79 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             params=params,
             verified_binding=verified_binding,
         )
+
+    def _managed_runtime_closeout(self, params: dict[str, Any]) -> dict[str, Any]:
+        allowed_params = {
+            "workflow",
+            "phase",
+            "runtime_target",
+            "context_binding",
+            "__context_binding_project_name",
+        }
+        if any(key not in allowed_params for key in params):
+            return self._managed_runtime_closeout_error(
+                "RUNTIME_CLOSEOUT_INPUT_NOT_SUPPORTED",
+                "managed_runtime_closeout rejects caller-controlled service, path, command, and candidate overrides.",
+            )
+        phase_raw = params.get("phase")
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+        if phase != "status":
+            return self._managed_runtime_closeout_error(
+                "RUNTIME_CLOSEOUT_PHASE_NOT_SUPPORTED",
+                "managed_runtime_closeout supports status only.",
+            )
+        runtime_target = params.get("runtime_target")
+        if not isinstance(runtime_target, str) or not runtime_target.strip():
+            return self._managed_runtime_closeout_error(
+                "RUNTIME_TARGET_REQUIRED",
+                "managed_runtime_closeout requires runtime_target.",
+            )
+        project_name = str(
+            params.get("__context_binding_project_name")
+            or build_project_identity(self.project_root).get("project_name")
+            or ""
+        )
+        result = MCPManagedRuntimeCloseoutManager(
+            self.project_root,
+            project_name=project_name,
+        ).status(runtime_target=runtime_target.strip())
+        return self._attach_operation_context_binding(
+            result,
+            tool_name="run_mcp_workflow",
+            params=params,
+        )
+
+    @staticmethod
+    def _managed_runtime_closeout_error(
+        error_code: str,
+        message: str,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "source": "managed_runtime_closeout",
+            "action": "managed_runtime_closeout",
+            "workflow": MANAGED_RUNTIME_CLOSEOUT_WORKFLOW,
+            "phase": "status",
+            "status": "blocked",
+            "risk_level": "blocked",
+            "message": message,
+            "result": {
+                "ok": False,
+                "read_only": True,
+                "side_effects": False,
+                "runtime_closeout": {
+                    "state": "RUNTIME_CLOSEOUT_BLOCKED",
+                    "reason_code": error_code,
+                },
+            },
+            "steps": [],
+            "changed_files": [],
+            "preview_ids": [],
+            "next_actions": [],
+            "requires_confirmation": False,
+            "blockers": [error_code],
+            "warnings": [],
+        }
 
     @staticmethod
     def _github_delivery_error(error_code: str, message: str) -> dict[str, Any]:

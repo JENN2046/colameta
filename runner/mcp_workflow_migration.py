@@ -23,6 +23,7 @@ RESULT_ARTIFACT_WORKFLOW = "result_artifact"
 OPERATOR_BATCH_WORKFLOW = "operator_batch"
 PROJECT_DELIVERY_PREVIEW_WORKFLOW = "project_delivery_preview"
 GITHUB_DELIVERY_WORKFLOW = "github_delivery"
+MANAGED_RUNTIME_CLOSEOUT_WORKFLOW = "managed_runtime_closeout"
 
 MigrationClassification = Literal[
     "public_typed",
@@ -355,6 +356,25 @@ WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
             "tests/test_commander_public_contract_integration.py",
         ),
     ),
+    MANAGED_RUNTIME_CLOSEOUT_WORKFLOW: _entry(
+        MANAGED_RUNTIME_CLOSEOUT_WORKFLOW,
+        "public_compatibility",
+        current_owner_module="runner.mcp_server",
+        current_owner_symbol="MCPPlanningBridgeServer._managed_runtime_closeout",
+        target_owner_module="runner.mcp_managed_runtime_closeout",
+        target_owner_symbol="MCPManagedRuntimeCloseoutManager",
+        target_owner_status="existing",
+        public_typed_entrypoint=None,
+        local_handoff_entrypoint=None,
+        supported_phases=("status",),
+        required_fields=("workflow", "phase", "project_name", "runtime_target"),
+        scope_contract=("status:mcp:read",),
+        compatibility_status="compatibility_only",
+        regression_tests=(
+            "tests/test_mcp_managed_runtime_closeout.py",
+            "tests/test_commander_public_contract_integration.py",
+        ),
+    ),
     CURRENT_FACTS_WORKFLOW: _entry(
         CURRENT_FACTS_WORKFLOW,
         "public_compatibility",
@@ -472,6 +492,7 @@ def declared_run_mcp_workflows() -> frozenset[str]:
             OPERATOR_BATCH_WORKFLOW,
             PROJECT_DELIVERY_PREVIEW_WORKFLOW,
             GITHUB_DELIVERY_WORKFLOW,
+            MANAGED_RUNTIME_CLOSEOUT_WORKFLOW,
         }
     )
 

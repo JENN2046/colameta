@@ -117,6 +117,8 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
         if phase == "pr_apply":
             return "mcp:commit"
         return None
+    if workflow == "managed_runtime_closeout":
+        return "mcp:read" if phase == "status" else None
     if workflow == REVIEW_MANIFEST_WORKFLOW:
         if phase in {"", "inspect", "read", "verify", "status"}:
             return "mcp:read"

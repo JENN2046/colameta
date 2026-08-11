@@ -66,7 +66,6 @@ class FakeCommands:
         self.pr_view_override: dict[str, object] | None = None
         self.ready_calls = 0
         self.merge_calls = 0
-
     def __call__(
         self, args: list[str], cwd: str
     ) -> subprocess.CompletedProcess[str]:
@@ -196,7 +195,7 @@ class FakeCommands:
                 return self._completed(args, 0, self.compare_status + "\n")
             if "/actions/runs/" in endpoint and "/jobs?" in endpoint:
                 return self._completed(args, 0, json.dumps({"jobs": self.jobs}))
-            if "/actions/runs?" in endpoint:
+            if "/actions/runs?" in endpoint or "/actions/workflows/ci.yml/runs?" in endpoint:
                 return self._completed(
                     args, 0, json.dumps({"workflow_runs": self.workflow_runs})
                 )
@@ -286,6 +285,82 @@ def _foreign_pr(commands: FakeCommands, *, draft: bool = True) -> dict[str, obje
     pull_request["isDraft"] = draft
     pull_request["headRepositoryOwner"] = {"login": "FORK"}
     return pull_request
+
+
+def test_exact_push_ci_observer_binds_event_branch_and_head(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    project, commands = synchronized_project
+    commands.workflow_runs = [
+        {
+            "id": 801,
+            "workflow_id": 80,
+            "name": "CI",
+            "event": "push",
+            "head_branch": "main",
+            "head_sha": commands.remote_head,
+            "path": ".github/workflows/ci.yml",
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "success",
+        },
+        {
+            "id": 802,
+            "workflow_id": 81,
+            "name": "stale branch",
+            "event": "push",
+            "head_branch": "other",
+            "head_sha": commands.remote_head,
+            "path": ".github/workflows/other.yml",
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    ]
+    manager = _manager(project, commands)
+
+    result = manager.observe_exact_ci(
+        repository="OWNER/repo",
+        head_sha=commands.remote_head,
+        event="push",
+        branch="main",
+        workflow_path=".github/workflows/ci.yml",
+    )
+
+    assert result["state"] == "PASS"
+    assert [item["run_id"] for item in result["workflow_runs"]] == [801]
+
+
+def test_exact_push_ci_observer_rejects_unrelated_workflow(
+    synchronized_project: tuple[Path, FakeCommands],
+) -> None:
+    project, commands = synchronized_project
+    commands.workflow_runs = [
+        {
+            "id": 803,
+            "workflow_id": 81,
+            "name": "Unrelated docs ping",
+            "event": "push",
+            "head_branch": "main",
+            "head_sha": commands.remote_head,
+            "path": ".github/workflows/docs.yml",
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "success",
+        }
+    ]
+    manager = _manager(project, commands)
+
+    result = manager.observe_exact_ci(
+        repository="OWNER/repo",
+        head_sha=commands.remote_head,
+        event="push",
+        branch="main",
+        workflow_path=".github/workflows/ci.yml",
+    )
+
+    assert result["state"] == "WAITING"
+    assert result["workflow_runs"] == []
 
 
 def test_pr_status_preview_apply_creates_one_exact_draft(

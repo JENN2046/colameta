@@ -2550,6 +2550,103 @@ def test_github_delivery_preview_apply_uses_commander_confirmation_contract(
             assert rejected["ok"] is False
 
 
+def test_managed_runtime_closeout_status_is_read_only_commander_contract(
+    tmp_path,
+) -> None:
+    project = _make_real_git_project(tmp_path, "runtime-closeout")
+
+    class FakeRuntimeCloseoutManager:
+        def __init__(self, project_root: str, *, project_name: str):
+            assert project_root == str(project)
+            assert project_name == PROJECT_NAME
+
+        def status(self, *, runtime_target: str) -> dict[str, object]:
+            assert runtime_target == "colameta_stable_local"
+            return {
+                "ok": True,
+                "source": "managed_runtime_closeout",
+                "action": "managed_runtime_closeout",
+                "workflow": "managed_runtime_closeout",
+                "phase": "status",
+                "status": "succeeded",
+                "risk_level": "info",
+                "result": {
+                    "ok": True,
+                    "read_only": True,
+                    "side_effects": False,
+                    "runtime_closeout": {
+                        "state": "READY_FOR_EXTERNAL_RUNTIME_PROMOTION",
+                        "authority_boundary": {
+                            "stable_promotion": "external",
+                            "internal_mutation": False,
+                            "observation_is_point_in_time": True,
+                        },
+                    },
+                },
+                "steps": [],
+                "changed_files": [],
+                "preview_ids": [],
+                "next_actions": [],
+                "requires_confirmation": False,
+                "blockers": [],
+                "warnings": [],
+            }
+
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "runtime-projects.json"),
+        user_settings_path=str(tmp_path / "runtime-settings.json"),
+    )
+    assert registry.register_project(
+        str(project),
+        project_name=PROJECT_NAME,
+        project_mode="managed",
+    )["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(project),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+    with patch(
+        "runner.mcp_server.MCPManagedRuntimeCloseoutManager",
+        FakeRuntimeCloseoutManager,
+    ):
+        response = server.call_tool_for_agent(
+            "run_mcp_workflow",
+            {
+                "workflow": "managed_runtime_closeout",
+                "phase": "status",
+                "project_name": PROJECT_NAME,
+                "runtime_target": "colameta_stable_local",
+            },
+        )
+
+    assert response["ok"] is True
+    validate_commander_response(response["data"])
+    assert response["data"]["journey_stage"] == "close"
+    assert (
+        response["data"]["facts"]["result"]["runtime_closeout"]["state"]
+        == "READY_FOR_EXTERNAL_RUNTIME_PROMOTION"
+    )
+    assert response["data"]["confirmation"] is None
+    assert len(COMMANDER_EXPOSED_TOOLS) == 9
+
+    rejected = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "managed_runtime_closeout",
+            "phase": "status",
+            "project_name": PROJECT_NAME,
+            "runtime_target": "colameta_stable_local",
+            "service_name": "caller-controlled.service",
+        },
+    )
+    assert rejected["data"]["outcome"] == "blocked"
+    assert rejected["data"]["facts"]["blockers"] == [
+        "RUNTIME_CLOSEOUT_INPUT_NOT_SUPPORTED"
+    ]
+
+
 def test_projection_omits_kubernetes_secret_objects_and_redacts_text() -> None:
     secret = {
         "apiVersion": "v1",
