@@ -19,6 +19,7 @@ class HTTPRedirectPolicy:
 
     allow_cross_host: bool = False
     reject_https_downgrade: bool = True
+    allow_redirects: bool = True
 
 
 HostPolicy = Callable[[str], bool]
@@ -96,6 +97,9 @@ def _validate_redirect_url(
     redirect_policy: HTTPRedirectPolicy,
     host_policy: HostPolicy | None,
 ) -> str:
+    if not redirect_policy.allow_redirects:
+        raise HTTPURLPolicyError("redirect is not permitted")
+
     try:
         resolved_url = urljoin(origin_url, redirect_url.replace(" ", "%20"))
     except (AttributeError, TypeError, ValueError) as exc:
@@ -134,6 +138,8 @@ class _ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
     def http_error_302(self, req, fp, code, msg, headers):
         # Validate before urllib's built-in redirect implementation performs
         # its own partial scheme check (which still permits FTP).
+        if not self._redirect_policy.allow_redirects:
+            raise HTTPURLPolicyError("redirect is not permitted")
         newurl = headers.get("location") or headers.get("uri")
         if newurl:
             _validate_redirect_url(
@@ -195,12 +201,20 @@ def _build_restricted_opener(
     allowed_schemes: frozenset[str],
     redirect_policy: HTTPRedirectPolicy,
     host_policy: HostPolicy | None,
+    allow_environment_proxy: bool = True,
 ) -> urllib.request.OpenerDirector:
     """Build a local opener containing only HTTP/HTTPS handlers."""
 
+    if type(allow_environment_proxy) is not bool:
+        raise TypeError("allow_environment_proxy must be a bool")
+    proxy_handler = (
+        urllib.request.ProxyHandler()
+        if allow_environment_proxy
+        else urllib.request.ProxyHandler({})
+    )
     opener = urllib.request.OpenerDirector()
     for handler in (
-        urllib.request.ProxyHandler(),
+        proxy_handler,
         urllib.request.HTTPHandler(),
         urllib.request.HTTPSHandler(),
         _ValidatedRedirectHandler(
@@ -222,8 +236,17 @@ def open_http_url(
     allowed_schemes: Iterable[str],
     redirect_policy: HTTPRedirectPolicy,
     host_policy: HostPolicy | None = None,
+    allow_environment_proxy: bool = True,
 ):
-    """Open an HTTP/HTTPS URL after validating it and every redirect target."""
+    """Open an HTTP/HTTPS URL after validating it and every redirect target.
+
+    ``allow_environment_proxy=True`` preserves the legacy behavior of reading
+    ambient ``*_proxy`` environment variables through ``ProxyHandler()``.
+    ``allow_environment_proxy=False`` installs ``ProxyHandler({})`` so the
+    transport destination is exactly the validated URL and never an ambient
+    proxy.  The argument must be a real ``bool``; anything else raises
+    ``TypeError`` so configuration strings cannot silently change semantics.
+    """
 
     schemes = _normalize_allowed_schemes(allowed_schemes)
     if not isinstance(redirect_policy, HTTPRedirectPolicy):
@@ -243,5 +266,6 @@ def open_http_url(
         allowed_schemes=schemes,
         redirect_policy=redirect_policy,
         host_policy=host_policy,
+        allow_environment_proxy=allow_environment_proxy,
     )
     return opener.open(request, timeout=timeout)
