@@ -79,10 +79,10 @@ def _open_with_fake_transport(url: str, *, timeout: float | None = 3) -> dict[st
     return observed
 
 
-def _redirect_handler():
+def _redirect_handler(policy: HTTPRedirectPolicy | None = None):
     opener = _build_restricted_opener(
         allowed_schemes=frozenset({"http", "https"}),
-        redirect_policy=HTTPRedirectPolicy(),
+        redirect_policy=policy or HTTPRedirectPolicy(),
         host_policy=None,
     )
     return next(handler for handler in opener.handlers if hasattr(handler, "redirect_request"))
@@ -153,6 +153,53 @@ def test_cross_host_redirect_is_rejected() -> None:
 
     with pytest.raises(HTTPURLPolicyError, match="cross-host"):
         handler.redirect_request(request, object(), 302, "Found", {}, "http://other.test/next")
+
+
+@pytest.mark.parametrize("status", (301, 302, 303, 307, 308))
+def test_zero_redirect_policy_rejects_every_redirect_status(status: int) -> None:
+    handler = _redirect_handler(HTTPRedirectPolicy(allow_redirects=False))
+    request = urllib.request.Request("http://127.0.0.1:8767/healthz")
+
+    with pytest.raises(HTTPURLPolicyError, match="redirect is not permitted"):
+        getattr(handler, f"http_error_{status}")(
+            request,
+            object(),
+            status,
+            "Redirect",
+            {"location": "/next"},
+        )
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "http://127.0.0.1:8767/other-health",
+        "http://127.0.0.1:9999/healthz",
+        "http://127.0.0.1:9999/forged-health",
+    ),
+)
+def test_zero_redirect_policy_rejects_same_host_redirect_variants(target: str) -> None:
+    handler = _redirect_handler(HTTPRedirectPolicy(allow_redirects=False))
+    request = urllib.request.Request("http://127.0.0.1:8767/healthz")
+
+    with pytest.raises(HTTPURLPolicyError, match="redirect is not permitted"):
+        handler.redirect_request(request, object(), 302, "Found", {}, target)
+
+
+def test_default_redirect_policy_remains_backward_compatible() -> None:
+    handler = _redirect_handler()
+    request = urllib.request.Request("http://example.test/start")
+
+    redirected = handler.redirect_request(
+        request,
+        object(),
+        302,
+        "Found",
+        {},
+        "/next",
+    )
+
+    assert redirected.full_url == "http://example.test/next"
 
 
 def test_real_redirect_is_revalidated() -> None:
@@ -276,3 +323,221 @@ def test_all_six_production_call_sites_use_the_shared_policy() -> None:
 
     assert urlopen_calls == []
     assert len(policy_calls) == 6
+
+
+class _RecordingHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler that records every request path on its server."""
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server API
+        self.server.requests.append(self.path)  # type: ignore[attr-defined]
+        self.send_response(self.server.status)  # type: ignore[attr-defined]
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(self.server.response_body)  # type: ignore[attr-defined]
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class _RecordingServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, *, body: bytes = b"{}", status: int = 200):
+        super().__init__(("127.0.0.1", 0), _RecordingHandler)
+        self.requests: list[str] = []
+        self.response_body = body
+        self.status = status
+
+
+@contextmanager
+def _recording_server(*, body: bytes = b"{}", status: int = 200):
+    server = _RecordingServer(body=body, status=status)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def _proxy_handlers(opener: urllib.request.OpenerDirector):
+    return [handler for handler in opener.handlers if isinstance(handler, urllib.request.ProxyHandler)]
+
+
+def _http_proxy_handlers(opener: urllib.request.OpenerDirector):
+    return [
+        handler
+        for handler in opener.handle_open.get("http", [])
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+
+
+def test_direct_opener_registers_no_ambient_proxy_route() -> None:
+    opener = _build_restricted_opener(
+        allowed_schemes=frozenset({"http"}),
+        redirect_policy=HTTPRedirectPolicy(),
+        host_policy=None,
+        allow_environment_proxy=False,
+    )
+    # ProxyHandler({}) contributes no http_open route, so nothing can redirect
+    # the request toward an ambient proxy.
+    assert _http_proxy_handlers(opener) == []
+
+
+def test_default_opener_keeps_environment_proxy_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9999")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9999")
+    opener = _build_restricted_opener(
+        allowed_schemes=frozenset({"http"}),
+        redirect_policy=HTTPRedirectPolicy(),
+        host_policy=None,
+    )
+    handlers = _proxy_handlers(opener)
+    assert len(handlers) == 1
+    assert handlers[0].proxies.get("http") == "http://127.0.0.1:9999"
+    assert _http_proxy_handlers(opener) == [handlers[0]]
+
+
+@pytest.mark.parametrize("bad", (None, "false", 0, 1, [], {}))
+def test_allow_environment_proxy_rejects_non_bool(bad: object) -> None:
+    with patch.object(
+        urllib.request.OpenerDirector,
+        "open",
+        side_effect=AssertionError("transport must not be reached"),
+    ):
+        with pytest.raises(TypeError, match="allow_environment_proxy"):
+            open_http_url(
+                "http://127.0.0.1:8767/healthz",
+                timeout=2,
+                allowed_schemes={"http"},
+                redirect_policy=HTTPRedirectPolicy(),
+                allow_environment_proxy=bad,  # type: ignore[arg-type]
+            )
+
+
+@pytest.mark.parametrize("proxy_var", ("HTTP_PROXY", "http_proxy"))
+def test_direct_loopback_bypasses_http_proxy(
+    monkeypatch: pytest.MonkeyPatch, proxy_var: str
+) -> None:
+    with _recording_server(body=b'{"ok": true}') as target, _recording_server(
+        body=b'{"forged": true}'
+    ) as proxy:
+        monkeypatch.setenv(proxy_var, f"http://127.0.0.1:{proxy.server_port}")
+        with open_http_url(
+            f"http://127.0.0.1:{target.server_port}/healthz",
+            timeout=2,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+            allow_environment_proxy=False,
+        ) as response:
+            assert response.read() == b'{"ok": true}'
+        assert len(target.requests) == 1
+        assert proxy.requests == []
+
+
+def test_https_proxy_irrelevant_for_http_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _recording_server(body=b'{"ok": true}') as target, _recording_server() as proxy:
+        monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+        with open_http_url(
+            f"http://127.0.0.1:{target.server_port}/healthz",
+            timeout=2,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+            allow_environment_proxy=False,
+        ) as response:
+            assert response.read() == b'{"ok": true}'
+        assert len(target.requests) == 1
+        assert proxy.requests == []
+
+
+def test_all_proxy_direct_mode_still_bypasses(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _recording_server(body=b'{"ok": true}') as target, _recording_server() as proxy:
+        monkeypatch.setenv("ALL_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+        with open_http_url(
+            f"http://127.0.0.1:{target.server_port}/healthz",
+            timeout=2,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+            allow_environment_proxy=False,
+        ) as response:
+            assert response.read() == b'{"ok": true}'
+        assert len(target.requests) == 1
+        assert proxy.requests == []
+
+
+def test_allow_environment_proxy_true_keeps_ambient_proxy_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _recording_server(body=b'{"ok": true}') as target, _recording_server(
+        body=b'{"proxied": true}'
+    ) as proxy:
+        # Neutralize any ambient NO_PROXY so the proxy route is actually taken
+        # when allow_environment_proxy=True.
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy.server_port}")
+        with open_http_url(
+            f"http://127.0.0.1:{target.server_port}/healthz",
+            timeout=2,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+            allow_environment_proxy=True,
+        ) as response:
+            assert response.read() == b'{"proxied": true}'
+        assert proxy.requests == [f"http://127.0.0.1:{target.server_port}/healthz"]
+        assert target.requests == []
+
+
+def test_forged_proxy_health_cannot_be_consumed_in_direct_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_body = b'{"ok": true, "service": "colameta-mcp", "pid": 5678}'
+    forged_body = b'{"ok": true, "service": "colameta-mcp", "pid": 999999}'
+    with _recording_server(body=real_body) as target, _recording_server(
+        body=forged_body
+    ) as proxy:
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy.server_port}")
+        with open_http_url(
+            f"http://127.0.0.1:{target.server_port}/healthz",
+            timeout=2,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+            allow_environment_proxy=False,
+        ) as response:
+            assert response.read() == real_body
+        assert len(target.requests) == 1
+        assert proxy.requests == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    (
+        {},
+        {"HTTP_PROXY": "http://127.0.0.1:9"},
+        {"http_proxy": "http://127.0.0.1:9"},
+        {"HTTPS_PROXY": "http://127.0.0.1:9"},
+        {"ALL_PROXY": "http://127.0.0.1:9"},
+        {"NO_PROXY": "malicious.example"},
+        {"HTTP_PROXY": "http://127.0.0.1:9", "NO_PROXY": "malicious.example"},
+        {"HTTP_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1"},
+    ),
+)
+def test_direct_loopback_authority_is_environment_independent(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    with _recording_server(body=b'{"ok": true}') as target:
+        with open_http_url(
+            f"http://127.0.0.1:{target.server_port}/healthz",
+            timeout=2,
+            allowed_schemes={"http"},
+            redirect_policy=HTTPRedirectPolicy(),
+            allow_environment_proxy=False,
+        ) as response:
+            assert response.read() == b'{"ok": true}'
+        assert len(target.requests) == 1
