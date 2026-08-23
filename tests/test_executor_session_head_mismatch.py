@@ -54,6 +54,13 @@ def session_status(*, session_head: str = HEAD_A, current_head: str = HEAD_B) ->
     }
 
 
+def inactive_stale_session_status(*, session_head: str = HEAD_A, current_head: str = HEAD_B) -> dict[str, Any]:
+    status = session_status(session_head=session_head, current_head=current_head)
+    status["active"] = False
+    status["record"]["active"] = False
+    return status
+
+
 class _NoBridge:
     def get_runner_status(self, project_root: str) -> dict[str, Any]:
         raise AssertionError(f"unexpected bridge read for {project_root}")
@@ -141,6 +148,8 @@ def canonical_fact_bundle(
         "operation_running": operation_running,
         "job_status": job_status,
         "latest_run_status": latest_run_status,
+        "activity_record_found": latest_run_status != "not_found",
+        "activity_evidence_complete": True,
         "runner_status": runner_status,
         "current_version_status": current_version_status,
         "worktree_clean": worktree_clean,
@@ -213,6 +222,102 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
         assert decision["start_new_allowed"] is True
         assert "stale_session_resume_forbidden" not in decision["hard_blockers"]
         assert "stale_session_resume_forbidden" in decision["resume_blockers"]
+
+    def test_inactive_stale_session_ready_not_started_starts_new(self) -> None:
+        facts = canonical_fact_bundle(
+            status=inactive_stale_session_status(),
+            latest_run_status="not_found",
+            runner_status="READY",
+            current_version_status="NOT_STARTED",
+        )
+        facts["hard_blockers"] = ["session_manifest_inactive"]
+
+        decision = build_canonical_continuation_decision(facts)
+
+        self.assert_canonical_shape(decision)
+        assert decision["classification"] == "inactive_stale_session"
+        assert decision["recommended_action"] == "start_new"
+        assert decision["resume_allowed"] is False
+        assert decision["start_new_allowed"] is True
+        assert decision["hard_blockers"] == []
+        assert "session_manifest_inactive" not in decision["hard_blockers"]
+        assert "stale_session_resume_forbidden" in decision["resume_blockers"]
+
+    def test_inactive_stale_session_attacks_remain_fail_closed(self) -> None:
+        cases = {
+            "live_claim": {"latest_claim_status": "RUNNING"},
+            "operation_running": {"operation_running": True},
+            "dirty_worktree": {"worktree_clean": False},
+            "incomplete_evidence": {
+                "hard_blockers": [
+                    "session_manifest_inactive",
+                    "continuation_evidence_incomplete",
+                ],
+            },
+            "active_session": {
+                "executor_session_status": session_status(),
+            },
+            "contradictory_active_state": {
+                "executor_session_status": {
+                    **inactive_stale_session_status(),
+                    "active": True,
+                },
+            },
+            "unknown_run_status": {"latest_run_status": "future-unknown"},
+            "unknown_claim_status": {"latest_claim_status": "future-unknown"},
+            "malformed_live_run": {"live_run": []},
+            "malformed_hard_blockers": {"hard_blockers": "continuation_evidence_incomplete"},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name=name):
+                facts = canonical_fact_bundle(
+                    status=inactive_stale_session_status(),
+                    latest_run_status="not_found",
+                    runner_status="READY",
+                    current_version_status="NOT_STARTED",
+                )
+                facts.update(overrides)
+                facts.setdefault("hard_blockers", ["session_manifest_inactive"])
+
+                decision = build_canonical_continuation_decision(facts)
+
+                assert decision["resume_allowed"] is False
+                assert decision["start_new_allowed"] is False
+
+    def test_inactive_stale_session_type_confusion_fails_closed(self) -> None:
+        cases = {
+            "top_active_string": ("executor_session_status.active", "false"),
+            "record_active_zero": ("executor_session_status.record.active", 0),
+            "record_active_null": ("executor_session_status.record.active", None),
+            "operation_running_string": ("operation_running", "false"),
+            "worktree_clean_string": ("worktree_clean", "true"),
+            "latest_run_list": ("latest_run_status", []),
+            "latest_claim_dict": ("latest_claim_status", {}),
+            "hard_blockers_string": ("hard_blockers", "x"),
+            "hard_blockers_dict": ("hard_blockers", {"x": True}),
+            "hard_blockers_non_strings": ("hard_blockers", [1, None]),
+            "live_run_list": ("live_run", []),
+        }
+        for name, (path, value) in cases.items():
+            with self.subTest(name=name):
+                facts = canonical_fact_bundle(
+                    status=inactive_stale_session_status(),
+                    latest_run_status="not_found",
+                    runner_status="READY",
+                    current_version_status="NOT_STARTED",
+                )
+                facts["hard_blockers"] = ["session_manifest_inactive"]
+                if path == "executor_session_status.active":
+                    facts["executor_session_status"]["active"] = value
+                elif path == "executor_session_status.record.active":
+                    facts["executor_session_status"]["record"]["active"] = value
+                else:
+                    facts[path] = value
+
+                decision = build_canonical_continuation_decision(facts)
+
+                assert decision["resume_allowed"] is False
+                assert decision["start_new_allowed"] is False
 
     def test_cont_02_stale_session_allows_start_new_dispatch_precheck(self) -> None:
         with tempfile.TemporaryDirectory(prefix="colameta-stale-start-new-") as tmp:

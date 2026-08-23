@@ -4205,6 +4205,8 @@ vm.runInThisContext({json.dumps(widget_script)});
                 "resume_invocation_verified": True,
                 "operation_running": False,
                 "job_status": "idle",
+                "hard_blockers": [],
+                "risk_warnings": [],
             },
         )
         continuation_snapshot_calls: list[tuple[str, str | None]] = []
@@ -4503,6 +4505,8 @@ vm.runInThisContext({json.dumps(widget_script)});
                 "runner_status": "VERSION_PASSED",
                 "current_version_status": "PASSED",
                 "worktree_clean": True,
+                "hard_blockers": [],
+                "risk_warnings": [],
             },
         )
         server._continuation_snapshot_supplier = (

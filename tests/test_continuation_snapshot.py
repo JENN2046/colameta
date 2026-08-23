@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from runner.continuation_snapshot import (
+    _activity_evidence,
     collect_continuation_snapshot,
     snapshot_from_fact_bundle,
 )
@@ -80,6 +81,14 @@ class _PassingRunner:
         return {
             "runner_status": "VERSION_PASSED",
             "current_version_status": "PASSED",
+        }
+
+
+class _ReadyNotStartedRunner:
+    def get_runner_status(self, project_root):
+        return {
+            "runner_status": "READY",
+            "current_version_status": "NOT_STARTED",
         }
 
 
@@ -298,6 +307,7 @@ def test_runtime_snapshot_excludes_current_run_claim(tmp_path: Path) -> None:
 
     decision = snapshot.project("codex")["canonical_continuation_decision"]
     assert snapshot.activity_evidence["latest_run_status"] == "not_found"
+    assert snapshot.activity_evidence["activity_record_found"] is False
     assert snapshot.activity_evidence["latest_claim_status"] is None
     assert snapshot.activity_evidence["live_run"] is None
     assert decision["classification"] == "no_session"
@@ -334,6 +344,138 @@ def test_runtime_snapshot_keeps_other_active_claim_fail_closed(tmp_path: Path) -
     assert snapshot.activity_evidence["live_run"]["run_id"] == "run-other"
     assert decision["classification"] == "active_operation_head_mismatch"
     assert decision["recommended_action"] == "human_review"
+    assert decision["start_new_allowed"] is False
+
+
+def test_live_snapshot_inactive_stale_session_allows_only_start_new(tmp_path: Path) -> None:
+    old_head = "c" * 40
+    current_head = "d" * 40
+
+    class InactiveStaleSessionStore:
+        def get_status(self):
+            return {
+                "ok": True,
+                "active": False,
+                "current_head": current_head,
+                "record": {
+                    "active": False,
+                    "provider": "codex",
+                    "current_head": old_head,
+                    "base_head": old_head,
+                    "conversation_id": "historical-conversation",
+                },
+            }
+
+        def get_continuation_preview(self, status):
+            return {
+                "ok": True,
+                "selected_provider": "codex",
+                "hard_blockers": ["session_manifest_inactive"],
+            }
+
+    snapshot = collect_continuation_snapshot(
+        str(tmp_path),
+        requested_provider="codex",
+        session_store=InactiveStaleSessionStore(),
+        planning_bridge=_ReadyNotStartedRunner(),
+        source_review=_CleanGit(),
+    )
+
+    decision = snapshot.project("codex")["canonical_continuation_decision"]
+    assert snapshot.snapshot_status == "captured"
+    assert snapshot.activity_evidence["latest_run_status"] == "not_found"
+    assert snapshot.activity_evidence["latest_claim_status"] is None
+    assert decision["classification"] == "inactive_stale_session"
+    assert decision["recommended_action"] == "start_new"
+    assert decision["resume_allowed"] is False
+    assert decision["start_new_allowed"] is True
+
+
+def test_activity_collection_failure_blocks_inactive_stale_start_new(tmp_path: Path) -> None:
+    old_head = "c" * 40
+    current_head = "d" * 40
+
+    class InactiveStaleSessionStore:
+        def get_status(self):
+            return {
+                "ok": True,
+                "active": False,
+                "current_head": current_head,
+                "record": {
+                    "active": False,
+                    "provider": "codex",
+                    "current_head": old_head,
+                    "base_head": old_head,
+                    "conversation_id": "historical-conversation",
+                },
+            }
+
+        def get_continuation_preview(self, status):
+            return {
+                "ok": True,
+                "selected_provider": "codex",
+                "hard_blockers": ["session_manifest_inactive"],
+            }
+
+    with patch(
+        "runner.continuation_snapshot._activity_evidence",
+        side_effect=RuntimeError("activity unavailable"),
+    ):
+        snapshot = collect_continuation_snapshot(
+            str(tmp_path),
+            requested_provider="codex",
+            session_store=InactiveStaleSessionStore(),
+            planning_bridge=_ReadyNotStartedRunner(),
+            source_review=_CleanGit(),
+        )
+
+    decision = snapshot.project("codex")["canonical_continuation_decision"]
+    assert snapshot.snapshot_status == "captured_fail_closed"
+    assert {item["name"] for item in snapshot.partial_errors} == {"executor_activity"}
+    assert decision["classification"] == "head_evidence_incomplete"
+    assert decision["recommended_action"] == "inspect_evidence"
+    assert decision["resume_allowed"] is False
+    assert decision["start_new_allowed"] is False
+
+
+def test_snapshot_malformed_blockers_fail_closed_without_character_splitting(tmp_path: Path) -> None:
+    old_head = "c" * 40
+    current_head = "d" * 40
+
+    class MalformedPreviewStore:
+        def get_status(self):
+            return {
+                "ok": True,
+                "active": False,
+                "current_head": current_head,
+                "record": {
+                    "active": False,
+                    "provider": "codex",
+                    "current_head": old_head,
+                    "base_head": old_head,
+                    "conversation_id": "historical-conversation",
+                },
+            }
+
+        def get_continuation_preview(self, status):
+            return {
+                "ok": True,
+                "selected_provider": "codex",
+                "hard_blockers": "continuation_evidence_incomplete",
+            }
+
+    snapshot = collect_continuation_snapshot(
+        str(tmp_path),
+        requested_provider="codex",
+        session_store=MalformedPreviewStore(),
+        planning_bridge=_ReadyNotStartedRunner(),
+        source_review=_CleanGit(),
+    )
+
+    decision = snapshot.project("codex")["canonical_continuation_decision"]
+    assert snapshot.snapshot_status == "captured_fail_closed"
+    assert snapshot.fact_bundle["hard_blockers"] == []
+    assert decision["resume_allowed"] is False
     assert decision["start_new_allowed"] is False
 
 
@@ -622,3 +764,63 @@ def test_snapshot_collection_does_not_create_project_files(tmp_path: Path) -> No
 
     assert snapshot.snapshot_status in {"captured", "captured_partial", "captured_fail_closed"}
     assert list(tmp_path.iterdir()) == before
+
+
+def test_inactive_stale_null_claim_without_absence_provenance_blocks_start_new(tmp_path: Path) -> None:
+    facts = _facts(
+        executor_session_status={"active": False, "record": {"active": False}},
+        session_head=HEAD,
+        current_head=OTHER_HEAD,
+        latest_run_status="completed",
+        latest_claim_status=None,
+        live_run=None,
+        activity_evidence_complete=True,
+        activity_record_found=None,
+        runner_status="READY",
+        current_version_status="NOT_STARTED",
+    )
+    decision = snapshot_from_fact_bundle(str(tmp_path), facts).project("codex")[
+        "canonical_continuation_decision"
+    ]
+    assert decision["start_new_allowed"] is False
+    assert decision["resume_allowed"] is False
+
+
+def test_inactive_stale_explicit_no_activity_provenance_allows_start_new(tmp_path: Path) -> None:
+    facts = _facts(
+        executor_session_status={"active": False, "record": {"active": False}},
+        session_head=HEAD,
+        current_head=OTHER_HEAD,
+        latest_run_status="not_found",
+        latest_claim_status=None,
+        live_run=None,
+        activity_evidence_complete=True,
+        activity_record_found=False,
+        runner_status="READY",
+        current_version_status="NOT_STARTED",
+    )
+    decision = snapshot_from_fact_bundle(str(tmp_path), facts).project("codex")[
+        "canonical_continuation_decision"
+    ]
+    assert decision["classification"] == "inactive_stale_session"
+    assert decision["start_new_allowed"] is True
+    assert decision["resume_allowed"] is False
+
+
+def test_activity_found_provenance_matrix_fails_closed_on_malformed_shapes(tmp_path: Path) -> None:
+    cases = [
+        ({"ok": True, "status": "not_found", "found": False}, True),
+        ({"ok": True, "status": "not_found", "found": True}, False),
+        ({"ok": True, "status": "running", "found": False}, False),
+        ({"ok": True, "status": None, "found": False}, False),
+        ({"ok": True, "status": "not_found"}, False),
+        ({"ok": True, "status": "not_found", "found": None}, False),
+        ({"ok": True, "status": "not_found", "found": "false"}, False),
+        ({"ok": True, "status": "not_found", "found": 0}, False),
+        ({"ok": True, "status": "not_found", "found": []}, False),
+        ({"ok": True, "status": "not_found", "found": {}}, False),
+    ]
+    for payload, expected_complete in cases:
+        with patch("runner.executor_read.handle_inspect_executor_activity", return_value=payload):
+            evidence = _activity_evidence(str(tmp_path))
+        assert evidence.get("activity_evidence_complete") is expected_complete

@@ -26,6 +26,10 @@ _CURRENT_CONTINUATION_SNAPSHOT: ContextVar[Any] = ContextVar(
     default=None,
 )
 
+_ACTIVITY_LIVE_STATUSES = frozenset({"running", "orphaned"})
+_ACTIVITY_IDLE_STATUSES = frozenset({"not_found", "completed", "failed", "failed_blocked"})
+_ACTIVITY_KNOWN_STATUSES = _ACTIVITY_LIVE_STATUSES | _ACTIVITY_IDLE_STATUSES
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -88,22 +92,140 @@ def _activity_evidence(
         _excluded_run_id=current_run_id,
     )
     if not isinstance(result, dict):
-        return {}
+        return {"activity_evidence_complete": False}
+    if result.get("ok") is not True or result.get("warning") == "LATEST_RUN_STATUS_UNAVAILABLE":
+        return {"activity_evidence_complete": False}
+    activity_record_found = result.get("found")
+    if not isinstance(activity_record_found, bool):
+        return {
+            "latest_run_status": result.get("status"),
+            "activity_record_found": activity_record_found,
+            "activity_evidence_complete": False,
+        }
+    raw_status = result.get("status")
+    status = raw_status.strip().lower() if isinstance(raw_status, str) else None
+    if status not in _ACTIVITY_KNOWN_STATUSES:
+        return {
+            "latest_run_status": raw_status,
+            "activity_record_found": activity_record_found,
+            "activity_evidence_complete": False,
+        }
+    if (status == "not_found") != (activity_record_found is False):
+        return {
+            "latest_run_status": raw_status,
+            "activity_record_found": activity_record_found,
+            "activity_evidence_complete": False,
+        }
     live = result.get("live")
+    if "live" in result and live is not None and not isinstance(live, dict):
+        return {
+            "latest_run_status": raw_status,
+            "live_run": live,
+            "activity_evidence_complete": False,
+        }
     if not isinstance(live, dict):
         stale = result.get("stale_orphan_claim")
+        if "stale_orphan_claim" in result and stale is not None and not isinstance(stale, dict):
+            return {
+                "latest_run_status": raw_status,
+                "live_run": stale,
+                "activity_evidence_complete": False,
+            }
         live = stale if isinstance(stale, dict) else None
     latest_claim_status = None
     if isinstance(live, dict):
+        if "available" in live and not isinstance(live.get("available"), bool):
+            return {
+                "latest_run_status": raw_status,
+                "live_run": live,
+                "activity_evidence_complete": False,
+            }
+        if "claim" in live and not isinstance(live.get("claim"), dict):
+            return {
+                "latest_run_status": raw_status,
+                "live_run": live,
+                "activity_evidence_complete": False,
+            }
+        if "claim_status" in live and not isinstance(live.get("claim_status"), str):
+            return {
+                "latest_run_status": raw_status,
+                "latest_claim_status": live.get("claim_status"),
+                "live_run": live,
+                "activity_evidence_complete": False,
+            }
+        for key in ("status", "run_status", "executor_run_status"):
+            if key not in live:
+                continue
+            value = live.get(key)
+            normalized = value.strip().lower() if isinstance(value, str) else None
+            if normalized not in _ACTIVITY_KNOWN_STATUSES:
+                return {
+                    "latest_run_status": raw_status,
+                    "live_run": live,
+                    "activity_evidence_complete": False,
+                }
+        if "operation_running" in live and not isinstance(live.get("operation_running"), bool):
+            return {
+                "latest_run_status": raw_status,
+                "live_run": live,
+                "activity_evidence_complete": False,
+            }
+        if "job_status" in live:
+            value = live.get("job_status")
+            normalized = value.strip().lower() if isinstance(value, str) else None
+            if normalized not in {"idle", "running", "completed", "finished", "done", "not_found"}:
+                return {
+                    "latest_run_status": raw_status,
+                    "live_run": live,
+                    "activity_evidence_complete": False,
+                }
         latest_claim_status = live.get("claim_status")
         claim = live.get("claim")
+        if isinstance(claim, dict) and "status" in claim and not isinstance(claim.get("status"), str):
+            return {
+                "latest_run_status": raw_status,
+                "latest_claim_status": claim.get("status"),
+                "live_run": live,
+                "activity_evidence_complete": False,
+            }
         if latest_claim_status is None and isinstance(claim, dict):
             latest_claim_status = claim.get("status")
+        if latest_claim_status is not None:
+            normalized_claim = (
+                latest_claim_status.strip().lower()
+                if isinstance(latest_claim_status, str)
+                else None
+            )
+            if normalized_claim not in _ACTIVITY_KNOWN_STATUSES:
+                return {
+                    "latest_run_status": raw_status,
+                    "latest_claim_status": latest_claim_status,
+                    "live_run": live,
+                    "activity_evidence_complete": False,
+                }
+        if activity_record_found is True and latest_claim_status is None:
+            return {
+                "latest_run_status": raw_status,
+                "activity_record_found": activity_record_found,
+                "latest_claim_status": latest_claim_status,
+                "live_run": live,
+                "activity_evidence_complete": False,
+            }
     return {
-        "latest_run_status": result.get("status"),
+        "latest_run_status": raw_status,
+        "activity_record_found": activity_record_found,
         "latest_claim_status": latest_claim_status,
         "live_run": live,
+        "activity_evidence_complete": True,
     }
+
+
+def _validated_string_items(value: Any) -> tuple[list[str], bool]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return [], False
+    if not all(isinstance(item, str) for item in value):
+        return [], False
+    return list(value), True
 
 
 @dataclass
@@ -384,6 +506,7 @@ def collect_continuation_snapshot(
         except Exception as exc:
             activity = {}
             partial_errors.append(_error("executor_activity", exc))
+            continuation_evidence_failed = True
         try:
             runner_status = (planning_bridge or PlanningBridge()).get_runner_status(root)
             runner_status = runner_status if isinstance(runner_status, dict) else {}
@@ -408,6 +531,19 @@ def collect_continuation_snapshot(
             isinstance(record.get(key), str) and bool(record.get(key).strip())
             for key in ("conversation_id", "session_id", "session_file")
         )
+        raw_hard_blockers = (
+            continuation_preview.get("hard_blockers")
+            if "hard_blockers" in continuation_preview
+            else continuation_preview.get("blockers", [])
+        )
+        hard_blockers, hard_blockers_valid = _validated_string_items(raw_hard_blockers)
+        risk_warnings, risk_warnings_valid = _validated_string_items(
+            continuation_preview.get("risk_warnings", [])
+        )
+        if not hard_blockers_valid or not risk_warnings_valid:
+            continuation_evidence_failed = True
+        if activity.get("activity_evidence_complete") is not True:
+            continuation_evidence_failed = True
         facts = {
             "executor_session_status": session_status,
             "continuation_preview": continuation_preview,
@@ -416,13 +552,15 @@ def collect_continuation_snapshot(
             "identity_present": identity_present,
             "provider_resume_supported": effective_provider in {"codex", "opencode"},
             "resume_invocation_verified": effective_provider in {"codex", "opencode"},
-            "hard_blockers": list(continuation_preview.get("hard_blockers") or continuation_preview.get("blockers") or []),
-            "risk_warnings": list(continuation_preview.get("risk_warnings") or []),
+            "hard_blockers": hard_blockers,
+            "risk_warnings": risk_warnings,
             "operation_running": False,
             "job_status": "idle",
             "latest_run_status": activity.get("latest_run_status"),
+            "activity_record_found": activity.get("activity_record_found"),
             "latest_claim_status": activity.get("latest_claim_status"),
             "live_run": activity.get("live_run"),
+            "activity_evidence_complete": activity.get("activity_evidence_complete") is True,
             "runner_status": runner_status.get("runner_status"),
             "current_version_status": runner_status.get("current_version_status"),
             "worktree_clean": worktree_clean,
