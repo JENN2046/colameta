@@ -76,6 +76,8 @@ class ExecutorRunClaimStore:
         artifact: dict[str, Any],
         provider: str,
         execution_mode: str,
+        executor_authority_id: str | None = None,
+        admission_sha256: str | None = None,
     ) -> dict[str, Any]:
         os.makedirs(self.claims_root, exist_ok=True)
         claim_path = self.claim_record_path(preview_id)
@@ -120,6 +122,10 @@ class ExecutorRunClaimStore:
             "original_preview_created_at": str(artifact.get("created_at") or ""),
             "original_preview_expires_at": str(artifact.get("expires_at") or ""),
         }
+        if isinstance(executor_authority_id, str) and executor_authority_id.strip():
+            claim_record["executor_authority_id"] = executor_authority_id.strip()
+        if isinstance(admission_sha256, str) and admission_sha256.strip():
+            claim_record["admission_sha256"] = admission_sha256.strip()
         claim_record.update(work_item_binding)
         try:
             fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
