@@ -21,6 +21,13 @@ COMPLETED_IDLE_STALE_SESSION_MESSAGE = (
     "New development versions should start from the current HEAD."
 )
 
+INACTIVE_STALE_SESSION_MESSAGE = (
+    "Historical executor session resume metadata is inactive and records a HEAD different from the current "
+    "project HEAD. No operation, live claim, or live provider operation is present; the current Runner work "
+    "version is READY/NOT_STARTED and the worktree is clean. The historical session has no continuation "
+    "authority; a new session may start from the current HEAD."
+)
+
 CANONICAL_CONTINUATION_DECISION_SCHEMA_VERSION = "executor_continuation_decision.v1"
 CANONICAL_CONTINUATION_DECISION_SOURCE = "runner.executor_session.build_canonical_continuation_decision"
 CANONICAL_CONTINUATION_CLASSIFICATIONS = frozenset(
@@ -28,6 +35,7 @@ CANONICAL_CONTINUATION_CLASSIFICATIONS = frozenset(
         "no_session",
         "resume_eligible",
         "completed_idle_stale_session",
+        "inactive_stale_session",
         "active_operation_head_mismatch",
         "head_evidence_incomplete",
         "provider_or_identity_mismatch",
@@ -54,10 +62,12 @@ def classify_executor_session_head_mismatch(
     job_status: str | None = None,
     latest_run_status: str | None = None,
     latest_claim_status: str | None = None,
-    live_run: dict[str, Any] | None = None,
+    live_run: Any = None,
     runner_status: str | None = None,
     current_version_status: str | None = None,
     worktree_clean: bool | None = None,
+    activity_evidence_complete: bool | None = None,
+    activity_record_found: bool | None = None,
 ) -> dict[str, Any]:
     status_payload = executor_session_status if isinstance(executor_session_status, dict) else {}
     record = session_record if isinstance(session_record, dict) else status_payload.get("record")
@@ -185,6 +195,51 @@ def classify_executor_session_head_mismatch(
         )
         return result
 
+    inactive_stale_evidence = bool(
+        _inactive_stale_evidence_valid(
+            status_payload=status_payload,
+            record=record,
+            recorded_head=recorded_head,
+            checkout_head=checkout_head,
+            operation_running=operation_running,
+            job_status=job_status,
+            latest_run_status=latest_run_status,
+            latest_claim_status=latest_claim_status,
+            live_run=live_run,
+            runner_status=runner_status,
+            current_version_status=current_version_status,
+            worktree_clean=worktree_clean,
+            activity_evidence_complete=activity_evidence_complete,
+            activity_record_found=activity_record_found,
+        )
+        and record.get("active") is False
+        and operation_running is False
+        and job_idle is True
+        and not latest_run_running
+        and not latest_claim_running
+        and runner_status == "READY"
+        and current_version_status == "NOT_STARTED"
+        and worktree_clean is True
+    )
+    if inactive_stale_evidence:
+        result = dict(base_result)
+        result.update(
+            {
+                "status": "inactive_stale_session",
+                "severity": "warning",
+                "blocks_auto_resume": True,
+                "blocks_auto_start": False,
+                "reason": "inactive_stale_ready_not_started_clean_worktree",
+                "operator_message": INACTIVE_STALE_SESSION_MESSAGE,
+                "allowed_next_actions": [
+                    "read_status",
+                    "inspect_latest_report",
+                    "begin_new_development_from_current_head",
+                ],
+            }
+        )
+        return result
+
     missing_evidence: list[str] = []
     if operation_running is not False:
         missing_evidence.append("operation_running_false")
@@ -247,8 +302,14 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
 
     provider_resume_supported = bool(facts.get("provider_resume_supported") is True)
     resume_invocation_verified = bool(facts.get("resume_invocation_verified") is True)
-    hard_blockers = _unique_string_items(facts.get("hard_blockers"))
-    risk_warnings = _unique_string_items(facts.get("risk_warnings"))
+    raw_hard_blockers = facts.get("hard_blockers")
+    raw_risk_warnings = facts.get("risk_warnings")
+    continuation_lists_valid = bool(
+        _string_items_shape_valid(raw_hard_blockers)
+        and _string_items_shape_valid(raw_risk_warnings)
+    )
+    hard_blockers = _unique_string_items(raw_hard_blockers)
+    risk_warnings = _unique_string_items(raw_risk_warnings)
 
     classification_detail = classify_executor_session_head_mismatch(
         executor_session_status=status,
@@ -259,10 +320,12 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
         job_status=facts.get("job_status"),
         latest_run_status=facts.get("latest_run_status"),
         latest_claim_status=facts.get("latest_claim_status"),
-        live_run=facts.get("live_run") if isinstance(facts.get("live_run"), dict) else None,
+        live_run=facts.get("live_run"),
         runner_status=facts.get("runner_status"),
         current_version_status=facts.get("current_version_status"),
         worktree_clean=facts.get("worktree_clean"),
+        activity_evidence_complete=facts.get("activity_evidence_complete"),
+        activity_record_found=facts.get("activity_record_found"),
     )
     mismatch_status = str(classification_detail.get("status") or "unknown_head_mismatch")
     evidence = classification_detail.get("evidence")
@@ -287,6 +350,11 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
         recommended_action = "inspect_evidence"
         severity = "blocked"
         reason = str(facts.get("continuation_evidence_failure_reason") or "continuation_snapshot_unavailable")
+    elif not continuation_lists_valid:
+        classification = "head_evidence_incomplete"
+        recommended_action = "inspect_evidence"
+        severity = "blocked"
+        reason = "continuation_blocker_evidence_malformed"
     elif not session_exists:
         classification = "no_session"
         recommended_action = "start_new"
@@ -298,12 +366,26 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
         recommended_action = "inspect_evidence"
         severity = "blocked"
         reason = str(classification_detail.get("reason") or "head_evidence_incomplete")
-    elif mismatch_status == "completed_idle_stale_session":
-        classification = "completed_idle_stale_session"
-        recommended_action = "start_new"
-        severity = "warning"
-        reason = str(classification_detail.get("reason") or "completed_idle_stale_session")
-        start_new_allowed = True
+    elif mismatch_status in {"completed_idle_stale_session", "inactive_stale_session"}:
+        remaining_hard_blockers = [
+            item for item in hard_blockers if item != "session_manifest_inactive"
+        ]
+        if remaining_hard_blockers:
+            classification = "head_evidence_incomplete"
+            recommended_action = "inspect_evidence"
+            severity = "blocked"
+            reason = "hard_blocked:" + ",".join(remaining_hard_blockers)
+            hard_blockers = remaining_hard_blockers
+        else:
+            classification = mismatch_status
+            recommended_action = "start_new"
+            severity = "warning"
+            reason = str(
+                classification_detail.get("reason")
+                or mismatch_status
+            )
+            start_new_allowed = True
+            hard_blockers = remaining_hard_blockers
     elif (
         requested_provider not in allowed_providers
         or not selected_provider
@@ -358,7 +440,7 @@ def build_canonical_continuation_decision(fact_bundle: dict[str, Any]) -> dict[s
     if canonical_blocker:
         hard_blockers = _unique_string_items([*hard_blockers, canonical_blocker])
     resume_blockers = list(hard_blockers)
-    if classification == "completed_idle_stale_session":
+    if classification in {"completed_idle_stale_session", "inactive_stale_session"}:
         resume_blockers = _unique_string_items(
             [*resume_blockers, "stale_session_resume_forbidden"]
         )
@@ -470,6 +552,114 @@ def _unique_string_items(value: Any) -> list[str]:
             seen.add(text)
             result.append(text)
     return result
+
+
+def _string_items_shape_valid(value: Any) -> bool:
+    return bool(
+        isinstance(value, (list, tuple, set, frozenset))
+        and all(isinstance(item, str) for item in value)
+    )
+
+
+def _inactive_stale_evidence_valid(
+    *,
+    status_payload: dict[str, Any],
+    record: dict[str, Any],
+    recorded_head: str | None,
+    checkout_head: str | None,
+    operation_running: Any,
+    job_status: Any,
+    latest_run_status: Any,
+    latest_claim_status: Any,
+    live_run: Any,
+    runner_status: Any,
+    current_version_status: Any,
+    worktree_clean: Any,
+    activity_evidence_complete: Any,
+    activity_record_found: Any,
+) -> bool:
+    """Require positive, type-strict evidence before inactive-stale may authorize start-new."""
+    if status_payload.get("active") is not False or record.get("active") is not False:
+        return False
+    if not _valid_git_head(recorded_head) or not _valid_git_head(checkout_head):
+        return False
+    if recorded_head == checkout_head:
+        return False
+    if operation_running is not False or _clean_status(job_status) != "idle":
+        return False
+    if not isinstance(job_status, str):
+        return False
+    if activity_evidence_complete is not True:
+        return False
+    if not isinstance(activity_record_found, bool):
+        return False
+    run_status = _clean_status(latest_run_status)
+    if not isinstance(latest_run_status, str) or run_status not in {
+        "not_found",
+        "completed",
+        "failed",
+        "failed_blocked",
+    }:
+        return False
+    if activity_record_found is False:
+        if run_status != "not_found" or latest_claim_status is not None:
+            return False
+    else:
+        if latest_claim_status is None:
+            return False
+        claim_status = _clean_status(latest_claim_status)
+        if not isinstance(latest_claim_status, str) or claim_status not in {
+            "completed",
+            "failed",
+            "failed_blocked",
+        }:
+            return False
+    if not _live_run_evidence_valid_and_idle(live_run):
+        return False
+    return bool(
+        runner_status == "READY"
+        and current_version_status == "NOT_STARTED"
+        and worktree_clean is True
+    )
+
+
+def _valid_git_head(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) not in range(40, 65):
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def _live_run_evidence_valid_and_idle(live_run: Any) -> bool:
+    if live_run is None:
+        return True
+    if not isinstance(live_run, dict) or live_run.get("available") is not False:
+        return False
+    idle_statuses = {"not_found", "completed", "failed", "failed_blocked"}
+    for key in ("status", "run_status", "claim_status", "executor_run_status"):
+        if key in live_run:
+            value = live_run.get(key)
+            if not isinstance(value, str) or _clean_status(value) not in idle_statuses:
+                return False
+    if "operation_running" in live_run and live_run.get("operation_running") is not False:
+        return False
+    if "job_status" in live_run:
+        value = live_run.get("job_status")
+        if not isinstance(value, str) or _clean_status(value) not in {
+            "idle",
+            "completed",
+            "finished",
+            "done",
+            "not_found",
+        }:
+            return False
+    claim = live_run.get("claim")
+    if "claim" in live_run and not isinstance(claim, dict):
+        return False
+    if isinstance(claim, dict) and "status" in claim:
+        value = claim.get("status")
+        if not isinstance(value, str) or _clean_status(value) not in idle_statuses:
+            return False
+    return True
 
 
 def _clean_head(value: Any) -> str | None:
