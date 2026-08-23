@@ -195,23 +195,24 @@ def classify_executor_session_head_mismatch(
         )
         return result
 
+    inactive_stale_gate, inactive_stale_evidence_reason = _inactive_stale_evidence_valid(
+        status_payload=status_payload,
+        record=record,
+        recorded_head=recorded_head,
+        checkout_head=checkout_head,
+        operation_running=operation_running,
+        job_status=job_status,
+        latest_run_status=latest_run_status,
+        latest_claim_status=latest_claim_status,
+        live_run=live_run,
+        runner_status=runner_status,
+        current_version_status=current_version_status,
+        worktree_clean=worktree_clean,
+        activity_evidence_complete=activity_evidence_complete,
+        activity_record_found=activity_record_found,
+    )
     inactive_stale_evidence = bool(
-        _inactive_stale_evidence_valid(
-            status_payload=status_payload,
-            record=record,
-            recorded_head=recorded_head,
-            checkout_head=checkout_head,
-            operation_running=operation_running,
-            job_status=job_status,
-            latest_run_status=latest_run_status,
-            latest_claim_status=latest_claim_status,
-            live_run=live_run,
-            runner_status=runner_status,
-            current_version_status=current_version_status,
-            worktree_clean=worktree_clean,
-            activity_evidence_complete=activity_evidence_complete,
-            activity_record_found=activity_record_found,
-        )
+        inactive_stale_gate
         and record.get("active") is False
         and operation_running is False
         and job_idle is True
@@ -248,7 +249,10 @@ def classify_executor_session_head_mismatch(
     if not latest_run_or_claim_completed:
         missing_evidence.append("latest_run_or_claim_completed")
     if not runner_version_passed:
-        missing_evidence.append("runner_version_passed")
+        if inactive_stale_evidence_reason:
+            missing_evidence.append(inactive_stale_evidence_reason)
+        else:
+            missing_evidence.append("runner_version_passed")
     if worktree_clean is not True:
         missing_evidence.append("worktree_clean")
 
@@ -577,22 +581,22 @@ def _inactive_stale_evidence_valid(
     worktree_clean: Any,
     activity_evidence_complete: Any,
     activity_record_found: Any,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Require positive, type-strict evidence before inactive-stale may authorize start-new."""
     if status_payload.get("active") is not False or record.get("active") is not False:
-        return False
+        return False, "inactive_session_evidence"
     if not _valid_git_head(recorded_head) or not _valid_git_head(checkout_head):
-        return False
+        return False, "head_evidence_incomplete"
     if recorded_head == checkout_head:
-        return False
+        return False, "head_mismatch"
     if operation_running is not False or _clean_status(job_status) != "idle":
-        return False
+        return False, "operation_or_job_not_idle"
     if not isinstance(job_status, str):
-        return False
+        return False, "job_status_type_confusion"
     if activity_evidence_complete is not True:
-        return False
+        return False, "continuation_evidence_incomplete"
     if not isinstance(activity_record_found, bool):
-        return False
+        return False, "activity_record_found_type_confusion"
     run_status = _clean_status(latest_run_status)
     if not isinstance(latest_run_status, str) or run_status not in {
         "not_found",
@@ -600,27 +604,31 @@ def _inactive_stale_evidence_valid(
         "failed",
         "failed_blocked",
     }:
-        return False
+        return False, "latest_run_status_invalid"
     if activity_record_found is False:
         if run_status != "not_found" or latest_claim_status is not None:
-            return False
+            return False, "activity_provenance_contradiction"
     else:
         if latest_claim_status is None:
-            return False
+            return False, "latest_claim_status_missing"
         claim_status = _clean_status(latest_claim_status)
         if not isinstance(latest_claim_status, str) or claim_status not in {
             "completed",
             "failed",
             "failed_blocked",
         }:
-            return False
-    if not _live_run_evidence_valid_and_idle(live_run):
-        return False
-    return bool(
-        runner_status == "READY"
-        and current_version_status == "NOT_STARTED"
-        and worktree_clean is True
+            return False, "latest_claim_status_invalid"
+    live_run_valid, live_run_reason = _live_run_evidence_valid_and_idle(
+        live_run,
+        latest_claim_status=latest_claim_status,
     )
+    if not live_run_valid:
+        return False, live_run_reason or "live_run_evidence_not_terminal_idle"
+    if runner_status != "READY" or current_version_status != "NOT_STARTED":
+        return False, "runner_state_not_ready_not_started"
+    if worktree_clean is not True:
+        return False, "worktree_not_clean"
+    return True, None
 
 
 def _valid_git_head(value: Any) -> bool:
@@ -629,19 +637,31 @@ def _valid_git_head(value: Any) -> bool:
     return all(char in "0123456789abcdefABCDEF" for char in value)
 
 
-def _live_run_evidence_valid_and_idle(live_run: Any) -> bool:
+def _live_run_evidence_valid_and_idle(
+    live_run: Any,
+    *,
+    latest_claim_status: Any = None,
+) -> tuple[bool, str | None]:
     if live_run is None:
-        return True
-    if not isinstance(live_run, dict) or live_run.get("available") is not False:
-        return False
+        return True, None
+    if not isinstance(live_run, dict):
+        return False, "live_run_type_confusion"
+    available = live_run.get("available")
+    if not isinstance(available, bool):
+        return False, "live_run_availability_type_confusion"
     idle_statuses = {"not_found", "completed", "failed", "failed_blocked"}
+    terminal_statuses = {"completed", "failed", "failed_blocked"}
+    status_values: list[tuple[str, str]] = []
     for key in ("status", "run_status", "claim_status", "executor_run_status"):
-        if key in live_run:
-            value = live_run.get(key)
-            if not isinstance(value, str) or _clean_status(value) not in idle_statuses:
-                return False
-    if "operation_running" in live_run and live_run.get("operation_running") is not False:
-        return False
+        if key not in live_run:
+            continue
+        value = live_run.get(key)
+        normalized = _clean_status(value)
+        if not isinstance(value, str) or normalized not in idle_statuses | {"running", "orphaned"}:
+            return False, "live_run_status_invalid"
+        if normalized in {"running", "orphaned"}:
+            return False, "live_run_evidence_not_terminal_idle"
+        status_values.append((key, normalized))
     if "job_status" in live_run:
         value = live_run.get("job_status")
         if not isinstance(value, str) or _clean_status(value) not in {
@@ -651,15 +671,39 @@ def _live_run_evidence_valid_and_idle(live_run: Any) -> bool:
             "done",
             "not_found",
         }:
-            return False
+            return False, "live_run_job_status_invalid"
+    if "operation_running" in live_run and live_run.get("operation_running") is not False:
+        return False, "live_run_operation_running"
+    if "claim_found" in live_run and not isinstance(live_run.get("claim_found"), bool):
+        return False, "live_run_claim_found_type_confusion"
     claim = live_run.get("claim")
     if "claim" in live_run and not isinstance(claim, dict):
-        return False
+        return False, "live_run_claim_type_confusion"
     if isinstance(claim, dict) and "status" in claim:
         value = claim.get("status")
-        if not isinstance(value, str) or _clean_status(value) not in idle_statuses:
-            return False
-    return True
+        normalized = _clean_status(value)
+        if not isinstance(value, str) or normalized not in idle_statuses | {"running", "orphaned"}:
+            return False, "live_run_claim_status_invalid"
+        if normalized in {"running", "orphaned"}:
+            return False, "live_run_evidence_not_terminal_idle"
+        status_values.append(("claim.status", normalized))
+
+    if "claim_found" in live_run and live_run["claim_found"] is False:
+        if "claim_status" in live_run or (isinstance(claim, dict) and "status" in claim):
+            return False, "live_run_claim_provenance_contradiction"
+    live_claim_status = live_run.get("claim_status")
+    if live_claim_status is None and isinstance(claim, dict):
+        live_claim_status = claim.get("status")
+    if latest_claim_status is not None and live_claim_status is not None:
+        if _clean_status(latest_claim_status) != _clean_status(live_claim_status):
+            return False, "claim_status_provenance_contradiction"
+
+    if len({value for _, value in status_values}) > 1:
+        return False, "live_run_status_contradiction"
+    if available is True:
+        if not status_values or any(value not in terminal_statuses for _, value in status_values):
+            return False, "live_run_evidence_not_terminal_idle"
+    return True, None
 
 
 def _clean_head(value: Any) -> str | None:

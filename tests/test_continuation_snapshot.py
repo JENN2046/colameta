@@ -391,6 +391,65 @@ def test_live_snapshot_inactive_stale_session_allows_only_start_new(tmp_path: Pa
     assert decision["start_new_allowed"] is True
 
 
+def test_live_snapshot_terminal_available_run_allows_only_start_new(tmp_path: Path) -> None:
+    old_head = "c" * 40
+    current_head = "d" * 40
+
+    class InactiveStaleSessionStore:
+        def get_status(self):
+            return {
+                "ok": True,
+                "active": False,
+                "current_head": current_head,
+                "record": {
+                    "active": False,
+                    "provider": "codex",
+                    "current_head": old_head,
+                    "base_head": old_head,
+                    "conversation_id": "historical-conversation",
+                },
+            }
+
+        def get_continuation_preview(self, status):
+            return {
+                "ok": True,
+                "selected_provider": "codex",
+                "hard_blockers": ["session_manifest_inactive"],
+            }
+
+    with patch(
+        "runner.continuation_snapshot._activity_evidence",
+        return_value={
+            "latest_run_status": "completed",
+            "activity_record_found": True,
+            "latest_claim_status": "COMPLETED",
+            "live_run": {
+                "available": True,
+                "claim_status": "COMPLETED",
+            },
+            "activity_evidence_complete": True,
+        },
+    ):
+        snapshot = collect_continuation_snapshot(
+            str(tmp_path),
+            requested_provider="codex",
+            session_store=InactiveStaleSessionStore(),
+            planning_bridge=_ReadyNotStartedRunner(),
+            source_review=_CleanGit(),
+        )
+
+    decision = snapshot.project("codex")["canonical_continuation_decision"]
+    assert snapshot.snapshot_status == "captured"
+    assert snapshot.activity_evidence["latest_run_status"] == "completed"
+    assert snapshot.activity_evidence["activity_record_found"] is True
+    assert snapshot.activity_evidence["live_run"]["available"] is True
+    assert decision["classification"] == "inactive_stale_session"
+    assert decision["recommended_action"] == "start_new"
+    assert decision["resume_allowed"] is False
+    assert decision["start_new_allowed"] is True
+    assert decision["hard_blockers"] == []
+
+
 def test_activity_collection_failure_blocks_inactive_stale_start_new(tmp_path: Path) -> None:
     old_head = "c" * 40
     current_head = "d" * 40
