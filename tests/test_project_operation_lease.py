@@ -449,6 +449,10 @@ def test_bounded_exception_after_claim_finalizes_failed_and_releases_lease(
 ) -> None:
     project = tmp_path / "bounded-claimed"
     project.mkdir()
+    # The project-operation lease rejects group/other-writable roots
+    # (S_IMODE & 0o022).  Make the fixture root deterministic across umasks so
+    # the lease can be acquired locally and in CI.
+    os.chmod(project, 0o700)
     manager = MCPExecutorWorkflowManager.__new__(MCPExecutorWorkflowManager)
     manager.project_root = str(project)
     preflight_calls = 0
@@ -487,8 +491,37 @@ def test_bounded_exception_after_claim_finalizes_failed_and_releases_lease(
     manager._delete_preview_artifact = lambda preview_id: deleted.append(preview_id)
     manager._finalize_preview_claim = lambda **kwargs: finalized.append(kwargs)
 
-    with pytest.raises(RuntimeError, match="iteration preflight failed"):
-        manager._run_bounded({"preview_id": "preview", "provider": "codex"})
+    # R0 blocks run_bounded FRESH start (start_new) before the iteration loop.
+    # This test's real intent is the post-claim crash path: a RuntimeError inside
+    # an iteration must finalize the claim FAILED and release the lease.  Make the
+    # continuation decision deterministically a SUPPORTED resume so the loop is
+    # reached, then trigger the iteration preflight failure.
+    class _ResumeSnapshot:
+        def project(self, provider):
+            return {
+                "canonical_continuation_decision": {
+                    "ok": True,
+                    "classification": "resume",
+                    "recommended_action": "resume",
+                    "resume_allowed": True,
+                    "start_new_allowed": False,
+                    "reason": "test fixture resume",
+                    "decision": "resume",
+                    "decision_reason": "test fixture resume",
+                    "should_resume": True,
+                    "should_start_new": False,
+                    "continuation_available": True,
+                    "identity_kind": "session",
+                    "identity_present": True,
+                }
+            }
+
+    with patch(
+        "runner.mcp_executor_workflow.collect_continuation_snapshot",
+        return_value=_ResumeSnapshot(),
+    ):
+        with pytest.raises(RuntimeError, match="iteration preflight failed"):
+            manager._run_bounded({"preview_id": "preview", "provider": "codex"})
 
     assert deleted == ["preview"]
     assert finalized and finalized[0]["final_status"] == "FAILED"

@@ -7,7 +7,10 @@ from pathlib import Path
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_stage_parallel_executor_group import MCPStageParallelExecutorGroupManager
-from runner.mcp_stage_parallel_executor_runs import MCPStageParallelExecutorRunGroupManager
+from runner.mcp_stage_parallel_executor_runs import (
+    FRESH_EXECUTOR_STAGE_PARALLEL_START_NEW_UNSUPPORTED_R0,
+    MCPStageParallelExecutorRunGroupManager,
+)
 from runner.mcp_stage_parallel_merges import MCPStageParallelMergeManager
 from runner.mcp_stage_parallel_shard_inputs import MCPStageParallelShardInputManager
 from runner.mcp_stage_parallel_worktrees import MCPStageParallelWorktreeManager
@@ -409,6 +412,16 @@ def test_stage_parallel_executor_group_apply_requires_preview_id(tmp_path) -> No
     assert result["error_code"] == "PREVIEW_ID_REQUIRED"
 
 
+
+
+def _executor_preview_worktree_path(project) -> Path:
+    parallel_root = project / ".colameta" / "runtime" / "parallel-worktrees"
+    groups = sorted(parallel_root.iterdir()) if parallel_root.is_dir() else []
+    assert groups, "no parallel worktree group created"
+    shards = sorted((groups[-1]).iterdir()) if (groups[-1]).is_dir() else []
+    assert shards, "no shard worktree created"
+    return shards[-1]
+
 def test_stage_parallel_executor_runs_preview_blocks_until_executor_preview_exists(tmp_path) -> None:
     project = _init_managed_repo(tmp_path)
     _create_worktree(project)
@@ -429,7 +442,13 @@ def test_stage_parallel_executor_runs_preview_blocks_until_executor_preview_exis
     assert result["blockers"][0]["code"] == "EXECUTOR_PREVIEW_NOT_FOUND"
 
 
-def test_stage_parallel_executor_runs_preview_writes_group_preview_without_claiming(tmp_path) -> None:
+def test_stage_parallel_executor_runs_preview_blocks_fresh_start_r0(tmp_path) -> None:
+    """R0: stage parallel executor fresh start is explicitly unsupported.
+
+    Every shard operation selects executor_session_mode=start_new, which R0
+    cannot authorize without per-shard fresh authority wiring.  Preview must
+    fail closed BEFORE any preview_id is minted or any shard is started.
+    """
     project = _init_managed_repo(tmp_path)
     created = _create_executor_preview(project)
     manager = MCPStageParallelExecutorRunGroupManager(str(project))
@@ -444,35 +463,27 @@ def test_stage_parallel_executor_runs_preview_writes_group_preview_without_claim
     )
 
     assert result["ok"] is True
-    assert result["status"] == "preview_ready"
-    assert result["side_effect_scope"] == "preview_artifact_only"
+    assert result["status"] == "blocked"
+    assert result["can_apply"] is False
+    assert "preview_id" not in result
     assert result["authority_boundary"]["does_not_start_executor"] is True
+    assert result["authority_boundary"]["starts_executor_runs_on_apply"] is False
     assert result["planned_operations"][0]["executor_preview_id"] == created["executor_preview_id"]
-    claim_file = (
-        project
-        / ".colameta"
-        / "runtime"
-        / "parallel-worktrees"
-        / result["parallel_group_id"]
-        / "one"
-        / ".colameta"
-        / "runtime"
-        / "executor-workflow-previews"
-        / "claims"
-        / f"{created['executor_preview_id']}.json"
-    )
-    assert not claim_file.exists()
-
-    status = manager.handle("status", {"preview_id": result["preview_id"]})
-    assert status["ok"] is True
-    assert status["status"] == "preview_ready"
-    assert status["confirmation"]["preview_id"] == result["preview_id"]
+    codes = [str(b.get("code") or "") for b in result.get("blockers", [])]
+    assert FRESH_EXECUTOR_STAGE_PARALLEL_START_NEW_UNSUPPORTED_R0 in codes
 
 
-def test_stage_parallel_executor_runs_apply_starts_claims_without_merge_or_push(tmp_path, monkeypatch) -> None:
+def test_stage_parallel_executor_runs_apply_blocks_fresh_start_without_merge_or_push(tmp_path, monkeypatch) -> None:
+    """R0: no shard may start for a fresh stage parallel run group.
+
+    Preview is blocked (no preview_id), so apply cannot proceed; even a direct
+    apply attempt must not start any worker, create any claim, or invoke any
+    provider.
+    """
     project = _init_managed_repo(tmp_path)
-    created = _create_executor_preview(project)
+    _create_executor_preview(project)
     manager = MCPStageParallelExecutorRunGroupManager(str(project))
+
     preview = manager.handle(
         "preview",
         {
@@ -481,6 +492,10 @@ def test_stage_parallel_executor_runs_apply_starts_claims_without_merge_or_push(
             "provider": "codex",
         },
     )
+    assert preview["ok"] is True
+    assert preview["status"] == "blocked"
+    assert "preview_id" not in preview
+
     started_calls = []
 
     def fake_start(self, **kwargs):
@@ -488,37 +503,14 @@ def test_stage_parallel_executor_runs_apply_starts_claims_without_merge_or_push(
 
     monkeypatch.setattr(MCPExecutorWorkflowManager, "_start_run_once_background_worker", fake_start)
 
-    result = manager.handle("apply", {"preview_id": preview["preview_id"]})
+    result = manager.handle("apply", {"preview_id": "does-not-exist"})
 
-    assert result["ok"] is True
-    assert result["action"] == "apply"
-    assert result["status"] == "started"
-    assert result["started_count"] == 1
-    assert result["authority_boundary"]["starts_executor_runs_on_apply"] is True
-    assert result["authority_boundary"]["does_not_commit_to_main"] is True
-    assert result["authority_boundary"]["does_not_push"] is True
-    assert result["started_executor_runs"][0]["executor_preview_id"] == created["executor_preview_id"]
-    assert started_calls
-    claim_file = (
-        project
-        / ".colameta"
-        / "runtime"
-        / "parallel-worktrees"
-        / preview["parallel_group_id"]
-        / "one"
-        / ".colameta"
-        / "runtime"
-        / "executor-workflow-previews"
-        / "claims"
-        / f"{created['executor_preview_id']}.json"
-    )
-    claim = json.loads(claim_file.read_text(encoding="utf-8"))
-    assert claim["status"] == "RUNNING"
-    assert claim["preview_id"] == created["executor_preview_id"]
-
-    status = manager.handle("status", {"preview_id": preview["preview_id"]})
-    assert status["ok"] is False
-    assert status["error_code"] == "PREVIEW_NOT_FOUND"
+    assert result["ok"] is False
+    assert result["error_code"] == "PREVIEW_NOT_FOUND"
+    assert started_calls == []
+    worktree_path = _executor_preview_worktree_path(project)
+    claims_dir = worktree_path / ".colameta" / "runtime" / "executor-workflow-previews" / "claims"
+    assert not claims_dir.exists() or list(claims_dir.glob("*.json")) == []
 
 
 def test_stage_parallel_executor_runs_apply_requires_preview_id(tmp_path) -> None:
@@ -551,22 +543,32 @@ def test_stage_parallel_executor_results_packet_reports_planned_preview(tmp_path
     assert result["group_status_preview"]["status"] == "waiting_for_executor_results"
 
 
-def test_stage_parallel_executor_results_packet_reports_running_claim(tmp_path, monkeypatch) -> None:
-    project = _init_managed_repo(tmp_path)
-    _create_executor_preview(project)
-    run_manager = MCPStageParallelExecutorRunGroupManager(str(project))
-    preview = run_manager.handle(
-        "preview",
-        {
-            "stage_id": "stage_parallel_dev",
-            "task_intents": _task_intents(),
-            "provider": "codex",
-        },
-    )
+def _seed_running_claim(project, created) -> tuple[Path, str]:
+    """Seed a RUNNING executor claim directly (no stage parallel apply).
 
-    monkeypatch.setattr(MCPExecutorWorkflowManager, "_start_run_once_background_worker", lambda self, **kwargs: None)
-    started = run_manager.handle("apply", {"preview_id": preview["preview_id"]})
-    assert started["ok"] is True
+    Stage parallel executor fresh start is R0-unsupported; results-packet
+    coverage must construct its claim/report fixtures directly instead of
+    going through the blocked apply path.
+    """
+    worktree_path = Path(created["worktree_path"])
+    preview_id = str(created["executor_preview_id"])
+    manager = MCPExecutorWorkflowManager(str(worktree_path))
+    artifact = manager._read_preview_artifact(preview_id)
+    assert artifact is not None
+    claim = manager._claims.acquire_claim(
+        preview_id=preview_id,
+        artifact=artifact,
+        provider="codex",
+        execution_mode="run",
+    )
+    assert claim["ok"] is True, claim
+    return worktree_path, preview_id
+
+
+def test_stage_parallel_executor_results_packet_reports_running_claim(tmp_path) -> None:
+    project = _init_managed_repo(tmp_path)
+    created = _create_executor_preview(project)
+    _seed_running_claim(project, created)
 
     result = build_stage_parallel_executor_results_packet(
         project_root=str(project),
@@ -581,25 +583,12 @@ def test_stage_parallel_executor_results_packet_reports_running_claim(tmp_path, 
     assert result["group_status_preview"]["status"] == "waiting_for_executor_results"
 
 
-def test_stage_parallel_executor_results_packet_reports_completed_validated_report(tmp_path, monkeypatch) -> None:
+def test_stage_parallel_executor_results_packet_reports_completed_validated_report(tmp_path) -> None:
     project = _init_managed_repo(tmp_path)
-    _create_executor_preview(project)
-    run_manager = MCPStageParallelExecutorRunGroupManager(str(project))
-    preview = run_manager.handle(
-        "preview",
-        {
-            "stage_id": "stage_parallel_dev",
-            "task_intents": _task_intents(),
-            "provider": "codex",
-        },
-    )
+    created = _create_executor_preview(project)
+    worktree_path, preview_id = _seed_running_claim(project, created)
 
-    monkeypatch.setattr(MCPExecutorWorkflowManager, "_start_run_once_background_worker", lambda self, **kwargs: None)
-    started = run_manager.handle("apply", {"preview_id": preview["preview_id"]})
-    assert started["ok"] is True
-    executor_preview_id = started["started_executor_runs"][0]["executor_preview_id"]
-    worktree_path = started["started_executor_runs"][0]["worktree_path"]
-    report = ExecutorRunReportStore(worktree_path).record_report(
+    report = ExecutorRunReportStore(str(worktree_path)).record_report(
         version="v1",
         version_name="One",
         provider="codex",
@@ -612,17 +601,12 @@ def test_stage_parallel_executor_results_packet_reports_completed_validated_repo
     )
     assert report["ok"] is True
     claim_file = (
-        project
-        / ".colameta"
-        / "runtime"
-        / "parallel-worktrees"
-        / preview["parallel_group_id"]
-        / "one"
+        worktree_path
         / ".colameta"
         / "runtime"
         / "executor-workflow-previews"
         / "claims"
-        / f"{executor_preview_id}.json"
+        / f"{preview_id}.json"
     )
     claim = json.loads(claim_file.read_text(encoding="utf-8"))
     claim["status"] = "COMPLETED"
@@ -641,6 +625,67 @@ def test_stage_parallel_executor_results_packet_reports_completed_validated_repo
     assert result["executor_results"][0]["validation_status"] == "passed"
     assert result["executor_results"][0]["changed_files"] == ["README.md"]
     assert result["group_status_preview"]["status"] == "merge_ready"
+
+
+def test_stage_parallel_executor_runs_apply_blocks_stale_start_new_preview(tmp_path, monkeypatch) -> None:
+    """Apply-time gate: a stale pre-upgrade apply preview must fail closed.
+
+    A preview record written before the R0 contract (operations requesting
+    start_new) must be blocked at apply, before any shard starts, with no
+    claims created and no provider invoked.
+    """
+    project = _init_managed_repo(tmp_path)
+    created = _create_executor_preview(project)
+    manager = MCPStageParallelExecutorRunGroupManager(str(project))
+    plan = manager._build_plan(
+        {
+            "stage_id": "stage_parallel_dev",
+            "task_intents": _task_intents(),
+            "provider": "codex",
+        }
+    )
+    validations = manager._executor_group._validate_plan(plan)
+    operations, _ = manager._planned_operations(plan, validations)
+    assert operations
+    stale_preview_id = "stale_start_new_r0_preview"
+    record = {
+        "preview_id": stale_preview_id,
+        "artifact_kind": "stage_parallel_executor_run_group_apply_preview",
+        "action": "manage_stage_parallel_executor_runs.apply",
+        "tool": "manage_stage_parallel_executor_runs",
+        "params": {"action": "apply", "preview_id": stale_preview_id},
+        "project_root": str(project),
+        "stage_id": "stage_parallel_dev",
+        "parallel_group_id": plan.get("parallel_group_id"),
+        "provider": "codex",
+        "base_branch": plan.get("base_branch"),
+        "run_preview": plan,
+        "validations": validations,
+        "planned_operations": operations,
+        "created_at": "2026-07-20T00:00:00+00:00",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "reason": "",
+        "requires_confirmation": True,
+    }
+    manager._store.write(stale_preview_id, record)
+
+    started_calls = []
+    monkeypatch.setattr(
+        MCPExecutorWorkflowManager,
+        "_start_run_once_background_worker",
+        lambda self, **kwargs: started_calls.append(kwargs),
+    )
+
+    result = manager.handle("apply", {"preview_id": stale_preview_id})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "APPLY_STATE_MISMATCH"
+    codes = [str(b.get("code") or "") for b in result.get("blockers", [])]
+    assert FRESH_EXECUTOR_STAGE_PARALLEL_START_NEW_UNSUPPORTED_R0 in codes
+    assert started_calls == []
+    worktree_path = _executor_preview_worktree_path(project)
+    claims_dir = worktree_path / ".colameta" / "runtime" / "executor-workflow-previews" / "claims"
+    assert not claims_dir.exists() or list(claims_dir.glob("*.json")) == []
 
 
 def test_stage_parallel_merge_gate_preview_blocks_until_results_are_ready(tmp_path) -> None:

@@ -21,6 +21,14 @@ EXECUTOR_PREVIEWS_RELATIVE_DIR = os.path.join(".colameta", "runtime", "executor-
 CLAIMS_DIR = "claims"
 
 
+# R0 fail-closed contract: stage parallel executor run groups start fresh
+# shard executors via run_once(executor_session_mode="start_new") without a fresh
+# executor authority.  Fresh Authority -> Execution Binding (R0) does not wire
+# authority for isolated shard worktrees; any start_new operation must block at
+# preview and at apply, before a single shard is started.
+FRESH_EXECUTOR_STAGE_PARALLEL_START_NEW_UNSUPPORTED_R0 = "FRESH_EXECUTOR_STAGE_PARALLEL_START_NEW_UNSUPPORTED_R0"
+
+
 class MCPStageParallelExecutorRunGroupManager:
     def __init__(self, project_root: str):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
@@ -360,8 +368,38 @@ class MCPStageParallelExecutorRunGroupManager:
                 if isinstance(blocker, dict):
                     blockers.append({**blocker, "task_id": task_id})
         blockers.extend(operation_blockers)
+        blockers.extend(self._fresh_start_r0_blockers(operations))
         if not operations and not blockers:
             blockers.append({"code": "NO_EXECUTOR_RUN_OPERATIONS", "message": "没有可启动的 executor run。"})
+        return blockers
+
+    def _fresh_start_r0_blockers(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fail-closed R0 block for stage parallel executor fresh start.
+
+        Every planned/stored operation in this manager selects
+        ``executor_session_mode="start_new"`` for its per-shard ``run_once``.
+        Fresh authority binding is not wired for isolated shard worktrees in R0,
+        so any such operation must block before a single shard is started.  No
+        mode substitution and no per-shard authority minting is performed here.
+        """
+        blockers: list[dict[str, Any]] = []
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            run_request = operation.get("run_request")
+            arguments = run_request.get("arguments") if isinstance(run_request, dict) else None
+            mode = arguments.get("executor_session_mode") if isinstance(arguments, dict) else None
+            if str(mode or "") == "start_new":
+                blockers.append(
+                    {
+                        "code": FRESH_EXECUTOR_STAGE_PARALLEL_START_NEW_UNSUPPORTED_R0,
+                        "message": (
+                            "R0 does not support stage parallel executor fresh start; "
+                            "fresh authority binding is not wired for isolated shard worktrees."
+                        ),
+                        "task_id": operation.get("task_id"),
+                    }
+                )
         return blockers
 
     def _validate_apply_state(self, preview: dict[str, Any]) -> list[dict[str, Any]]:
@@ -370,6 +408,7 @@ class MCPStageParallelExecutorRunGroupManager:
         current_ops, operation_blockers = self._planned_operations(plan, validations)
         blockers = self._preview_blockers(plan, validations, current_ops, operation_blockers)
         expected_ops = self._stored_operations(preview)
+        blockers.extend(self._fresh_start_r0_blockers(expected_ops))
         if self._operations_signature(current_ops) != self._operations_signature(expected_ops):
             blockers.append(
                 {

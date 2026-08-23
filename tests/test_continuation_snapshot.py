@@ -366,6 +366,8 @@ def test_executor_service_passes_current_run_id_to_runtime_snapshot(tmp_path: Pa
             provider="codex",
             executor_session_mode="start_new",
             run_id="run-self",
+            executor_authority_id="0" * 32,
+            admission_sha256="1" * 64,
         )
 
     assert result["ok"] is True
