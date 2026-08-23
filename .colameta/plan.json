@@ -1793,6 +1793,57 @@
       }
     },
     {
+      "version": "v1.18.1",
+      "name": "Fresh Executor Bound Execution Proof R0",
+      "description": "Dedicated proof-only Runner version for one real Fresh Executor Authority -> execution binding -> Codex provider start. The provider is expected to make zero repository changes.",
+      "prompt_file": ".colameta/prompts/v1.18.1.md",
+      "enabled": true,
+      "context_files": [
+        "runner/fresh_executor_authority.py",
+        "runner/executor_run_workflow.py",
+        "runner/mcp_executor_workflow.py",
+        "runner/work_item_governance/references.py"
+      ],
+      "allowed_files": [
+        "docs/fresh-executor-bound-proof-r0-sentinel.md"
+      ],
+      "forbidden_files": [],
+      "acceptance_commands": [
+        {
+          "command": "git diff --check",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        },
+        {
+          "command": "test -z \"$(git status --porcelain=v1)\"",
+          "timeout_seconds": 120,
+          "continue_on_failure": false
+        }
+      ],
+      "manual_acceptance": [
+        "The provider must not modify or create repository files.",
+        "Fresh Authority creation remains a separate later gate.",
+        "The provider may start only after execution-binding.json is durably created."
+      ],
+      "out_of_scope": [
+        "Any source implementation change",
+        "Any v1.19 execution or authorization",
+        "Git commit or push by the executor",
+        "Runtime/service configuration changes",
+        "Work Item terminal transition",
+        "run_bounded or Stage Parallel execution"
+      ],
+      "allow_no_changes": true,
+      "required_changed_files": [],
+      "work_item_id": "wi_01a02e3a-d876-7530-a58f-30760f0436c0",
+      "task_version": 1,
+      "attempt_id": "attempt_01a02e3a-f649-7745-8122-c6b09a4e5c30",
+      "execution": {
+        "provider": "codex",
+        "notes": "Proof-only read operation. Explicit start_new authority will be supplied later by Fresh Executor Authority; this plan entry does not itself authorize execution."
+      }
+    },
+    {
       "version": "v1.19",
       "name": "P1 Validation Result Provenance Bridge V1",
       "description": "Bridge one real manifest-bound validation run into P1 release evidence by adding a canonical terminal validation_result_sha256 and binding candidate HEAD -> existing manifest_sha256 -> existing contract_sha256 -> validation_result_sha256 -> existing P1 receipt_digest. Upgrade the P1 intake, preview, and receipt contracts to explicit v2 schemas with read-only v1 receipt compatibility; use one run_id-only internal verifier across preview/apply/status; preserve verified_stale on HEAD drift; keep the release gate blocked and Commander at exactly nine tools. Execution is forbidden from the planning worktree and requires a reviewed two-file planning commit followed by a new clean execution worktree with verified relative-path rebinding.",
