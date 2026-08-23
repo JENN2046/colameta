@@ -17,6 +17,7 @@ from runner.executor_session import (
     CANONICAL_CONTINUATION_ACTIONS,
     CANONICAL_CONTINUATION_CLASSIFICATIONS,
     ExecutorSessionStore,
+    _live_run_evidence_valid_and_idle,
     build_canonical_continuation_decision,
     classify_executor_session_head_mismatch,
 )
@@ -283,6 +284,101 @@ class ExecutorSessionHeadMismatchTests(unittest.TestCase):
 
                 assert decision["resume_allowed"] is False
                 assert decision["start_new_allowed"] is False
+
+    def test_terminal_available_live_run_requires_consistent_terminal_proof(self) -> None:
+        cases = {
+            "running": {"available": True, "claim_status": "RUNNING"},
+            "orphaned": {"available": True, "status": "orphaned"},
+            "contradictory_status": {
+                "available": True,
+                "claim_status": "COMPLETED",
+                "claim": {"status": "RUNNING"},
+            },
+            "missing_terminal_status": {"available": True},
+            "null_terminal_status": {"available": True, "claim_status": None},
+            "unknown_terminal_status": {"available": True, "claim_status": "FUTURE_STATE"},
+            "availability_type_confusion": {"available": "true", "claim_status": "COMPLETED"},
+            "not_found_plus_available": {
+                "available": True,
+                "status": "not_found",
+            },
+            "claim_provenance_contradiction": {
+                "available": True,
+                "claim_found": False,
+                "claim_status": "COMPLETED",
+            },
+            "operation_running_type_confusion": {
+                "available": True,
+                "claim_status": "COMPLETED",
+                "operation_running": "false",
+            },
+        }
+        for name, live_run in cases.items():
+            with self.subTest(name=name):
+                valid, reason = _live_run_evidence_valid_and_idle(
+                    live_run,
+                    latest_claim_status="COMPLETED",
+                )
+                assert valid is False
+                assert reason
+
+                facts = canonical_fact_bundle(
+                    status=inactive_stale_session_status(),
+                    latest_run_status="completed",
+                    runner_status="READY",
+                    current_version_status="NOT_STARTED",
+                )
+                facts.update(
+                    {
+                        "latest_claim_status": "COMPLETED",
+                        "activity_record_found": True,
+                        "hard_blockers": ["session_manifest_inactive"],
+                        "live_run": live_run,
+                    }
+                )
+                decision = build_canonical_continuation_decision(facts)
+                assert decision["start_new_allowed"] is False
+                assert decision["resume_allowed"] is False
+
+    def test_terminal_available_live_run_is_idle_only_with_consistent_proof(self) -> None:
+        valid, reason = _live_run_evidence_valid_and_idle(
+            {
+                "available": True,
+                "status": "COMPLETED",
+                "claim_status": "COMPLETED",
+                "claim": {"status": "completed"},
+                "claim_found": True,
+                "operation_running": False,
+                "job_status": "idle",
+            },
+            latest_claim_status="COMPLETED",
+        )
+        assert valid is True
+        assert reason is None
+
+        facts = canonical_fact_bundle(
+            status=inactive_stale_session_status(),
+            latest_run_status="completed",
+            runner_status="READY",
+            current_version_status="NOT_STARTED",
+        )
+        facts.update(
+            {
+                "latest_claim_status": "COMPLETED",
+                "activity_record_found": True,
+                "hard_blockers": ["session_manifest_inactive"],
+                "live_run": {
+                    "available": True,
+                    "claim_status": "COMPLETED",
+                },
+            }
+        )
+        decision = build_canonical_continuation_decision(facts)
+        assert decision["classification"] == "inactive_stale_session"
+        assert decision["recommended_action"] == "start_new"
+        assert decision["start_new_allowed"] is True
+        assert decision["resume_allowed"] is False
+        assert decision["hard_blockers"] == []
 
     def test_inactive_stale_session_type_confusion_fails_closed(self) -> None:
         cases = {
