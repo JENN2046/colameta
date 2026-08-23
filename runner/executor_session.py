@@ -1131,6 +1131,8 @@ class ExecutorSessionStore:
         task_version: int | None = None,
         attempt_id: str | None = None,
         artifact_refs: list[str] | None = None,
+        executor_authority_id: str | None = None,
+        admission_sha256: str | None = None,
     ) -> dict[str, Any]:
         os.makedirs(self.runtime_dir, exist_ok=True)
         now = _now_iso()
@@ -1168,6 +1170,10 @@ class ExecutorSessionStore:
             source=source.strip() or "executor_result",
         )
         payload = asdict(record)
+        if isinstance(executor_authority_id, str) and executor_authority_id.strip():
+            payload["executor_authority_id"] = executor_authority_id.strip()
+        if isinstance(admission_sha256, str) and admission_sha256.strip():
+            payload["admission_sha256"] = admission_sha256.strip()
         if any(value is not None for value in (work_item_id, task_version, attempt_id, artifact_refs)):
             work_item_binding = {
                 "work_item_id": work_item_id,

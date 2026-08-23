@@ -24,6 +24,17 @@ from runner.executor_result_builder import (
 from runner.executor_run_claims import ExecutorRunClaimStore, parse_iso_datetime
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_run_workflow import ExecutorRunOnceService
+from runner.fresh_executor_authority import (
+    FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
+    FRESH_EXECUTOR_AUTHORITY_BOUNDED_UNSUPPORTED_R0,
+    FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
+    FRESH_EXECUTOR_AUTHORITY_PREVIEW_MISMATCH,
+    FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH,
+    FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+    FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+    FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+    inspect_fresh_executor_authority_for_execution,
+)
 from runner.executor_session import ExecutorSessionStore
 from runner.continuation_snapshot import collect_continuation_snapshot
 from runner.project_operation_lease import ProjectOperationLease
@@ -220,6 +231,8 @@ class MCPExecutorWorkflowManager:
                 f"executor_session_mode 必须是 auto、resume_existing 或 start_new，收到：{executor_session_mode}",
             )
         executor_session_mode = executor_session_mode or "auto"
+        executor_authority_id = _sanitize_optional_str(params.get("executor_authority_id"))
+        admission_sha256 = _sanitize_optional_str(params.get("admission_sha256"))
         selected_executor_profile = self._build_selected_executor_profile(
             provider=provider,
             params_provider=params_provider_raw,
@@ -255,6 +268,39 @@ class MCPExecutorWorkflowManager:
         artifact["model_source"] = selected_executor_profile.get("model_source")
         artifact["reasoning_effort"] = selected_executor_profile.get("reasoning_effort")
         artifact["reasoning_effort_source"] = selected_executor_profile.get("reasoning_effort_source")
+        if executor_authority_id:
+            authority_gate_error = self._fresh_authority_preview_gate(
+                authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+                provider=provider,
+                executor_session_mode=executor_session_mode,
+                current_head=str(preflight_result.get("current_head") or ""),
+                work_target={
+                    "work_item_id": preflight_result.get("work_item_id"),
+                    "task_version": preflight_result.get("task_version"),
+                    "attempt_id": preflight_result.get("attempt_id"),
+                    "artifact_refs": list(preflight_result.get("artifact_refs") or []),
+                },
+            )
+            if authority_gate_error is not None:
+                return self._error(
+                    "run_once_preview",
+                    authority_gate_error,
+                    "fresh executor authority preview gate rejected the request",
+                )
+            artifact["fresh_execution_authority"] = {
+                "executor_authority_id": executor_authority_id,
+                "admission_sha256": admission_sha256,
+                "admitted_head": preflight_result.get("current_head"),
+                "provider": provider,
+                "executor_session_mode": executor_session_mode,
+            }
+            artifact["work_target"] = {
+                "work_item_id": preflight_result.get("work_item_id"),
+                "task_version": preflight_result.get("task_version"),
+                "attempt_id": preflight_result.get("attempt_id"),
+                "artifact_refs": list(preflight_result.get("artifact_refs") or []),
+            }
         self._write_preview_artifact(preview_key, artifact)
         pending_alignment = self._build_pending_alignment_summary(
             current_version=str(artifact.get("current_version") or "").strip()
@@ -705,6 +751,8 @@ class MCPExecutorWorkflowManager:
                 f"executor_session_mode 必须是 auto、resume_existing 或 start_new，收到：{executor_session_mode}",
             )
         executor_session_mode = executor_session_mode or "auto"
+        executor_authority_id = _sanitize_optional_str(params.get("executor_authority_id"))
+        admission_sha256 = _sanitize_optional_str(params.get("admission_sha256"))
 
         if not preview_id:
             return self._error("run_once", "PREVIEW_ID_REQUIRED", "run_once 需要 preview_id。请先调用 run_once_preview 获取。")
@@ -855,6 +903,62 @@ class MCPExecutorWorkflowManager:
                 "continuation_snapshot": continuation_snapshot.public_view(provider),
             }
 
+        selected_action = str(action_gate.get("selected_action") or "")
+        if selected_action == "start_new":
+            if not executor_authority_id or not admission_sha256:
+                operation_lease.release()
+                return self._error(
+                    "run_once",
+                    FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+                    "start_new 需要 executor_authority_id 与 admission_sha256。",
+                )
+            if executor_session_mode != "start_new":
+                operation_lease.release()
+                return self._error(
+                    "run_once",
+                    FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+                    "fresh executor authority 只允许 executor_session_mode=start_new。",
+                )
+            preview_authority = artifact.get("fresh_execution_authority")
+            if (
+                not isinstance(preview_authority, dict)
+                or preview_authority.get("executor_authority_id") != executor_authority_id
+                or preview_authority.get("admission_sha256") != admission_sha256
+            ):
+                operation_lease.release()
+                return self._error(
+                    "run_once",
+                    FRESH_EXECUTOR_AUTHORITY_PREVIEW_MISMATCH,
+                    "executor_authority_id/admission_sha256 与 preview artifact 不一致。",
+                )
+            authority_gate_error = self._fresh_authority_preview_gate(
+                authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+                provider=provider,
+                executor_session_mode=executor_session_mode,
+                current_head=str(artifact.get("current_head") or ""),
+                work_target={
+                    "work_item_id": artifact.get("work_item_id"),
+                    "task_version": artifact.get("task_version"),
+                    "attempt_id": artifact.get("attempt_id"),
+                    "artifact_refs": list(artifact.get("artifact_refs") or []),
+                },
+            )
+            if authority_gate_error is not None:
+                operation_lease.release()
+                return self._error(
+                    "run_once",
+                    authority_gate_error,
+                    "fresh executor authority gate 在 claim 前拒绝该请求。",
+                )
+        elif selected_action == "resume" and executor_authority_id:
+            operation_lease.release()
+            return self._error(
+                "run_once",
+                FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+                "fresh executor authority 不能用于 resume。",
+            )
+
         claim_result = self._claim_preview_artifact(
             action="run_once",
             preview_id=preview_id,
@@ -862,6 +966,8 @@ class MCPExecutorWorkflowManager:
             provider=provider,
             execution_mode=execution_mode,
             profile_id=profile_id,
+            executor_authority_id=executor_authority_id,
+            admission_sha256=admission_sha256,
         )
         if not claim_result.get("ok"):
             operation_lease.release()
@@ -869,6 +975,7 @@ class MCPExecutorWorkflowManager:
         run_id = str(claim_result.get("run_id", ""))
         preview_claimed_at = str(claim_result.get("claimed_at", ""))
         preview_claim_status = str(claim_result.get("preview_claim_status", ""))
+        claimed_work_target = claim_result.get("claimed_work_target")
 
         try:
             self._start_run_once_background_worker(
@@ -888,6 +995,9 @@ class MCPExecutorWorkflowManager:
                 preview_claimed_at=preview_claimed_at,
                 preview_claim_status=preview_claim_status,
                 operation_lease=operation_lease,
+                executor_authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+                claimed_work_target=claimed_work_target,
             )
             lease_ownership.transferred = True
         except Exception:
@@ -913,6 +1023,9 @@ class MCPExecutorWorkflowManager:
         run_id: str = "", preview_id: str = "",
         preview_claimed_at: str = "", preview_claim_status: str = "",
         operation_lease: ProjectOperationLease | None = None,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
+        claimed_work_target: dict[str, Any] | None = None,
     ) -> None:
         try:
             started_at = self._now_iso()
@@ -935,6 +1048,8 @@ class MCPExecutorWorkflowManager:
                     run_id, preview_id,
                     preview_claimed_at, preview_claim_status,
                     run_once_callable, operation_lease,
+                    executor_authority_id, admission_sha256,
+                    claimed_work_target,
                 ),
                 daemon=True,
             )
@@ -977,6 +1092,9 @@ class MCPExecutorWorkflowManager:
         preview_claimed_at: str = "", preview_claim_status: str = "",
         run_once_callable: Callable[..., dict[str, Any]] | None = None,
         operation_lease: ProjectOperationLease | None = None,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
+        claimed_work_target: dict[str, Any] | None = None,
     ) -> None:
         heartbeat_stop_event = threading.Event()
         heartbeat_state: dict[str, Any] = {"errors": 0, "last_error": ""}
@@ -1026,6 +1144,9 @@ class MCPExecutorWorkflowManager:
                 preview_claimed_at=preview_claimed_at,
                 preview_claim_status=preview_claim_status,
                 operation_lease=operation_lease,
+                executor_authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+                claimed_work_target=claimed_work_target,
             )
             final_status = "COMPLETED" if bool(result.get("ok")) else "FAILED"
             report_id = str(result.get("latest_report_id") or "")
@@ -1392,6 +1513,23 @@ class MCPExecutorWorkflowManager:
                 message=action_gate["message"],
                 blocks=[{"code": "CONTINUATION_ACTION_NOT_ALLOWED", "message": action_gate["message"]}],
                 warnings=self._str_list(compact_continuation_decision.get("hard_blockers")),
+            )
+
+        if action_gate.get("selected_action") == "start_new":
+            operation_lease.release()
+            return self._bounded_blocked_result(
+                preview_id=preview_id,
+                provider=provider,
+                max_iterations=max_iterations,
+                trusted_mode=trusted_mode,
+                allow_fix=allow_fix,
+                allow_commit=allow_commit,
+                reason="fresh_authority_bounded_unsupported_r0",
+                message="R0 fresh executor authority does not support run_bounded fresh start.",
+                blocks=[{"code": FRESH_EXECUTOR_AUTHORITY_BOUNDED_UNSUPPORTED_R0, "message": "run_bounded fresh start unsupported in R0"}],
+                warnings=[],
+                error_code=FRESH_EXECUTOR_AUTHORITY_BOUNDED_UNSUPPORTED_R0,
+                classification="blocked_fresh_authority",
             )
 
         inventory = preflight.get("executor_inventory")
@@ -4563,6 +4701,56 @@ class MCPExecutorWorkflowManager:
             "message": message,
         }
 
+    def _fresh_authority_preview_gate(
+        self,
+        *,
+        authority_id: str,
+        admission_sha256: str | None,
+        provider: str,
+        executor_session_mode: str,
+        current_head: str,
+        work_target: dict[str, Any],
+    ) -> str | None:
+        """Read-only fresh-authority gate used at preview and pre-claim time.
+
+        Validates (never consumes): provider codex, explicit start_new,
+        authoritative FD-anchored admission read with exact hash/HEAD/provider,
+        still unconsumed, and a complete governed work target.  Returns the
+        error code on failure or None when the authority is admissible.
+        """
+        if provider != "codex":
+            return FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH
+        if executor_session_mode != "start_new":
+            return FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH
+        if not (isinstance(admission_sha256, str) and admission_sha256.strip()):
+            return FRESH_EXECUTOR_AUTHORITY_REQUIRED
+        inspect_result = inspect_fresh_executor_authority_for_execution(
+            self.project_root,
+            authority_id,
+            expected_admission_sha256=admission_sha256,
+            expected_head=current_head or None,
+            expected_provider=provider,
+            expected_repository="JENN2046/colameta",
+            expected_git_branch="main",
+        )
+        if not inspect_result.get("ok"):
+            return (
+                inspect_result.get("error_code")
+                or FRESH_EXECUTOR_AUTHORITY_NOT_FOUND
+            )
+        if inspect_result.get("unconsumed") is not True:
+            return FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED
+        if not (
+            isinstance(work_target, dict)
+            and all(
+                work_target.get(key) is not None
+                for key in ("work_item_id", "task_version", "attempt_id")
+            )
+            and isinstance(work_target.get("artifact_refs"), list)
+        ):
+            return FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED
+        return None
+
     def _allowed_session_modes(self, continuation_decision: dict[str, Any]) -> list[str]:
         modes: list[str] = []
         if self._continuation_action_gate(
@@ -4736,6 +4924,8 @@ class MCPExecutorWorkflowManager:
         message: str,
         blocks: list[dict[str, Any]],
         warnings: list[str],
+        error_code: str = "PREFLIGHT_BLOCKED",
+        classification: str = "blocked_preflight",
     ) -> dict[str, Any]:
         return {
             "ok": False,
@@ -4756,7 +4946,7 @@ class MCPExecutorWorkflowManager:
                 "allow_commit": allow_commit,
             },
             "iteration_results": [],
-            "classification": "blocked_preflight",
+            "classification": classification,
             "next_actions": [{
                 "tool": "manage_executor_workflow",
                 "action": "preflight",
@@ -4767,7 +4957,7 @@ class MCPExecutorWorkflowManager:
             "blockers": [b.get("code", "") for b in blocks if isinstance(b, dict)],
             "warnings": warnings,
             "message": message,
-            "error_code": "PREFLIGHT_BLOCKED",
+            "error_code": error_code,
         }
 
     def _generate_preview_key(self, prefix: str) -> str:
@@ -4785,19 +4975,32 @@ class MCPExecutorWorkflowManager:
         provider: str,
         execution_mode: str,
         profile_id: str | None = None,
+        executor_authority_id: str | None = None,
+        admission_sha256: str | None = None,
     ) -> dict[str, Any]:
         claim_result = self._claims.acquire_claim(
             preview_id=preview_id,
             artifact=artifact,
             provider=provider,
             execution_mode=execution_mode,
+            executor_authority_id=executor_authority_id,
+            admission_sha256=admission_sha256,
         )
         if claim_result.get("ok"):
+            claim_record = claim_result.get("claim")
+            claim_record = claim_record if isinstance(claim_record, dict) else {}
+            claimed_work_target = {
+                "work_item_id": claim_record.get("work_item_id"),
+                "task_version": claim_record.get("task_version"),
+                "attempt_id": claim_record.get("attempt_id"),
+                "artifact_refs": list(claim_record.get("artifact_refs") or []),
+            }
             return {
                 "ok": True,
                 "run_id": claim_result.get("run_id", ""),
                 "claimed_at": claim_result.get("claimed_at", ""),
                 "preview_claim_status": "RUNNING",
+                "claimed_work_target": claimed_work_target,
             }
         if claim_result.get("error_code") == "CLAIM_EXISTS":
             return self._already_claimed_error(action, preview_id, claim_result.get("claim") or {}, profile_id=profile_id)

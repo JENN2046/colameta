@@ -15,6 +15,13 @@ from runner.executor_registry import (
     normalize_execution_provider,
 )
 from runner.executor_run_reports import ExecutorRunReportStore
+from runner.fresh_executor_authority import (
+    FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+    FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+    FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_MISMATCH,
+    FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+    validate_and_create_execution_binding,
+)
 from runner.executor_session import ExecutorSessionStore
 from runner.git_diff_helper import collect_git_diff_name_paths
 from runner.path_glob import match_any as glob_match_any
@@ -125,6 +132,38 @@ _PROVIDER_COMPLETION_TEXT_MARKERS = (
     "git diff --check 通过",
     "executor_report_available",
 )
+
+
+def _work_target_complete(work_target: Any) -> bool:
+    """True iff a governed work target has all four exact fields."""
+
+    return bool(
+        isinstance(work_target, dict)
+        and all(
+            work_target.get(key) is not None
+            for key in ("work_item_id", "task_version", "attempt_id")
+        )
+        and isinstance(work_target.get("artifact_refs"), list)
+    )
+
+
+def _work_target_exact_equal(
+    expected: dict[str, Any] | None, current: dict[str, Any] | None
+) -> bool:
+    """Exact four-field work-target equality (no coercion, no sorting).
+
+    ``artifact_refs`` is compared as the exact typed list (order-sensitive);
+    a string is never treated as a list, and missing/null never equals empty.
+    """
+
+    if not isinstance(expected, dict) or not isinstance(current, dict):
+        return False
+    return bool(
+        expected.get("work_item_id") == current.get("work_item_id")
+        and expected.get("task_version") == current.get("task_version")
+        and expected.get("attempt_id") == current.get("attempt_id")
+        and expected.get("artifact_refs") == current.get("artifact_refs")
+    )
 
 
 class ExecutorRunOnceService:
@@ -443,6 +482,9 @@ class ExecutorRunOnceService:
         preview_claimed_at: str = "",
         preview_claim_status: str = "",
         operation_lease: Any | None = None,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
+        claimed_work_target: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from runner.project_operation_lease import ProjectOperationLease
 
@@ -517,6 +559,26 @@ class ExecutorRunOnceService:
                     "warnings": [],
                     "continuation_snapshot": snapshot.public_view(provider),
                 }
+            fresh_gate_error = self._fresh_authority_dispatch_gate(
+                recommended_action=recommended_action,
+                executor_session_mode=executor_session_mode,
+                executor_authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+            )
+            if fresh_gate_error is not None:
+                return {
+                    "ok": False,
+                    "action": "run_once",
+                    "status": "blocked",
+                    "error_code": fresh_gate_error,
+                    "message": "Fresh executor authority gate blocks executor dispatch.",
+                    "provider": self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER,
+                    "execution_mode": execution_mode,
+                    "classification": "blocked_fresh_authority",
+                    "blocks": [fresh_gate_error],
+                    "warnings": [],
+                    "continuation_snapshot": snapshot.public_view(provider),
+                }
             with continuation_snapshot_scope(snapshot):
                 return self._run_once_under_lease(
                     provider=provider,
@@ -534,10 +596,150 @@ class ExecutorRunOnceService:
                     preview_id=preview_id,
                     preview_claimed_at=preview_claimed_at,
                     preview_claim_status=preview_claim_status,
+                    executor_authority_id=executor_authority_id,
+                    admission_sha256=admission_sha256,
+                    continuation_recommended_action=recommended_action,
+                    claimed_work_target=claimed_work_target,
                 )
         finally:
             if owns_lease:
                 lease.release()
+
+    def _fresh_authority_dispatch_gate(
+        self,
+        *,
+        recommended_action: str,
+        executor_session_mode: str,
+        executor_authority_id: str,
+        admission_sha256: str,
+    ) -> str | None:
+        """Early service-level fresh-authority gate (validate, never consume).
+
+        ``start_new`` requires a fresh-authority context; an authority id
+        paired with any non-``start_new`` mode is a hard block (a fresh
+        authority must never authorize resume).
+        """
+        authority_present = bool(
+            isinstance(executor_authority_id, str) and executor_authority_id.strip()
+        )
+        if recommended_action == "start_new":
+            if not authority_present or not (
+                isinstance(admission_sha256, str) and admission_sha256.strip()
+            ):
+                return FRESH_EXECUTOR_AUTHORITY_REQUIRED
+            if executor_session_mode != "start_new":
+                return FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH
+            return None
+        if recommended_action == "resume" and authority_present:
+            return FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH
+        return None
+
+    def _fresh_authority_execution_gate(
+        self,
+        *,
+        provider: str,
+        executor_session_mode: str,
+        executor_authority_id: str,
+        admission_sha256: str,
+        continuation_recommended_action: str,
+        run_id: str,
+        preview_id: str,
+        current_head: str,
+        work_target: dict[str, Any],
+        claimed_work_target: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Security choke point: authoritative revalidation + consumption.
+
+        Runs under the project operation lease immediately before the provider
+        path.  Establishes the exact preview/claim -> current work-target chain
+        (P1-2), then performs ONE atomic FD transaction (P1-1) that reads and
+        validates the admission record and creates ``execution-binding.json``
+        through the SAME authority directory object.  The admission record is
+        never modified.
+        """
+        authority_present = bool(
+            isinstance(executor_authority_id, str) and executor_authority_id.strip()
+        )
+        if not authority_present:
+            if continuation_recommended_action == "start_new":
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+                    "reason": "start_new requires a fresh executor authority",
+                }
+            return {"ok": True}  # resume / legacy path: fresh authority not involved
+        if (
+            continuation_recommended_action != "start_new"
+            or executor_session_mode != "start_new"
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+                "reason": "fresh authority requires explicit start_new",
+            }
+        if not (isinstance(admission_sha256, str) and admission_sha256.strip()):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+                "reason": "admission_sha256 is required with executor_authority_id",
+            }
+
+        # P1-2: the provider-before work target must EXACTLY equal the frozen
+        # preview/claim work target (never re-derived from the current plan on
+        # both sides, otherwise the comparison is vacuous).
+        if not _work_target_complete(claimed_work_target):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_MISMATCH,
+                "reason": "frozen preview/claim work target is missing for fresh authority start",
+            }
+        if not _work_target_complete(work_target):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+                "reason": "exact governed work target required for fresh authority start",
+            }
+        if not _work_target_exact_equal(claimed_work_target, work_target):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_MISMATCH,
+                "reason": (
+                    "provider-before work target differs from the preview/claim "
+                    "approved work target"
+                ),
+                "claimed_work_target": claimed_work_target,
+                "current_work_target": work_target,
+            }
+
+        # P1-1: single atomic validate+bind on the SAME authority directory fd.
+        binding_result = validate_and_create_execution_binding(
+            self.project_root,
+            executor_authority_id,
+            expected_admission_sha256=admission_sha256,
+            expected_head=current_head or "",
+            expected_provider=provider,
+            expected_repository="JENN2046/colameta",
+            expected_git_branch="main",
+            run_id=run_id,
+            preview_id=preview_id,
+            executor_session_mode=executor_session_mode,
+            work_target=work_target,
+            repository="JENN2046/colameta",
+        )
+        if not binding_result.get("ok"):
+            return {
+                "ok": False,
+                "error_code": binding_result.get("error_code")
+                or FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+                "reason": binding_result.get("reason")
+                or "execution binding creation failed",
+            }
+        return {
+            "ok": True,
+            "executor_authority_id": executor_authority_id,
+            "admission_sha256": admission_sha256,
+            "execution_binding_path": binding_result.get("execution_binding_path"),
+        }
 
     def _run_once_under_lease(
         self,
@@ -556,6 +758,10 @@ class ExecutorRunOnceService:
         preview_id: str = "",
         preview_claimed_at: str = "",
         preview_claim_status: str = "",
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
+        continuation_recommended_action: str = "",
+        claimed_work_target: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         provider_norm = self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER
         mode = self._normalize_execution_mode(execution_mode)
@@ -631,6 +837,10 @@ class ExecutorRunOnceService:
             "execution_mode": mode,
         }
         base_ctx.update(resolve_execution_attempt_binding(plan, current_version_str))
+        if isinstance(executor_authority_id, str) and executor_authority_id.strip():
+            base_ctx["executor_authority_id"] = executor_authority_id.strip()
+        if isinstance(admission_sha256, str) and admission_sha256.strip():
+            base_ctx["admission_sha256"] = admission_sha256.strip()
 
         self._maybe_write_event(run_id, "run_claimed", {
             "run_id": run_id,
@@ -670,6 +880,53 @@ class ExecutorRunOnceService:
             "current_version": str(state.current_version or ""),
         }, event_context=base_ctx)
 
+        fresh_binding = self._fresh_authority_execution_gate(
+            provider=provider_norm,
+            executor_session_mode=executor_session_mode,
+            executor_authority_id=executor_authority_id,
+            admission_sha256=admission_sha256,
+            continuation_recommended_action=continuation_recommended_action,
+            run_id=run_id,
+            preview_id=preview_id,
+            current_head=str(preflight_result.get("current_head") or ""),
+            work_target={
+                key: base_ctx.get(key)
+                for key in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
+            },
+            claimed_work_target=claimed_work_target,
+        )
+        if not fresh_binding.get("ok"):
+            gate_error = str(
+                fresh_binding.get("error_code") or "FRESH_EXECUTOR_AUTHORITY_BLOCKED"
+            )
+            self._maybe_write_event(
+                run_id,
+                "executor_blocked",
+                {
+                    "provider": provider_norm,
+                    "error_code": gate_error,
+                },
+                event_context={
+                    **base_ctx,
+                    "phase": "executor_blocked",
+                    "message": "Fresh executor authority gate blocked provider start.",
+                },
+            )
+            return self._executor_error(
+                provider_norm,
+                gate_error,
+                str(
+                    fresh_binding.get("reason")
+                    or "fresh executor authority gate blocked provider start"
+                ),
+                preflight_result.get("current_head"),
+                mode,
+            )
+        if fresh_binding.get("executor_authority_id"):
+            base_ctx["executor_authority_id"] = fresh_binding["executor_authority_id"]
+        if fresh_binding.get("admission_sha256"):
+            base_ctx["admission_sha256"] = fresh_binding["admission_sha256"]
+
         execution_result = self._execute_provider(
             provider=provider_norm,
             plan=plan,
@@ -683,6 +940,8 @@ class ExecutorRunOnceService:
             reasoning_effort_override=reasoning_effort,
             run_id=run_id,
             event_context=base_ctx,
+            executor_authority_id=base_ctx.get("executor_authority_id", ""),
+            admission_sha256=base_ctx.get("admission_sha256", ""),
         )
 
         state_mutations.persist_executor_run_post_provider_state(
@@ -749,6 +1008,8 @@ class ExecutorRunOnceService:
                         model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
                         reasoning_effort=reasoning_effort,
                         reasoning_effort_source=reasoning_effort_source,
+                        executor_authority_id=executor_authority_id,
+                        admission_sha256=admission_sha256,
                     ),
                     changed_files=changed_files_after,
                     preexisting_runner_files=preexisting_runner_files_set,
@@ -886,6 +1147,8 @@ class ExecutorRunOnceService:
                 model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
                 reasoning_effort=reasoning_effort,
                 reasoning_effort_source=reasoning_effort_source,
+                executor_authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
             ),
             completion_evidence=completion_evidence,
             preexisting_runner_files=preexisting_runner_files_set,
@@ -1018,6 +1281,8 @@ class ExecutorRunOnceService:
         reasoning_effort_override: str | None = None,
         run_id: str = "",
         event_context: dict[str, Any] | None = None,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
     ) -> dict[str, Any]:
         not_found_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
         unauthorized_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
@@ -1073,9 +1338,25 @@ class ExecutorRunOnceService:
             }, event_context=event_context)
 
             execution_result = (
-                executor.run_current_fix(plan, state, executor_session_mode=executor_session_mode, run_id=run_id, event_context=event_context)
+                executor.run_current_fix(
+                    plan,
+                    state,
+                    executor_session_mode=executor_session_mode,
+                    run_id=run_id,
+                    event_context=event_context,
+                    executor_authority_id=executor_authority_id,
+                    admission_sha256=admission_sha256,
+                )
                 if is_fix
-                else executor.run_current_version(plan, state, executor_session_mode=executor_session_mode, run_id=run_id, event_context=event_context)
+                else executor.run_current_version(
+                    plan,
+                    state,
+                    executor_session_mode=executor_session_mode,
+                    run_id=run_id,
+                    event_context=event_context,
+                    executor_authority_id=executor_authority_id,
+                    admission_sha256=admission_sha256,
+                )
             )
 
             self._maybe_write_event(run_id, "executor_finished", {
@@ -1885,6 +2166,8 @@ class ExecutorRunOnceService:
                     "prompt_file",
                     "prompt_sha256",
                     "prompt_sha256_status",
+                    "executor_authority_id",
+                    "admission_sha256",
                 } and isinstance(value, str):
                     trimmed = value.strip()
                     if trimmed:
@@ -1902,10 +2185,16 @@ class ExecutorRunOnceService:
         model_source: str | None = None,
         reasoning_effort: str | None = None,
         reasoning_effort_source: str | None = None,
+        executor_authority_id: str | None = None,
+        admission_sha256: str | None = None,
     ) -> dict[str, Any]:
         extra: dict[str, Any] = {}
         if isinstance(run_id, str) and run_id.strip():
             extra["run_id"] = run_id.strip()
+        if isinstance(executor_authority_id, str) and executor_authority_id.strip():
+            extra["executor_authority_id"] = executor_authority_id.strip()
+        if isinstance(admission_sha256, str) and admission_sha256.strip():
+            extra["admission_sha256"] = admission_sha256.strip()
         if isinstance(preview_id, str) and preview_id.strip():
             extra["preview_id"] = preview_id.strip()
         if isinstance(preview_claimed_at, str) and preview_claimed_at.strip():

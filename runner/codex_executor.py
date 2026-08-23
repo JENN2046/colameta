@@ -72,6 +72,8 @@ class CodexExecutor:
         executor_session_mode: str = "auto",
         run_id: str = "",
         event_context: dict[str, Any] | None = None,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
     ) -> CodexExecutionResult:
         if state.current_version is None:
             raise ValueError("当前没有版本，无法运行执行器。")
@@ -135,6 +137,8 @@ class CodexExecutor:
             log_path=result_summary.log_path,
             summary_path=result_summary.summary_path,
             codex_run=codex_run,
+            executor_authority_id=executor_authority_id,
+            admission_sha256=admission_sha256,
         )
         session_rec_warning = getattr(codex_run, "record_execution_session_warning", None)
         if session_rec_warning:
@@ -157,6 +161,8 @@ class CodexExecutor:
         executor_session_mode: str = "auto",
         run_id: str = "",
         event_context: dict[str, Any] | None = None,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
     ) -> CodexExecutionResult:
         if state.current_version is None:
             raise ValueError("当前没有版本，无法运行执行器。")
@@ -225,6 +231,8 @@ class CodexExecutor:
             log_path=result_summary.log_path,
             summary_path=result_summary.summary_path,
             codex_run=codex_run,
+            executor_authority_id=executor_authority_id,
+            admission_sha256=admission_sha256,
         )
         session_rec_warning = getattr(codex_run, "record_execution_session_warning", None)
         if session_rec_warning:
@@ -448,6 +456,8 @@ class CodexExecutor:
         log_path: str | None,
         summary_path: str | None,
         codex_run: CodexRunResult,
+        executor_authority_id: str = "",
+        admission_sha256: str = "",
     ) -> None:
         try:
             attempt_binding = resolve_execution_attempt_binding(plan, version)
@@ -475,6 +485,8 @@ class CodexExecutor:
                 log_path=log_path,
                 summary_path=summary_path,
                 source=source,
+                executor_authority_id=executor_authority_id or None,
+                admission_sha256=admission_sha256 or None,
                 **attempt_binding,
             )
         except Exception as rec_exc:

@@ -18,9 +18,11 @@ The only persistent state it creates lives under
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
+import stat
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -62,6 +64,31 @@ FRESH_EXECUTOR_ADMISSION_LIVENESS_UNAVAILABLE = (
     "FRESH_EXECUTOR_ADMISSION_LIVENESS_UNAVAILABLE"
 )
 FRESH_EXECUTOR_ADMISSION_STATE_ROOT_ESCAPE = "FRESH_EXECUTOR_ADMISSION_STATE_ROOT_ESCAPE"
+
+# --- Fresh-executor execution binding (R0) ---------------------------------
+# The admission record is immutable; consumption is a separate create-exclusive
+# ``execution-binding.json`` anchored to the open authority directory FD.
+FRESH_EXECUTOR_BINDING_SCHEMA_VERSION = "fresh_executor_execution_binding.v1"
+FRESH_EXECUTOR_BINDING_SOURCE = "fresh_executor_authority_execution_binding"
+EXECUTION_BINDING_FILENAME = "execution-binding.json"
+
+# R0 binding/execution gate error codes (all hard blocks).
+FRESH_EXECUTOR_AUTHORITY_REQUIRED = "FRESH_EXECUTOR_AUTHORITY_REQUIRED"
+FRESH_EXECUTOR_AUTHORITY_NOT_FOUND = "FRESH_EXECUTOR_AUTHORITY_NOT_FOUND"
+FRESH_EXECUTOR_AUTHORITY_MALFORMED = "FRESH_EXECUTOR_AUTHORITY_MALFORMED"
+FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH = "FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH"
+FRESH_EXECUTOR_AUTHORITY_HEAD_MISMATCH = "FRESH_EXECUTOR_AUTHORITY_HEAD_MISMATCH"
+FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH = "FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH"
+FRESH_EXECUTOR_AUTHORITY_STATE_INVALID = "FRESH_EXECUTOR_AUTHORITY_STATE_INVALID"
+FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED = "FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED"
+FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT = "FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT"
+FRESH_EXECUTOR_AUTHORITY_PREVIEW_MISMATCH = "FRESH_EXECUTOR_AUTHORITY_PREVIEW_MISMATCH"
+FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED = "FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED"
+FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_MISMATCH = "WORK_TARGET_MISMATCH"
+FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH = "FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH"
+FRESH_EXECUTOR_AUTHORITY_BOUNDED_UNSUPPORTED_R0 = "FRESH_EXECUTOR_AUTHORITY_BOUNDED_UNSUPPORTED_R0"
+FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED = "FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED"
+FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT = "FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT"
 
 # Authority ids are ColaMeta-generated UUID4 hex (32 lowercase hex chars).
 _AUTHORITY_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -930,3 +957,1109 @@ def _best_effort_remove_empty_dir(path: str) -> None:
         os.rmdir(path)
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# R0 binding: authoritative execution read + single-consumption binding
+# ---------------------------------------------------------------------------
+
+def _open_authority_state_read_fds(project_root: str) -> dict[str, Any]:
+    """Open the canonical authority state root READ-ONLY (never creates).
+
+    Every component is opened relative to its already-open parent with
+    ``O_NOFOLLOW``, so a symlink at any level fails closed and a missing
+    component means the authority cannot exist (``AUTHORITY_NOT_FOUND``).
+    """
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    fds: list[int] = []
+    try:
+        project_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        fds.append(project_fd)
+        colameta_fd = os.open(
+            _RUNNER_DIRNAME,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=project_fd,
+        )
+        fds.append(colameta_fd)
+        runtime_fd = os.open(
+            "runtime",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=colameta_fd,
+        )
+        fds.append(runtime_fd)
+        sessions_fd = os.open(
+            "executor-sessions",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=runtime_fd,
+        )
+        fds.append(sessions_fd)
+    except OSError as exc:
+        _close_fds(fds)
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
+            "reason": f"{type(exc).__name__}:{exc.errno}",
+        }
+    return {
+        "ok": True,
+        "project_fd": project_fd,
+        "colameta_fd": colameta_fd,
+        "runtime_fd": runtime_fd,
+        "sessions_fd": sessions_fd,
+        "canonical_project_root": root,
+        "authority_root_path": os.path.join(
+            root, _RUNNER_DIRNAME, "runtime", "executor-sessions"
+        ),
+    }
+
+
+def _open_existing_authority_dir(
+    sessions_fd: int, authority_id: str
+) -> tuple[int, str | None]:
+    """Open an EXISTING authority directory anchored to ``sessions_fd``.
+
+    Returns ``(authority_fd, None)`` or ``(-1, error_code)``.  Never creates.
+    """
+    try:
+        return (
+            os.open(
+                authority_id,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=sessions_fd,
+            ),
+            None,
+        )
+    except FileNotFoundError:
+        return -1, FRESH_EXECUTOR_AUTHORITY_NOT_FOUND
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            return -1, FRESH_EXECUTOR_AUTHORITY_MALFORMED
+        return -1, FRESH_EXECUTOR_AUTHORITY_NOT_FOUND
+
+
+def _read_fd_all(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _validate_admission_for_execution(
+    record: Any,
+    *,
+    authority_id: str,
+    canonical_project_root: str,
+    expected_head: str | None,
+    expected_provider: str,
+    expected_repository: str | None,
+    expected_git_branch: str | None,
+) -> str | None:
+    """Exact schema validation of an admission record for execution.
+
+    Returns ``None`` when the record is a valid, current, idle, unconsumed
+    authority for the requested context; otherwise the precise error code.
+    """
+    if not isinstance(record, dict):
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record.get("schema_version") != FRESH_EXECUTOR_AUTHORITY_SCHEMA_VERSION:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record.get("executor_authority_id") != authority_id:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record.get("project_root") != canonical_project_root:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record.get("source") != FRESH_EXECUTOR_AUTHORITY_SOURCE:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if expected_repository is not None and record.get("repository") != expected_repository:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if expected_git_branch is not None and record.get("git_branch") != expected_git_branch:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    admitted_head = record.get("admitted_head")
+    if not isinstance(admitted_head, str) or _FULL_HEAD_RE.fullmatch(admitted_head) is None:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if expected_head is not None and admitted_head.lower() != str(expected_head).lower():
+        return FRESH_EXECUTOR_AUTHORITY_HEAD_MISMATCH
+    if record.get("provider") != expected_provider:
+        return FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH
+    if record.get("admission_state") != FRESH_EXECUTOR_AUTHORITY_STATE:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("operation_state") != FRESH_EXECUTOR_OPERATION_STATE:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("provider_session_identity") is not None:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("parent_authority_id") is not None:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("continuation_from") is not None:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("historical_session_inherited") is not False:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("provider_invoked") is not False:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if record.get("work_started") is not False:
+        return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
+    if not isinstance(record.get("created_at"), str):
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    return None
+
+
+def inspect_fresh_executor_authority_for_execution(
+    project_root: str,
+    authority_id: str,
+    *,
+    expected_admission_sha256: str | None = None,
+    expected_head: str | None = None,
+    expected_provider: str = "codex",
+    expected_repository: str | None = None,
+    expected_git_branch: str | None = None,
+) -> dict[str, Any]:
+    """Authoritative, FD-anchored admission read for execution decisions.
+
+    Unlike the inspection-only ``read_fresh_executor_authority`` (a plain
+    pathname reader), this read walks ``project -> .colameta -> runtime ->
+    executor-sessions -> <authority_id>`` one ``O_NOFOLLOW`` component at a
+    time relative to already-open parent FDs, hashes the raw admission bytes
+    and compares against ``expected_admission_sha256`` when supplied, then
+    JSON-parses and exact-schema-validates the record.  It also reports
+    whether an ``execution-binding.json`` already exists (consumption state).
+    Never mutates anything.
+    """
+    if _validate_authority_id(authority_id) is False:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "malformed authority id",
+        }
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    state = _open_authority_state_read_fds(root)
+    if not state.get("ok"):
+        return {
+            "ok": False,
+            "error_code": state.get("error_code"),
+            "reason": state.get("reason"),
+        }
+    authority_fd = -1
+    admission_fd = -1
+    try:
+        authority_fd, authority_error = _open_existing_authority_dir(
+            state["sessions_fd"], authority_id
+        )
+        if authority_fd < 0:
+            return {
+                "ok": False,
+                "error_code": authority_error,
+                "executor_authority_id": authority_id,
+                "reason": "authority directory unavailable",
+            }
+        try:
+            try:
+                admission_fd = os.open(
+                    ADMISSION_FILENAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=authority_fd,
+                )
+            except FileNotFoundError:
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
+                    "executor_authority_id": authority_id,
+                    "reason": "admission record missing",
+                }
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "admission record symlink or escape",
+                    }
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
+                    "executor_authority_id": authority_id,
+                    "reason": f"{type(exc).__name__}:{exc.errno}",
+                }
+            try:
+                admission_stat = os.fstat(admission_fd)
+                if not stat.S_ISREG(admission_stat.st_mode):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "admission record is not a regular file",
+                    }
+                if stat.S_IMODE(admission_stat.st_mode) & 0o077:
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "admission record permissions unsafe",
+                    }
+                raw = _read_fd_all(admission_fd)
+            finally:
+                os.close(admission_fd)
+                admission_fd = -1
+        finally:
+            if admission_fd >= 0:
+                try:
+                    os.close(admission_fd)
+                except OSError:
+                    pass
+
+        admission_sha256 = hashlib.sha256(raw).hexdigest()
+        if expected_admission_sha256 is not None:
+            normalized_expected = str(expected_admission_sha256).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", normalized_expected) is None:
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+                    "reason": "malformed expected admission hash",
+                }
+            if admission_sha256 != normalized_expected:
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH,
+                    "executor_authority_id": authority_id,
+                    "observed_sha256": admission_sha256,
+                    "expected_sha256": normalized_expected,
+                    "reason": "admission bytes do not match the expected hash",
+                }
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                "executor_authority_id": authority_id,
+                "reason": "admission record is not valid JSON",
+            }
+        validation_error = _validate_admission_for_execution(
+            record,
+            authority_id=authority_id,
+            canonical_project_root=root,
+            expected_head=expected_head,
+            expected_provider=expected_provider,
+            expected_repository=expected_repository,
+            expected_git_branch=expected_git_branch,
+        )
+        if validation_error is not None:
+            return {
+                "ok": False,
+                "error_code": validation_error,
+                "executor_authority_id": authority_id,
+                "reason": f"admission validation failed: {validation_error}",
+            }
+
+        binding_present = False
+        binding_record: dict[str, Any] | None = None
+        binding_fd = -1
+        try:
+            try:
+                binding_fd = os.open(
+                    EXECUTION_BINDING_FILENAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=authority_fd,
+                )
+            except FileNotFoundError:
+                binding_present = False
+            except OSError:
+                binding_present = True
+            else:
+                binding_present = True
+                try:
+                    binding_raw = _read_fd_all(binding_fd)
+                    parsed = json.loads(binding_raw.decode("utf-8"))
+                    if isinstance(parsed, dict):
+                        binding_record = parsed
+                except (OSError, UnicodeDecodeError, ValueError):
+                    binding_record = None
+        finally:
+            if binding_fd >= 0:
+                try:
+                    os.close(binding_fd)
+                except OSError:
+                    pass
+
+        return {
+            "ok": True,
+            "executor_authority_id": authority_id,
+            "admission_sha256": admission_sha256,
+            "admission_record_path": os.path.join(
+                state["authority_root_path"], authority_id, ADMISSION_FILENAME
+            ),
+            "record": record,
+            "execution_binding_present": binding_present,
+            "execution_binding": binding_record,
+            "unconsumed": not binding_present,
+        }
+    finally:
+        if authority_fd >= 0:
+            try:
+                os.close(authority_fd)
+            except OSError:
+                pass
+        _close_fds(
+            [
+                state["project_fd"],
+                state["colameta_fd"],
+                state["runtime_fd"],
+                state["sessions_fd"],
+            ]
+        )
+
+
+def read_execution_binding(
+    project_root: str, authority_id: str
+) -> dict[str, Any] | None:
+    """FD-anchored read of the execution-binding record, or None if absent."""
+
+    if _validate_authority_id(authority_id) is False:
+        return None
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    state = _open_authority_state_read_fds(root)
+    if not state.get("ok"):
+        return None
+    authority_fd = -1
+    try:
+        authority_fd, authority_error = _open_existing_authority_dir(
+            state["sessions_fd"], authority_id
+        )
+        if authority_fd < 0:
+            return None
+        try:
+            try:
+                binding_fd = os.open(
+                    EXECUTION_BINDING_FILENAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=authority_fd,
+                )
+            except FileNotFoundError:
+                return None
+            except OSError:
+                return None
+            try:
+                raw = _read_fd_all(binding_fd)
+                parsed = json.loads(raw.decode("utf-8"))
+                return parsed if isinstance(parsed, dict) else None
+            except (OSError, UnicodeDecodeError, ValueError):
+                return None
+            finally:
+                os.close(binding_fd)
+        finally:
+            pass
+    finally:
+        if authority_fd >= 0:
+            try:
+                os.close(authority_fd)
+            except OSError:
+                pass
+        _close_fds(
+            [
+                state["project_fd"],
+                state["colameta_fd"],
+                state["runtime_fd"],
+                state["sessions_fd"],
+            ]
+        )
+
+
+def _build_execution_binding_payload(
+    *,
+    authority_id: str,
+    admission_sha256: str | None,
+    project_root: str,
+    repository: str | None,
+    run_id: str,
+    preview_id: str,
+    admitted_head: str,
+    provider: str,
+    executor_session_mode: str,
+    work_item_id: Any,
+    task_version: Any,
+    attempt_id: Any,
+    artifact_refs: list[str],
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Shared execution-binding payload (immutable fields)."""
+
+    return {
+        "schema_version": FRESH_EXECUTOR_BINDING_SCHEMA_VERSION,
+        "executor_authority_id": authority_id,
+        "admission_sha256": admission_sha256,
+        "project_root": project_root,
+        "repository": repository,
+        "run_id": run_id,
+        "preview_id": preview_id,
+        "admitted_head": admitted_head,
+        "provider": provider,
+        "executor_session_mode": executor_session_mode,
+        "work_item_id": work_item_id,
+        "task_version": task_version,
+        "attempt_id": attempt_id,
+        "artifact_refs": artifact_refs,
+        "bound_at": now or _now_iso(),
+        "source": FRESH_EXECUTOR_BINDING_SOURCE,
+    }
+
+
+def create_execution_binding(
+    project_root: str,
+    authority_id: str,
+    *,
+    run_id: str,
+    preview_id: str,
+    admitted_head: str,
+    provider: str = "codex",
+    executor_session_mode: str = "start_new",
+    work_target: dict[str, Any] | None = None,
+    admission_sha256: str | None = None,
+    repository: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Atomically consume an authority by creating ``execution-binding.json``.
+
+    The binding is created relative to the already-open authority directory FD
+    with ``O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC`` (mode 0600), then fsync'd
+    (file + authority directory).  The admission record is never modified.
+
+    Existing-binding semantics are never-continue: a binding for the same
+    run/preview is ``AUTHORITY_ALREADY_CONSUMED``; any other or malformed
+    binding is ``AUTHORITY_BINDING_CONFLICT``.
+    """
+    if _validate_authority_id(authority_id) is False:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "malformed authority id",
+        }
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or not isinstance(preview_id, str)
+        or not preview_id.strip()
+    ):
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "run_id and preview_id are required",
+        }
+    if provider != "codex":
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH,
+            "reason": "R0 fresh binding is codex-only",
+        }
+    if executor_session_mode != "start_new":
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+            "reason": "fresh authority binding requires executor_session_mode=start_new",
+        }
+    if not isinstance(admitted_head, str) or _FULL_HEAD_RE.fullmatch(admitted_head) is None:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "malformed admitted_head",
+        }
+    work_item_id = None
+    task_version = None
+    attempt_id = None
+    artifact_refs: list[str] = []
+    if isinstance(work_target, dict):
+        work_item_id = work_target.get("work_item_id")
+        task_version = work_target.get("task_version")
+        attempt_id = work_target.get("attempt_id")
+        artifact_refs = list(work_target.get("artifact_refs") or [])
+        if not all(
+            field in work_target
+            for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+                "reason": "complete governed work target required",
+            }
+        from runner.work_item_governance.references import (
+            optional_work_item_reference_rejections,
+        )
+
+        rejections = optional_work_item_reference_rejections(work_target)
+        if rejections:
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+                "reason": f"invalid governed work target: {rejections}",
+            }
+    else:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+            "reason": "governed work target required for fresh authority binding",
+        }
+
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    state = _open_authority_state_read_fds(root)
+    if not state.get("ok"):
+        return {
+            "ok": False,
+            "error_code": state.get("error_code"),
+            "reason": state.get("reason"),
+        }
+    authority_fd = -1
+    binding_fd = -1
+    try:
+        authority_fd, authority_error = _open_existing_authority_dir(
+            state["sessions_fd"], authority_id
+        )
+        if authority_fd < 0:
+            return {
+                "ok": False,
+                "error_code": authority_error,
+                "executor_authority_id": authority_id,
+                "reason": "authority directory unavailable",
+            }
+
+        probe_fd = -1
+        probe_error: str | None = None
+        try:
+            try:
+                probe_fd = os.open(
+                    EXECUTION_BINDING_FILENAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=authority_fd,
+                )
+            except FileNotFoundError:
+                probe_fd = -1
+            except OSError:
+                probe_fd = -1
+                probe_error = FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT
+            if probe_fd >= 0:
+                try:
+                    binding_raw = _read_fd_all(probe_fd)
+                    try:
+                        parsed = json.loads(binding_raw.decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
+                        parsed = None
+                finally:
+                    os.close(probe_fd)
+                    probe_fd = -1
+                if isinstance(parsed, dict) and parsed.get("run_id") == run_id and parsed.get("preview_id") == preview_id:
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "authority already consumed by this run",
+                        "execution_binding": parsed,
+                    }
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                    "executor_authority_id": authority_id,
+                    "reason": "authority consumed by a different binding",
+                    "execution_binding": parsed,
+                }
+            if probe_error is not None:
+                return {
+                    "ok": False,
+                    "error_code": probe_error,
+                    "executor_authority_id": authority_id,
+                    "reason": "existing execution binding is unreadable",
+                }
+        finally:
+            if probe_fd >= 0:
+                try:
+                    os.close(probe_fd)
+                except OSError:
+                    pass
+
+        binding = _build_execution_binding_payload(
+            authority_id=authority_id,
+            admission_sha256=admission_sha256,
+            project_root=root,
+            repository=repository,
+            run_id=run_id,
+            preview_id=preview_id,
+            admitted_head=admitted_head,
+            provider=provider,
+            executor_session_mode=executor_session_mode,
+            work_item_id=work_item_id,
+            task_version=task_version,
+            attempt_id=attempt_id,
+            artifact_refs=artifact_refs,
+            now=now,
+        )
+        payload = (
+            json.dumps(binding, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        )
+        try:
+            try:
+                binding_fd = os.open(
+                    EXECUTION_BINDING_FILENAME,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                    | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=authority_fd,
+                )
+            except FileExistsError:
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
+                    "executor_authority_id": authority_id,
+                    "reason": "concurrent binding create lost the race",
+                }
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_ADMISSION_STATE_ROOT_ESCAPE,
+                        "executor_authority_id": authority_id,
+                        "reason": "binding open refused by anchored create",
+                    }
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                    "executor_authority_id": authority_id,
+                    "reason": f"{type(exc).__name__}:{exc.errno}",
+                }
+            try:
+                try:
+                    _write_all_fd(binding_fd, payload.encode("utf-8"))
+                    os.fsync(binding_fd)
+                except OSError:
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                        "executor_authority_id": authority_id,
+                        "reason": "failed to persist the execution binding",
+                    }
+            finally:
+                os.close(binding_fd)
+                binding_fd = -1
+        finally:
+            if binding_fd >= 0:
+                try:
+                    os.close(binding_fd)
+                except OSError:
+                    pass
+        try:
+            os.fsync(authority_fd)
+        except OSError:
+            pass  # best-effort directory fsync; the binding file is already fsync'd
+
+        return {
+            "ok": True,
+            "executor_authority_id": authority_id,
+            "execution_binding_path": os.path.join(
+                state["authority_root_path"], authority_id, EXECUTION_BINDING_FILENAME
+            ),
+            "binding": binding,
+        }
+    finally:
+        if authority_fd >= 0:
+            try:
+                os.close(authority_fd)
+            except OSError:
+                pass
+        _close_fds(
+            [
+                state["project_fd"],
+                state["colameta_fd"],
+                state["runtime_fd"],
+                state["sessions_fd"],
+            ]
+        )
+
+
+def validate_and_create_execution_binding(
+    project_root: str,
+    authority_id: str,
+    *,
+    expected_admission_sha256: str,
+    expected_head: str,
+    expected_provider: str = "codex",
+    expected_repository: str | None = None,
+    expected_git_branch: str | None = None,
+    run_id: str,
+    preview_id: str,
+    executor_session_mode: str = "start_new",
+    work_target: dict[str, Any] | None = None,
+    repository: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Atomic authoritative validate-and-bind (P1-1 repair).
+
+    This is the ONLY provider-before security proof.  It performs the
+    authoritative admission read and the create-exclusive execution-binding
+    write inside ONE fd transaction on the SAME authority directory object:
+
+        open authority_fd
+        -> read admission.json through authority_fd (raw bytes)
+        -> hash exact bytes + schema/HEAD/repository/provider validate
+        -> classify any existing execution-binding.json through authority_fd
+        -> create execution-binding.json through the SAME authority_fd
+        -> fsync(file) + fsync(authority_fd)
+        -> close
+
+    The authority directory pathname is resolved exactly once; a later rename
+    or symlink swap of ``<authority_id>`` cannot redirect the binding write to
+    a different directory object, so "validated object == consumed object" is
+    guaranteed.  The admission record is never modified.
+    """
+    if _validate_authority_id(authority_id) is False:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "malformed authority id",
+        }
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or not isinstance(preview_id, str)
+        or not preview_id.strip()
+    ):
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "run_id and preview_id are required",
+        }
+    if expected_provider != "codex":
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH,
+            "reason": "R0 fresh binding is codex-only",
+        }
+    if executor_session_mode != "start_new":
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+            "reason": "fresh authority binding requires executor_session_mode=start_new",
+        }
+    if not isinstance(expected_head, str) or _FULL_HEAD_RE.fullmatch(expected_head) is None:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "malformed expected_head",
+        }
+    if not isinstance(expected_admission_sha256, str) or re.fullmatch(
+        r"[0-9a-f]{64}", expected_admission_sha256.lower()
+    ) is None:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": "malformed expected admission hash",
+        }
+
+    work_item_id = None
+    task_version = None
+    attempt_id = None
+    artifact_refs: list[str] = []
+    if isinstance(work_target, dict):
+        work_item_id = work_target.get("work_item_id")
+        task_version = work_target.get("task_version")
+        attempt_id = work_target.get("attempt_id")
+        artifact_refs = list(work_target.get("artifact_refs") or [])
+        if not all(
+            field in work_target
+            for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+                "reason": "complete governed work target required",
+            }
+        from runner.work_item_governance.references import (
+            optional_work_item_reference_rejections,
+        )
+
+        rejections = optional_work_item_reference_rejections(work_target)
+        if rejections:
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+                "reason": f"invalid governed work target: {rejections}",
+            }
+    else:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
+            "reason": "governed work target required for fresh authority binding",
+        }
+
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    state = _open_authority_state_read_fds(root)
+    if not state.get("ok"):
+        return {
+            "ok": False,
+            "error_code": state.get("error_code"),
+            "reason": state.get("reason"),
+        }
+    authority_fd = -1
+    admission_fd = -1
+    binding_fd = -1
+    try:
+        authority_fd, authority_error = _open_existing_authority_dir(
+            state["sessions_fd"], authority_id
+        )
+        if authority_fd < 0:
+            return {
+                "ok": False,
+                "error_code": authority_error,
+                "executor_authority_id": authority_id,
+                "reason": "authority directory unavailable",
+            }
+
+        # --- authoritative admission read on the SAME authority_fd ---
+        try:
+            try:
+                admission_fd = os.open(
+                    ADMISSION_FILENAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=authority_fd,
+                )
+            except FileNotFoundError:
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
+                    "executor_authority_id": authority_id,
+                    "reason": "admission record missing",
+                }
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "admission record symlink or escape",
+                    }
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
+                    "executor_authority_id": authority_id,
+                    "reason": f"{type(exc).__name__}:{exc.errno}",
+                }
+            try:
+                admission_stat = os.fstat(admission_fd)
+                if not stat.S_ISREG(admission_stat.st_mode):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "admission record is not a regular file",
+                    }
+                if stat.S_IMODE(admission_stat.st_mode) & 0o077:
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "admission record permissions unsafe",
+                    }
+                raw = _read_fd_all(admission_fd)
+            finally:
+                os.close(admission_fd)
+                admission_fd = -1
+        finally:
+            if admission_fd >= 0:
+                try:
+                    os.close(admission_fd)
+                except OSError:
+                    pass
+
+        admission_sha256 = hashlib.sha256(raw).hexdigest()
+        if admission_sha256 != expected_admission_sha256.lower():
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH,
+                "executor_authority_id": authority_id,
+                "observed_sha256": admission_sha256,
+                "expected_sha256": expected_admission_sha256.lower(),
+                "reason": "admission bytes do not match the expected hash",
+            }
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                "executor_authority_id": authority_id,
+                "reason": "admission record is not valid JSON",
+            }
+        validation_error = _validate_admission_for_execution(
+            record,
+            authority_id=authority_id,
+            canonical_project_root=root,
+            expected_head=expected_head,
+            expected_provider=expected_provider,
+            expected_repository=expected_repository,
+            expected_git_branch=expected_git_branch,
+        )
+        if validation_error is not None:
+            return {
+                "ok": False,
+                "error_code": validation_error,
+                "executor_authority_id": authority_id,
+                "reason": f"admission validation failed: {validation_error}",
+            }
+
+        # --- existing binding classification on the SAME authority_fd ---
+        probe_fd = -1
+        probe_error: str | None = None
+        try:
+            try:
+                probe_fd = os.open(
+                    EXECUTION_BINDING_FILENAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=authority_fd,
+                )
+            except FileNotFoundError:
+                probe_fd = -1
+            except OSError:
+                probe_fd = -1
+                probe_error = FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT
+            if probe_fd >= 0:
+                try:
+                    binding_raw = _read_fd_all(probe_fd)
+                    try:
+                        parsed = json.loads(binding_raw.decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
+                        parsed = None
+                finally:
+                    os.close(probe_fd)
+                    probe_fd = -1
+                if (
+                    isinstance(parsed, dict)
+                    and parsed.get("run_id") == run_id
+                    and parsed.get("preview_id") == preview_id
+                ):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
+                        "executor_authority_id": authority_id,
+                        "reason": "authority already consumed by this run",
+                        "execution_binding": parsed,
+                    }
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                    "executor_authority_id": authority_id,
+                    "reason": "authority consumed by a different binding",
+                    "execution_binding": parsed,
+                }
+            if probe_error is not None:
+                return {
+                    "ok": False,
+                    "error_code": probe_error,
+                    "executor_authority_id": authority_id,
+                    "reason": "existing execution binding is unreadable",
+                }
+        finally:
+            if probe_fd >= 0:
+                try:
+                    os.close(probe_fd)
+                except OSError:
+                    pass
+
+        # --- create execution-binding.json on the SAME authority_fd ---
+        binding = _build_execution_binding_payload(
+            authority_id=authority_id,
+            admission_sha256=admission_sha256,
+            project_root=root,
+            repository=repository,
+            run_id=run_id,
+            preview_id=preview_id,
+            admitted_head=expected_head,
+            provider=expected_provider,
+            executor_session_mode=executor_session_mode,
+            work_item_id=work_item_id,
+            task_version=task_version,
+            attempt_id=attempt_id,
+            artifact_refs=artifact_refs,
+            now=now,
+        )
+        payload = (
+            json.dumps(binding, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        )
+        try:
+            try:
+                binding_fd = os.open(
+                    EXECUTION_BINDING_FILENAME,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                    | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=authority_fd,
+                )
+            except FileExistsError:
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
+                    "executor_authority_id": authority_id,
+                    "reason": "concurrent binding create lost the race",
+                }
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_ADMISSION_STATE_ROOT_ESCAPE,
+                        "executor_authority_id": authority_id,
+                        "reason": "binding open refused by anchored create",
+                    }
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                    "executor_authority_id": authority_id,
+                    "reason": f"{type(exc).__name__}:{exc.errno}",
+                }
+            try:
+                try:
+                    _write_all_fd(binding_fd, payload.encode("utf-8"))
+                    os.fsync(binding_fd)
+                except OSError:
+                    return {
+                        "ok": False,
+                        "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                        "executor_authority_id": authority_id,
+                        "reason": "failed to persist the execution binding",
+                    }
+            finally:
+                os.close(binding_fd)
+                binding_fd = -1
+        finally:
+            if binding_fd >= 0:
+                try:
+                    os.close(binding_fd)
+                except OSError:
+                    pass
+        try:
+            os.fsync(authority_fd)
+        except OSError:
+            pass  # best-effort directory fsync; the binding file is already fsync'd
+
+        return {
+            "ok": True,
+            "executor_authority_id": authority_id,
+            "admission_sha256": admission_sha256,
+            "execution_binding_path": os.path.join(
+                state["authority_root_path"], authority_id, EXECUTION_BINDING_FILENAME
+            ),
+            "binding": binding,
+        }
+    finally:
+        if authority_fd >= 0:
+            try:
+                os.close(authority_fd)
+            except OSError:
+                pass
+        _close_fds(
+            [
+                state["project_fd"],
+                state["colameta_fd"],
+                state["runtime_fd"],
+                state["sessions_fd"],
+            ]
+        )
