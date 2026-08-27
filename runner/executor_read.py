@@ -290,7 +290,22 @@ def build_live_snapshot(
         return {"available": False}
     project_root = os.path.abspath(os.path.expanduser(project_root))
     event_store = ExecutorEventStore(project_root)
-    events = event_store.read(run_id, limit=max_events) if event_store.has_events(run_id) else []
+    integrity = event_store.read_with_integrity(run_id, limit=max_events)
+    if integrity.get("error_code") == "EVENT_STORE_NOT_FOUND":
+        integrity = {"ok": True, "error_code": None, "events": []}
+    if not integrity.get("ok"):
+        return {
+            "ok": False,
+            "available": True,
+            "status": "integrity_failed",
+            "terminal": True,
+            "run_id": run_id,
+            "preview_id": preview_id,
+            "error_code": str(integrity.get("error_code") or "EVENT_INTEGRITY_FAILED"),
+            "events": [],
+            "event_count": 0,
+        }
+    events = integrity.get("events") if isinstance(integrity.get("events"), list) else []
 
     heartbeat_age: float | None = None
     heartbeat_stale: bool = False
@@ -467,6 +482,14 @@ def _run_status(project_root: str, params: dict[str, Any]) -> dict[str, Any]:
     if resolved_run_id:
         live = build_live_snapshot(project_root, resolved_run_id, preview_id=resolved_preview_id)
         result["live"] = live
+        if live.get("ok") is False:
+            result.update({
+                "ok": False,
+                "status": "integrity_failed",
+                "terminal": True,
+                "executor_run_status": "integrity_failed",
+                "error_code": live.get("error_code") or "EVENT_INTEGRITY_FAILED",
+            })
     report_id = _safe_str(result.get("report_id"))
     if not report_id and isinstance(result.get("live"), dict):
         report_id = _safe_str(result["live"].get("report_id"))
@@ -548,6 +571,16 @@ def _latest_run_status_impl(
 
     if active_run_id:
         live = build_live_snapshot(project_root, active_run_id, preview_id=active_preview_id, max_events=8)
+        if live.get("ok") is False:
+            return {
+                "ok": False,
+                "action": "latest_run_status",
+                "status": "integrity_failed",
+                "found": True,
+                "terminal": True,
+                "error_code": live.get("error_code") or "EVENT_INTEGRITY_FAILED",
+                "live": live,
+            }
         diagnostics = live.get("diagnostics") if isinstance(live, dict) else None
         is_orphaned = isinstance(diagnostics, list) and "EXECUTOR_RUN_ORPHANED" in diagnostics
         report_run_id = ""
@@ -725,17 +758,29 @@ def _get_report(project_root: str, params: dict[str, Any]) -> dict[str, Any]:
         lineage = report.get("execution_lineage")
         run_id = str(lineage.get("run_id") or "") if isinstance(lineage, dict) else ""
         if run_id and not isinstance(report.get("events"), list):
-            events = ExecutorEventStore(project_root).read(run_id, limit=10)
-            if events:
+            integrity = ExecutorEventStore(project_root).read_with_integrity(run_id, limit=10)
+            if integrity.get("error_code") == "EVENT_STORE_NOT_FOUND":
+                integrity = {"ok": True, "error_code": None, "events": []}
+            if not integrity.get("ok"):
+                return {
+                    "ok": False,
+                    "action": "get_report",
+                    "status": "integrity_failed",
+                    "error_code": str(integrity.get("error_code") or "EVENT_INTEGRITY_FAILED"),
+                    "message": "Executor event integrity verification failed.",
+                }
+            events = integrity.get("events")
+            if isinstance(events, list) and events:
                 report = dict(report)
                 report["events"] = events
-    return {
+    response = {
         "ok": True,
         "action": "get_report",
         "report": report if isinstance(report, dict) else {},
         "report_markdown": result.get("report_markdown"),
         "truncated": result.get("truncated", False),
     }
+    return response
 
 
 def _get_audit_summary(project_root: str, params: dict[str, Any]) -> dict[str, Any]:

@@ -22,11 +22,14 @@ from runner.fresh_executor_authority import (
     FRESH_EXECUTOR_ADMISSION_WORKTREE_DIRTY,
     FRESH_EXECUTOR_ADMISSION_WORKTREE_STATE_UNAVAILABLE,
     create_fresh_executor_authority,
+    create_or_resolve_stage_shard_fresh_executor_authority,
     executor_authority_dir,
     executor_authority_path,
     read_fresh_executor_authority,
+    inspect_stage_shard_fresh_executor_authority,
 )
 from runner.project_operation_lease import ProjectOperationLease
+from runner.work_item_governance.ids import new_stable_id
 
 
 def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -1108,3 +1111,316 @@ def test_repair3_control_conflicting_live_wins(tmp_path):
         result = create_fresh_executor_authority(str(repo))
     assert result["ok"] is False
     assert result["error_code"] == FRESH_EXECUTOR_ADMISSION_LIVE_OPERATION
+
+
+def _stage_authority_args(repo: Path, head: str, *, task_id: str = "one") -> dict[str, object]:
+    return {
+        "expected_repository": "JENN2046/colameta",
+        "stage_preview_sha256": "1" * 64,
+        "runner_plan_sha256": "2" * 64,
+        "stage_id": "stage-a",
+        "parallel_group_id": "group-a",
+        "task_id": task_id,
+        "work_item_id": new_stable_id("work_item"),
+        "task_version": 1,
+        "attempt_id": new_stable_id("attempt"),
+        "artifact_refs": [],
+        "expected_git_branch": "main",
+        "expected_head": head,
+        "provider": "codex",
+    }
+
+
+def test_stage_shard_authority_replay_returns_same_random_authority(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    second = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert first["ok"] is second["ok"] is True
+    assert first["executor_authority_id"] == second["executor_authority_id"]
+    assert first["admission_sha256"] == second["admission_sha256"]
+    assert second["idempotent_replay"] is True
+    assert len(first["executor_authority_id"]) == 32
+
+
+def test_stage_shard_authority_concurrent_replay_converges(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    results: list[dict[str, object]] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        results.append(
+            create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+        )
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(results) == 8
+    assert all(result["ok"] is True for result in results)
+    assert len({result["executor_authority_id"] for result in results}) == 1
+
+
+def test_stage_shard_malformed_reservation_fails_without_replacement(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    reservation = (
+        Path(executor_authority_dir(str(repo)))
+        / first["executor_authority_id"]
+        / "stage-shard-admission-reservation.json"
+    )
+    reservation.write_text("{", encoding="utf-8")
+    before = sorted(path.name for path in reservation.parent.parent.iterdir())
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED"
+    assert sorted(path.name for path in reservation.parent.parent.iterdir()) == before
+
+
+def test_stage_shard_consumed_authority_is_not_replaced(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    authority_dir = Path(executor_authority_dir(str(repo))) / first["executor_authority_id"]
+    (authority_dir / "execution-binding.json").write_text("{}\n", encoding="utf-8")
+    before = sorted(path.name for path in authority_dir.parent.iterdir())
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_ALREADY_CONSUMED"
+    assert sorted(path.name for path in authority_dir.parent.iterdir()) == before
+
+
+def test_stage_shard_reservation_without_admission_recovers_same_authority(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    authority_dir = Path(executor_authority_dir(str(repo))) / first["executor_authority_id"]
+    (authority_dir / "admission.json").unlink()
+
+    recovered = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert recovered["ok"] is True
+    assert recovered["executor_authority_id"] == first["executor_authority_id"]
+    assert recovered["idempotent_replay"] is True
+
+
+def test_stage_shard_ignores_ordinary_unreserved_authority(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    ordinary = create_fresh_executor_authority(str(repo), expected_head=head)
+    stage = create_or_resolve_stage_shard_fresh_executor_authority(
+        str(repo), **_stage_authority_args(repo, head)
+    )
+
+    assert ordinary["ok"] is stage["ok"] is True
+    assert ordinary["executor_authority_id"] != stage["executor_authority_id"]
+
+
+def test_stage_shard_duplicate_exact_reservations_fail_conflict(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    sessions = Path(executor_authority_dir(str(repo)))
+    duplicate_id = "f" * 32
+    duplicate_dir = sessions / duplicate_id
+    duplicate_dir.mkdir(mode=0o700)
+    reservation = dict(first["reservation"])
+    reservation["reserved_authority_id"] = duplicate_id
+    duplicate_file = duplicate_dir / "stage-shard-admission-reservation.json"
+    duplicate_file.write_text(json.dumps(reservation), encoding="utf-8")
+    duplicate_file.chmod(0o600)
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_RESERVATION_CONFLICT"
+
+
+def test_stage_shard_reservation_symlink_fails_closed(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    reservation = (
+        Path(executor_authority_dir(str(repo))) / first["executor_authority_id"]
+        / "stage-shard-admission-reservation.json"
+    )
+    outside = tmp_path / "outside-reservation.json"
+    outside.write_text(json.dumps(first["reservation"]), encoding="utf-8")
+    reservation.unlink()
+    reservation.symlink_to(outside)
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED"
+
+
+@pytest.mark.parametrize("attack", ["hardlink", "fifo", "world_readable", "torn"])
+def test_stage_shard_unsafe_reservation_file_fails_without_replacement(
+    tmp_path, attack
+):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    sessions = Path(executor_authority_dir(str(repo)))
+    reservation = sessions / first["executor_authority_id"] / "stage-shard-admission-reservation.json"
+    before = sorted(path.name for path in sessions.iterdir())
+    if attack == "hardlink":
+        os.link(reservation, tmp_path / "reservation-copy.json")
+    elif attack == "fifo":
+        reservation.unlink()
+        os.mkfifo(reservation, 0o600)
+    elif attack == "world_readable":
+        reservation.chmod(0o644)
+    else:
+        reservation.write_bytes(b'{"schema_version":')
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED"
+    assert sorted(path.name for path in sessions.iterdir()) == before
+
+
+@pytest.mark.parametrize("attack", ["symlink", "hardlink", "fifo", "world_readable", "corrupt"])
+def test_stage_shard_unsafe_admission_file_fails_without_replacement(
+    tmp_path, attack
+):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    sessions = Path(executor_authority_dir(str(repo)))
+    authority = sessions / first["executor_authority_id"]
+    admission = authority / "admission.json"
+    before = sorted(path.name for path in sessions.iterdir())
+    if attack == "symlink":
+        outside = tmp_path / "outside-admission.json"
+        outside.write_bytes(admission.read_bytes())
+        admission.unlink()
+        admission.symlink_to(outside)
+    elif attack == "hardlink":
+        os.link(admission, tmp_path / "admission-copy.json")
+    elif attack == "fifo":
+        admission.unlink()
+        os.mkfifo(admission, 0o600)
+    elif attack == "world_readable":
+        admission.chmod(0o644)
+    else:
+        admission.write_bytes(b"{")
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert sorted(path.name for path in sessions.iterdir()) == before
+
+
+def test_stage_shard_authority_directory_replacement_fails_closed(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    sessions = Path(executor_authority_dir(str(repo)))
+    authority = sessions / first["executor_authority_id"]
+    displaced = tmp_path / "displaced-authority"
+    authority.rename(displaced)
+    authority.symlink_to(displaced, target_is_directory=True)
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED"
+
+
+def test_stage_shard_sessions_parent_symlink_replacement_fails_closed(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    sessions = Path(executor_authority_dir(str(repo)))
+    displaced = sessions.with_name("executor-sessions-displaced")
+    sessions.rename(displaced)
+    sessions.symlink_to(displaced, target_is_directory=True)
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert replay["ok"] is False
+    assert first["executor_authority_id"] in {path.name for path in displaced.iterdir()}
+
+
+def test_stage_shard_lost_return_after_admission_recovers_same_authority(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    created_but_return_lost = create_or_resolve_stage_shard_fresh_executor_authority(
+        str(repo), **args
+    )
+
+    recovered = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+
+    assert recovered["ok"] is True
+    assert recovered["executor_authority_id"] == created_but_return_lost["executor_authority_id"]
+    assert recovered["admission_sha256"] == created_but_return_lost["admission_sha256"]
+    assert recovered["idempotent_replay"] is True
+
+
+def test_stage_shard_cross_shard_reservation_swap_fails_closed(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(
+        str(repo), **_stage_authority_args(repo, head, task_id="one")
+    )
+    second = create_or_resolve_stage_shard_fresh_executor_authority(
+        str(repo), **_stage_authority_args(repo, head, task_id="two")
+    )
+    sessions = Path(executor_authority_dir(str(repo)))
+    first_file = sessions / first["executor_authority_id"] / "stage-shard-admission-reservation.json"
+    second_file = sessions / second["executor_authority_id"] / "stage-shard-admission-reservation.json"
+    temporary = tmp_path / "reservation-swap"
+    first_file.rename(temporary)
+    second_file.rename(first_file)
+    temporary.rename(second_file)
+    before = sorted(path.name for path in sessions.iterdir())
+
+    replay = create_or_resolve_stage_shard_fresh_executor_authority(
+        str(repo), **_stage_authority_args(repo, head, task_id="one")
+    )
+
+    assert replay["ok"] is False
+    assert replay["error_code"] == "STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED"
+    assert sorted(path.name for path in sessions.iterdir()) == before
+
+
+def test_stage_shard_inspection_rejects_cross_task_binding(tmp_path):
+    repo, head = _make_repo(tmp_path)
+    args = _stage_authority_args(repo, head)
+    first = create_or_resolve_stage_shard_fresh_executor_authority(str(repo), **args)
+    reservation = first["reservation"]
+    binding = {
+        key: reservation[key]
+        for key in (
+            "project_identity", "project_root", "repository",
+            "stage_preview_sha256", "runner_plan_sha256", "stage_id",
+            "parallel_group_id", "task_id", "work_item_id", "task_version",
+            "attempt_id", "artifact_refs", "artifact_refs_sha256",
+            "git_branch", "git_head", "provider",
+        )
+    }
+    binding["task_id"] = "other-task"
+
+    inspected = inspect_stage_shard_fresh_executor_authority(
+        str(repo),
+        first["executor_authority_id"],
+        expected_stage_shard_admission_key=first["stage_shard_admission_key"],
+        expected_admission_sha256=first["admission_sha256"],
+        expected_binding=binding,
+    )
+
+    assert inspected["ok"] is False
+    assert inspected["error_code"] == "STAGE_SHARD_AUTHORITY_BINDING_MISMATCH"

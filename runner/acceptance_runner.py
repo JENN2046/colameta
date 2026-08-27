@@ -1,50 +1,34 @@
 import datetime
-import os
 import shlex
-import shutil
-from schemas.plan import BuildVersion
-from schemas.result import AcceptanceRunResult, AcceptanceCommandResult
+
 from adapters.shell_adapter import ShellAdapter
+from runner.acceptance_command_policy import (
+    AcceptanceCommandPolicyError,
+    acceptance_command_to_execution_argv,
+    canonical_acceptance_project_root,
+)
+from schemas.plan import BuildVersion
+from schemas.result import AcceptanceCommandResult, AcceptanceRunResult
+
 
 class AcceptanceRunner:
     def __init__(self):
         self.shell_adapter = ShellAdapter()
 
-    def _resolve_python(self, project_root: str) -> str:
-        venv_python = os.path.join(os.path.abspath(project_root), ".venv", "bin", "python")
-        if os.path.isfile(venv_python):
-            return venv_python
-        return shutil.which("python3") or "python3"
-
-    def _resolve_venv_bin(self, project_root: str) -> str | None:
-        venv_bin = os.path.join(os.path.abspath(project_root), ".venv", "bin")
-        if os.path.isdir(venv_bin):
-            return venv_bin
-        return None
-
-    def _build_acceptance_env(self, venv_bin_path: str | None) -> dict[str, str] | None:
-        if not venv_bin_path:
-            return None
-        env = os.environ.copy()
-        original_path = env.get("PATH", "")
-        env["PATH"] = f"{venv_bin_path}{os.pathsep}{original_path}" if original_path else venv_bin_path
-        return env
-
-    def _rewrite_command_for_python(self, command: str, resolved_python: str) -> tuple[str, str | None]:
+    def _execution_metadata(
+        self,
+        command: str,
+        project_root: str,
+    ) -> tuple[str, str | None]:
         try:
-            parts = shlex.split(command, posix=True)
-        except ValueError as exc:
-            warning = f"命令解析失败，保持原命令执行：{exc}"
-            return command, warning
-
-        if not parts:
+            argv = acceptance_command_to_execution_argv(
+                command,
+                project_root=project_root,
+            )
+        except AcceptanceCommandPolicyError:
             return command, None
-        if parts[0] not in ("python", "python3"):
-            return command, None
-
-        parts[0] = resolved_python
-        rewritten = " ".join(shlex.quote(token) for token in parts)
-        return rewritten, None
+        resolved_python = argv[0] if len(argv) > 1 and argv[1] == "-I" else None
+        return shlex.join(argv), resolved_python
 
     def run_acceptance(
         self,
@@ -53,30 +37,26 @@ class AcceptanceRunner:
         project_root: str,
     ) -> AcceptanceRunResult:
         run_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        
-        command_results = []
+
+        command_results: list[AcceptanceCommandResult] = []
         overall_status = "PASSED"
-        resolved_python = self._resolve_python(project_root)
-        venv_bin_path = self._resolve_venv_bin(project_root)
-        command_env = self._build_acceptance_env(venv_bin_path)
-        
+        cmd_cwd = canonical_acceptance_project_root(project_root)
         for acc_cmd in version.acceptance_commands:
-            cmd_cwd = os.path.abspath(project_root)
             original_command = acc_cmd.command
-            executed_command, rewrite_warning = self._rewrite_command_for_python(
+            executed_command, resolved_python = self._execution_metadata(
                 original_command,
-                resolved_python,
+                cmd_cwd,
             )
-            
+
             shell_result = self.shell_adapter.run(
-                command=executed_command,
+                command=original_command,
                 cwd=cmd_cwd,
                 timeout_seconds=acc_cmd.timeout_seconds,
-                env=command_env,
+                project_root=cmd_cwd,
             )
-            
+
             cmd_status = "PASSED" if shell_result.exit_code == 0 else "FAILED"
-            
+
             acc_cmd_result = AcceptanceCommandResult(
                 command=original_command,
                 status=cmd_status,
@@ -90,35 +70,35 @@ class AcceptanceRunner:
                 original_command=original_command,
                 executed_command=executed_command,
                 resolved_python=resolved_python,
-                venv_bin_path=venv_bin_path,
-                rewrite_warning=rewrite_warning,
+                venv_bin_path=None,
+                rewrite_warning=None,
             )
-            
+
             command_results.append(acc_cmd_result)
-            
+
             if cmd_status == "FAILED":
                 if not acc_cmd.continue_on_failure:
                     overall_status = "FAILED"
                     break
-                else:
-                    overall_status = "FAILED"
-                    
+                overall_status = "FAILED"
+
         # Also run default acceptance commands if there are no version specific ones?
         # The schema says default_acceptance_commands exists but docs usually say run version.acceptance_commands
         # Let's just follow version.acceptance_commands as specified in the schema
-        
+
         if not version.acceptance_commands:
             # If no commands, default to passed?
             overall_status = "PASSED"
 
         run_completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        
+
         return AcceptanceRunResult(
             run_id=run_id,
             version=version.version,
-            attempt=1, # Just a placeholder since the interface doesn't ask for it, we will derive it from outside if needed
+            # The outer state machine owns the durable attempt counter.
+            attempt=1,
             status=overall_status,
             commands=command_results,
             started_at=run_started_at,
-            completed_at=run_completed_at
+            completed_at=run_completed_at,
         )

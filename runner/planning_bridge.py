@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runner.operator_artifact_binding import bound_artifact_error
+from runner.acceptance_command_policy import acceptance_command_rejection_code
 
 from runner._internal_utils import run_git as _run_git, write_json_atomic
 from runner.executor_registry import is_supported_execution_provider
@@ -22,7 +23,9 @@ from runner.runner_paths import (
 
 
 class PlanningBridgeError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 @dataclass
@@ -390,7 +393,7 @@ class PlanningBridge:
         paths = self._paths(project_path)
         plan = self._load_json(paths.plan_file)
         spec = dict(spec)
-        self._validate_insert_spec(plan, spec)
+        self._validate_insert_spec(paths, plan, spec)
         first_insert = spec.get("insert_after") == "__first__"
         patch_id = f"patch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         os.makedirs(paths.patch_dir, exist_ok=True)
@@ -544,7 +547,7 @@ class PlanningBridge:
                 return result
 
             spec = patch_payload.get("spec", {})
-            self._validate_insert_spec(plan, spec)
+            self._validate_insert_spec(paths, plan, spec)
             first_insert = spec.get("insert_after") == "__first__"
             changed_files = self._apply_insert_version_patch(paths, plan, spec)
             self._write_plan_updated_marker(
@@ -579,10 +582,11 @@ class PlanningBridge:
             )
             return result
         except PlanningBridgeError as e:
+            error_code = e.error_code or "APPLY_FAILED"
             result = {
                 "ok": False,
                 "status": "FAILED",
-                "error_code": "APPLY_FAILED",
+                "error_code": error_code,
                 "message": str(e),
                 "patch_id": patch_id,
                 "patch_path": patch_path,
@@ -591,7 +595,7 @@ class PlanningBridge:
                 patch_path=patch_path,
                 patch_payload=patch_payload,
                 status="FAILED",
-                error_code="APPLY_FAILED",
+                error_code=error_code,
                 message=str(e),
             )
             return result
@@ -956,7 +960,7 @@ class PlanningBridge:
                     changed = self._apply_update_version_to_plan(paths, working_plan, version, normalized_updates)
                 else:
                     spec = patch_payload.get("spec", {})
-                    self._validate_insert_spec(working_plan, spec)
+                    self._validate_insert_spec(paths, working_plan, spec)
                     changed = self._apply_insert_version_to_plan(paths, working_plan, spec, write_prompt=False)
 
                 all_changed_files.extend(changed)
@@ -969,16 +973,17 @@ class PlanningBridge:
                     "status": "PENDING_APPLIED_IN_MEMORY",
                 })
             except PlanningBridgeError as e:
+                error_code = e.error_code or "APPLY_FAILED"
                 batch_results.append({
                     "patch_id": patch_id,
                     "ok": False,
                     "status": "FAILED",
-                    "error_code": "APPLY_FAILED",
+                    "error_code": error_code,
                     "message": str(e),
                 })
                 self._write_patch_status(
                     patch_path=patch_path, patch_payload=patch_payload,
-                    status="FAILED", error_code="APPLY_FAILED", message=str(e),
+                    status="FAILED", error_code=error_code, message=str(e),
                 )
                 failed_any = True
             except Exception as e:
@@ -1111,7 +1116,10 @@ class PlanningBridge:
         version = str(spec["version"]).strip()
         prompt_file_name = self._safe_prompt_filename(spec.get("prompt_file") or f"{version}.md")
         prompt_file_abs = self._safe_join(paths.prompts_dir, prompt_file_name)
-        acceptance = self._normalize_acceptance_commands(spec.get("acceptance_commands", []))
+        acceptance = self._normalize_acceptance_commands(
+            spec.get("acceptance_commands", []),
+            project_root=paths.project_root,
+        )
         obj: dict[str, Any] = {
             "version": version,
             "name": str(spec["name"]).strip(),
@@ -1214,18 +1222,34 @@ class PlanningBridge:
         plan["versions"] = versions
         return changed_files
 
-    def _normalize_acceptance_commands(self, acceptance_commands: list[Any]) -> list[dict[str, Any]]:
+    def _normalize_acceptance_commands(
+        self,
+        acceptance_commands: list[Any],
+        *,
+        project_root: str,
+    ) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
-        for item in acceptance_commands:
+        for index, item in enumerate(acceptance_commands):
             if isinstance(item, str):
+                command = item.strip()
+                self._validate_acceptance_command(
+                    command,
+                    index=index,
+                    project_root=project_root,
+                )
                 normalized.append({
-                    "command": item,
+                    "command": command,
                     "timeout_seconds": 600,
                     "continue_on_failure": False,
                 })
                 continue
             if isinstance(item, dict):
                 cmd = str(item.get("command", "")).strip()
+                self._validate_acceptance_command(
+                    cmd,
+                    index=index,
+                    project_root=project_root,
+                )
                 normalized.append({
                     "command": cmd,
                     "timeout_seconds": int(item.get("timeout_seconds", 600)),
@@ -1233,7 +1257,30 @@ class PlanningBridge:
                 })
         return normalized
 
-    def _validate_insert_spec(self, plan: dict[str, Any], spec: dict[str, Any]) -> None:
+    def _validate_acceptance_command(
+        self,
+        command: str,
+        *,
+        index: int,
+        project_root: str,
+    ) -> None:
+        rejection_code = acceptance_command_rejection_code(
+            command,
+            project_root=project_root,
+        )
+        if rejection_code:
+            raise PlanningBridgeError(
+                "ACCEPTANCE_COMMAND_NOT_EXECUTABLE:"
+                f"index={index};policy_code={rejection_code}",
+                error_code="ACCEPTANCE_COMMAND_NOT_EXECUTABLE",
+            )
+
+    def _validate_insert_spec(
+        self,
+        paths: BridgePaths,
+        plan: dict[str, Any],
+        spec: dict[str, Any],
+    ) -> None:
         versions = plan.get("versions", [])
         if not isinstance(versions, list):
             versions = []
@@ -1267,7 +1314,10 @@ class PlanningBridge:
         acceptance = spec.get("acceptance_commands", [])
         if not isinstance(acceptance, list) or not acceptance:
             raise PlanningBridgeError("acceptance_commands 必须是非空列表。")
-        normalized_acceptance = self._normalize_acceptance_commands(acceptance)
+        normalized_acceptance = self._normalize_acceptance_commands(
+            acceptance,
+            project_root=paths.project_root,
+        )
         if not normalized_acceptance:
             raise PlanningBridgeError("acceptance_commands 无有效命令。")
         risks = self._detect_acceptance_risks(normalized_acceptance)
@@ -1324,7 +1374,10 @@ class PlanningBridge:
             if field == "acceptance_commands":
                 if not isinstance(value, list) or not value:
                     raise PlanningBridgeError("acceptance_commands 必须是非空列表。")
-                normalized_acceptance = self._normalize_acceptance_commands(value)
+                normalized_acceptance = self._normalize_acceptance_commands(
+                    value,
+                    project_root=paths.project_root,
+                )
                 if not normalized_acceptance:
                     raise PlanningBridgeError("acceptance_commands 无有效命令。")
                 risks = self._detect_acceptance_risks(normalized_acceptance)

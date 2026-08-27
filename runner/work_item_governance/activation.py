@@ -74,6 +74,8 @@ AUTHORITATIVE_CANARY_TOOLS = (
     "get_execution_attempt_dispatch_authority",
     "preview_work_item_create",
     "preview_work_item_transition",
+    "preview_execution_attempt_create",
+    "apply_execution_attempt_create",
     *ALLOWED_WRITE_COMMANDS,
 )
 DEFAULT_QUOTAS = {

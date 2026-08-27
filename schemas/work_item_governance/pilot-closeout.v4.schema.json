@@ -94,7 +94,7 @@
         "listener_started": {"type": "boolean"},
         "listener_running": {"const": false},
         "bind_address": {"oneOf": [{"type": "null"}, {"const": "127.0.0.1"}]},
-        "tool_count": {"oneOf": [{"type": "null"}, {"const": 14}]},
+        "tool_count": {"oneOf": [{"type": "null"}, {"const": 16}]},
         "gate_mode": {"const": "shadow"},
         "authoritative": {"const": false},
         "prohibited_worker_started": {"const": false}
@@ -184,7 +184,7 @@
     },
     {
       "if": {"properties": {"result": {"enum": ["PASS", "PASS_WITH_GAPS"]}}, "required": ["result"]},
-      "then": {"properties": {"stage_reached": {"const": "lifecycle_completed"}, "scope": {"properties": {"scope_violation_test_rejected": {"const": true}}}, "work_item": {"allOf": [{"$ref": "#/$defs/work_item_closeout"}, {"properties": {"final_state": {"const": "accepted"}, "acceptance_manifest": {"$ref": "#/$defs/acceptance_manifest"}}}]}, "authentication": {"properties": {"token_created": {"const": true}, "token_revoked": {"const": true}, "token_removed": {"const": true}, "old_token_rejected": {"const": true}, "no_token_status": {"const": 401}, "wrong_token_status": {"const": 401}, "correct_token_status_during_window": {"const": 200}}}, "runtime": {"properties": {"listener_started": {"const": true}, "bind_address": {"const": "127.0.0.1"}, "tool_count": {"const": 14}}}, "evidence": {"properties": {"preflight_receipt_sha256": {"$ref": "#/$defs/sha256"}, "lifecycle_receipt_sha256": {"$ref": "#/$defs/sha256"}, "lease_receipt_sha256": {"$ref": "#/$defs/sha256"}, "authentication_receipt_sha256": {"$ref": "#/$defs/sha256"}}}}}
+      "then": {"properties": {"stage_reached": {"const": "lifecycle_completed"}, "scope": {"properties": {"scope_violation_test_rejected": {"const": true}}}, "work_item": {"allOf": [{"$ref": "#/$defs/work_item_closeout"}, {"properties": {"final_state": {"const": "accepted"}, "acceptance_manifest": {"$ref": "#/$defs/acceptance_manifest"}}}]}, "authentication": {"properties": {"token_created": {"const": true}, "token_revoked": {"const": true}, "token_removed": {"const": true}, "old_token_rejected": {"const": true}, "no_token_status": {"const": 401}, "wrong_token_status": {"const": 401}, "correct_token_status_during_window": {"const": 200}}}, "runtime": {"properties": {"listener_started": {"const": true}, "bind_address": {"const": "127.0.0.1"}, "tool_count": {"const": 16}}}, "evidence": {"properties": {"preflight_receipt_sha256": {"$ref": "#/$defs/sha256"}, "lifecycle_receipt_sha256": {"$ref": "#/$defs/sha256"}, "lease_receipt_sha256": {"$ref": "#/$defs/sha256"}, "authentication_receipt_sha256": {"$ref": "#/$defs/sha256"}}}}}
     },
     {
       "if": {"properties": {"result": {"const": "PASS"}}, "required": ["result"]},
@@ -204,7 +204,7 @@
     },
     {
       "if": {"properties": {"runtime": {"properties": {"listener_started": {"const": true}}, "required": ["listener_started"]}}, "required": ["runtime"]},
-      "then": {"properties": {"runtime": {"properties": {"bind_address": {"const": "127.0.0.1"}, "tool_count": {"const": 14}}}}}
+      "then": {"properties": {"runtime": {"properties": {"bind_address": {"const": "127.0.0.1"}, "tool_count": {"const": 16}}}}}
     },
     {
       "if": {"properties": {"decision": {"properties": {"consumed": {"const": true}}, "required": ["consumed"]}}, "required": ["decision"]},

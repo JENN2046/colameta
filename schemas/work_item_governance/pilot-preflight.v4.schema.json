@@ -150,7 +150,7 @@
       "properties": {
         "exposure_profile": {"const": "authoritative_canary"},
         "scope_mode": {"const": "bounded_single_project_pilot.v1"},
-        "visible_tool_count": {"const": 14},
+        "visible_tool_count": {"const": 16},
         "visible_tool_set_digest": {"$ref": "#/$defs/sha256"},
         "definitions_dispatch_exact_match": {"const": true},
         "resources_disabled_or_empty": {"const": true},

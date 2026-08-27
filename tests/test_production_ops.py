@@ -1574,6 +1574,7 @@ class ProductionOpsTests(unittest.TestCase):
         status_path = self.tmp_path / "state" / "last-status.json"
         status_path.parent.mkdir()
         status_path.write_bytes(b"x" * (MAX_STATUS_RECEIPT_BYTES + 1))
+        status_path.chmod(0o600)
 
         packet = build_production_ops_packet(
             str(self.project),

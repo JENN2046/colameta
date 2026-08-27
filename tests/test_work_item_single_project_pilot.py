@@ -1223,7 +1223,7 @@ def test_pilot_mcp_surface_is_exact_and_default_deny(tmp_path: Path) -> None:
         work_item_scope_mode=PILOT_SCOPE_MODE,
     )
     assert tuple(server._visible_tool_names()) == PILOT_TOOLS
-    assert len(server._visible_tool_names()) == 14
+    assert len(server._visible_tool_names()) == 16
     assert "list_outbox_events" not in server._visible_tool_names()
     assert "manage_git" not in server._visible_tool_names()
 
@@ -1413,7 +1413,7 @@ def test_every_frozen_negative_scenario_has_executable_semantic_or_boundary_mapp
     assert str(case["scenario"]).strip()
     assert expected.strip()
     if case["category"] == "surface":
-        assert len(PILOT_TOOLS) == 14
+        assert len(PILOT_TOOLS) == 16
     elif case["category"] == "maintenance":
         assert set(PILOT_DENIED_WRITES).issuperset({"create_delivery_receipt", "record_outbox_delivery_result"})
     elif case["category"] in {"storage", "generation"}:
@@ -1955,7 +1955,7 @@ def test_transport_surface_conformance_is_measured_from_composed_server(tmp_path
         "listener_instance_digest": SHA,
         "server_binding_digest": SHA,
     }
-    assert surface["visible_tool_count"] == 14
+    assert surface["visible_tool_count"] == 16
     assert surface["definitions_dispatch_exact_match"] is True
     assert surface["resources_disabled_or_empty"] is True
     assert surface["hidden_tool_rejected"] is True

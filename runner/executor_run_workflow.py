@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import os
 import hashlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from runner._internal_utils import run_git as _run_git_base
+from runner.acceptance_command_policy import (
+    AcceptanceCommandPolicyError,
+    acceptance_command_to_execution_plan,
+    verify_acceptance_execution_plan,
+)
 from runner.execution_profile import resolve_version_execution_provider
-from runner.executor_events import EVENT_TYPES, ExecutorEventStore
+from runner.executor_events import (
+    EVENT_TYPES,
+    ExecutorEventStore,
+    public_executor_projection,
+)
 from runner.executor_inventory import load_executor_inventory
 from runner.executor_registry import (
     DEFAULT_EXECUTION_PROVIDER,
@@ -15,12 +24,14 @@ from runner.executor_registry import (
     normalize_execution_provider,
 )
 from runner.executor_run_reports import ExecutorRunReportStore
+from runner.executor_run_claims import ExecutorRunClaimStore
 from runner.fresh_executor_authority import (
     FRESH_EXECUTOR_AUTHORITY_REQUIRED,
     FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
     FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_MISMATCH,
     FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
-    validate_and_create_execution_binding,
+    _read_execution_binding_verification,
+    _validate_and_create_execution_binding_verification,
 )
 from runner.executor_session import ExecutorSessionStore
 from runner.git_diff_helper import collect_git_diff_name_paths
@@ -32,6 +43,7 @@ from runner.runner_paths import (
     is_project_runner_path,
     resolve_project_runner_dir,
     resolve_project_runner_plan_path,
+    resolve_project_runner_rel_dir,
 )
 from runner.stage_parallel_shard_input_overlay import load_valid_overlay
 from runner.sensitive_redaction import redact_sensitive_text
@@ -132,6 +144,140 @@ _PROVIDER_COMPLETION_TEXT_MARKERS = (
     "git diff --check 通过",
     "executor_report_available",
 )
+_CLAIM_MUTABLE_FIELDS = frozenset({
+    "status",
+    "worker_pid",
+    "worker_started_at",
+    "thread_started_at",
+    "last_heartbeat_at",
+    "heartbeat_interval_seconds",
+    "heartbeat_timeout_seconds",
+    "finished_at",
+    "report_id",
+    "error_code",
+    "error_message",
+    "exception_type",
+    "blockers",
+    "warnings",
+})
+_PUBLIC_WORKFLOW_FIELDS = frozenset({
+    "ok", "action", "status", "error_code", "message", "risk_level",
+    "provider", "execution_mode", "version", "current_version",
+    "current_version_index", "runner_status", "run_status", "scope_status",
+    "audit_file", "log_path", "summary_path", "command_results",
+    "failed_command_indexes", "git_head_before", "git_head_after",
+    "git_status_after", "changed_files", "diff_summary", "report_summary",
+    "latest_report_id", "classification", "interruption_kind",
+    "provider_status", "provider_summary_excerpt", "terminal_reason",
+    "completion_evidence", "next_actions", "recovery_options", "blockers",
+    "warnings", "workflow_id", "reason", "report",
+})
+_PUBLIC_WORKFLOW_ACTION_FIELDS = frozenset({
+    "tool", "action", "params", "reason", "requires_confirmation",
+})
+_PUBLIC_WORKFLOW_ACTION_PARAM_FIELDS = frozenset({
+    "action", "workflow", "phase", "provider", "execution_mode", "latest",
+    "include_markdown", "include_diff_summary", "include_log",
+    "include_repo_overview",
+})
+_PUBLIC_WORKFLOW_RECOVERY_FIELDS = frozenset({
+    "option", "provider", "execution_mode", "recommended", "reason",
+})
+_PUBLIC_WORKFLOW_COMMAND_FIELDS = frozenset({
+    "index", "status", "exit_code", "original_command", "executed_command", "cwd",
+})
+_PUBLIC_WORKFLOW_COMPLETION_FIELDS = frozenset({
+    "mode", "provider", "version", "allowed_files_present", "allow_no_changes",
+    "executor_changed_files", "validation_commands", "notes",
+    "missing_required_files", "required_changed_files", "classification",
+    "error_code", "interruption_kind", "message", "provider_status",
+    "summary_excerpt", "terminal_reason", "has_partial_worktree",
+    "recovery_options",
+})
+_PUBLIC_WORKFLOW_REPORT_SUMMARY_FIELDS = frozenset({
+    "status", "provider", "version", "execution_mode", "finished_at",
+    "changed_files", "commit_head_before", "commit_head_after",
+    "execution_lineage",
+})
+_PUBLIC_WORKFLOW_REPORT_LINEAGE_FIELDS = frozenset({
+    "run_id", "preview_id", "preview_claimed_at", "preview_claim_status",
+    "model", "model_source", "reasoning_effort", "reasoning_effort_source",
+    "prompt_file", "prompt_sha256", "prompt_sha256_status", "attempted_resume",
+    "actual_executor_resume_attempted", "used_resume", "fallback_to_new_session",
+    "resume_failed_reason", "command_shape", "continuation_decision",
+    "continuation_decision_reason", "continuation_available_before_run",
+    "identity_kind", "identity_present", "resume_identity_present",
+    "conversation_identity_present", "provider_matches",
+    "provider_resume_supported", "session_resume_available",
+    "resume_invocation_verified", "risk_warnings", "resume_warnings",
+    "hard_blockers", "resume_blockers", "work_item_id", "task_version",
+    "attempt_id", "artifact_refs", "session_id_full",
+})
+
+
+def _allowlisted_public_mapping(value: Any, allowed: frozenset[str]) -> dict[str, Any]:
+    return (
+        {key: value[key] for key in allowed if key in value}
+        if isinstance(value, dict)
+        else {}
+    )
+
+
+def _public_executor_workflow_projection(
+    value: Any,
+    *,
+    executor_authority_id: str = "",
+    admission_sha256: str = "",
+) -> dict[str, Any]:
+    """Return the closed public run-once surface after alias redaction."""
+
+    envelope = {
+        "executor_authority_id": executor_authority_id,
+        "admission_sha256": admission_sha256,
+        "surface": value,
+    }
+    redacted_envelope = public_executor_projection(envelope)
+    redacted = (
+        redacted_envelope.get("surface")
+        if isinstance(redacted_envelope, dict)
+        else {}
+    )
+    result = _allowlisted_public_mapping(redacted, _PUBLIC_WORKFLOW_FIELDS)
+    for field, allowed in (
+        ("command_results", _PUBLIC_WORKFLOW_COMMAND_FIELDS),
+        ("next_actions", _PUBLIC_WORKFLOW_ACTION_FIELDS),
+        ("recovery_options", _PUBLIC_WORKFLOW_RECOVERY_FIELDS),
+    ):
+        items = result.get(field)
+        if isinstance(items, list):
+            result[field] = [
+                _allowlisted_public_mapping(item, allowed)
+                for item in items
+                if isinstance(item, dict)
+            ]
+    for action in result.get("next_actions", []):
+        if isinstance(action, dict) and "params" in action:
+            action["params"] = _allowlisted_public_mapping(
+                action["params"], _PUBLIC_WORKFLOW_ACTION_PARAM_FIELDS
+            )
+    completion = result.get("completion_evidence")
+    if isinstance(completion, dict):
+        result["completion_evidence"] = _allowlisted_public_mapping(
+            completion, _PUBLIC_WORKFLOW_COMPLETION_FIELDS
+        )
+    summary = result.get("report_summary")
+    if isinstance(summary, dict):
+        result["report_summary"] = _allowlisted_public_mapping(
+            summary, _PUBLIC_WORKFLOW_REPORT_SUMMARY_FIELDS
+        )
+        lineage = result["report_summary"].get("execution_lineage")
+        if isinstance(lineage, dict):
+            result["report_summary"]["execution_lineage"] = (
+                _allowlisted_public_mapping(
+                    lineage, _PUBLIC_WORKFLOW_REPORT_LINEAGE_FIELDS
+                )
+            )
+    return result
 
 
 def _work_target_complete(work_target: Any) -> bool:
@@ -173,6 +319,60 @@ class ExecutorRunOnceService:
         self._source_review = SourceReviewBridge()
         self._event_store = ExecutorEventStore(project_root)
 
+    @staticmethod
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if str(item).strip()]
+
+    def _read_durable_claim_context(self, preview_id: str) -> dict[str, Any] | None:
+        verification = self._read_durable_claim_verification(preview_id)
+        value = verification.get("record") if verification.get("ok") else None
+        return value if isinstance(value, dict) else None
+
+    def _claim_store(self) -> ExecutorRunClaimStore:
+        return ExecutorRunClaimStore(
+            self.project_root,
+            os.path.join(
+                resolve_project_runner_rel_dir(self.project_root),
+                "runtime",
+                "executor-workflow-previews",
+            ),
+            "claims",
+            5,
+            3,
+            20,
+        )
+
+    def _read_durable_claim_verification(
+        self, preview_id: str, *, expected_run_id: str | None = None
+    ) -> dict[str, Any]:
+        return self._claim_store()._read_claim_verification(
+            preview_id,
+            expected_run_id=expected_run_id,
+        )
+
+    def _read_durable_binding_context(
+        self, executor_authority_id: str
+    ) -> dict[str, Any] | None:
+        verification = self._read_durable_binding_verification(
+            executor_authority_id
+        )
+        value = verification.get("record") if verification.get("ok") else None
+        return value if isinstance(value, dict) else None
+
+    def _read_durable_binding_verification(
+        self,
+        executor_authority_id: str,
+        *,
+        expected_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        return _read_execution_binding_verification(
+            self.project_root,
+            executor_authority_id,
+            expected_run_id=expected_run_id,
+        )
+
     def _resolve_default_target(self) -> ResolvedDevelopmentTarget | None:
         try:
             from runner.development_target import resolve_development_target
@@ -188,6 +388,8 @@ class ExecutorRunOnceService:
         "run_claimed": ("claim", "Executor run claimed"),
         "worker_started": ("worker", "Executor worker started"),
         "executor_preparing": ("preparation", "Executor preparing"),
+        "executor_blocked": ("authority_gate", "Executor authority gate blocked"),
+        "executor_dispatch_started": ("executor", "Executor dispatch started"),
         "executor_started": ("executor", "Executor started"),
         "executor_finished": ("executor", "Executor finished"),
         "executor_failed": ("executor", "Executor failed"),
@@ -205,19 +407,21 @@ class ExecutorRunOnceService:
             return
         d = data or {}
         if event_context is None:
-            event_context = {
+            context = {
                 "run_id": d.get("run_id", run_id),
                 "preview_id": d.get("preview_id", ""),
                 "version": d.get("version") or d.get("current_version", ""),
                 "provider": d.get("provider", ""),
                 "execution_mode": d.get("execution_mode", ""),
             }
+        else:
+            context = dict(event_context)
         phase, msg = self._EVENT_PHASE_MESSAGE.get(event_type, ("", ""))
-        event_context["phase"] = event_context.get("phase") or phase
-        event_context["message"] = event_context.get("message") or msg
-        if "level" not in event_context:
-            event_context["level"] = d.get("level", "info")
-        self._event_store.append(run_id, event_type, data=d, event_context=event_context)
+        context["phase"] = context.get("phase") or phase
+        context["message"] = context.get("message") or msg
+        if "level" not in context:
+            context["level"] = d.get("level", "info")
+        self._event_store.append(run_id, event_type, data=d, event_context=context)
 
     def preflight(self, provider: str, execution_mode: str = "run") -> dict[str, Any]:
         project_root = self.project_root
@@ -328,6 +532,33 @@ class ExecutorRunOnceService:
 
         if current_version and version_spec is None:
             blocks.append({"code": "VERSION_NOT_FOUND", "message": "plan.versions 找不到当前版本。"})
+
+        if isinstance(version_spec, dict):
+            acceptance_commands = version_spec.get("acceptance_commands")
+            if isinstance(acceptance_commands, list):
+                for index, item in enumerate(acceptance_commands):
+                    command = (
+                        item
+                        if isinstance(item, str)
+                        else item.get("command")
+                        if isinstance(item, dict)
+                        else None
+                    )
+                    if not isinstance(command, str):
+                        continue
+                    try:
+                        execution_plan = acceptance_command_to_execution_plan(
+                            command,
+                            project_root=project_root,
+                        )
+                        verify_acceptance_execution_plan(execution_plan)
+                    except AcceptanceCommandPolicyError as exc:
+                        blocks.append({
+                            "code": "ACCEPTANCE_COMMAND_NOT_EXECUTABLE",
+                            "message": (
+                                f"当前版本 acceptance_commands[{index}] 不符合 shell-free 执行策略：{exc.code}。"
+                            ),
+                        })
 
         if isinstance(plan_data, dict):
             binding_rejections = optional_plan_work_item_reference_rejections(plan_data)
@@ -485,6 +716,7 @@ class ExecutorRunOnceService:
         executor_authority_id: str = "",
         admission_sha256: str = "",
         claimed_work_target: dict[str, Any] | None = None,
+        _lifecycle_finalizer: Callable[..., dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         from runner.project_operation_lease import ProjectOperationLease
 
@@ -600,6 +832,7 @@ class ExecutorRunOnceService:
                     admission_sha256=admission_sha256,
                     continuation_recommended_action=recommended_action,
                     claimed_work_target=claimed_work_target,
+                    _lifecycle_finalizer=_lifecycle_finalizer,
                 )
         finally:
             if owns_lease:
@@ -647,6 +880,7 @@ class ExecutorRunOnceService:
         current_head: str,
         work_target: dict[str, Any],
         claimed_work_target: dict[str, Any] | None = None,
+        event_stream: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Security choke point: authoritative revalidation + consumption.
 
@@ -712,7 +946,7 @@ class ExecutorRunOnceService:
             }
 
         # P1-1: single atomic validate+bind on the SAME authority directory fd.
-        binding_result = validate_and_create_execution_binding(
+        binding_result = _validate_and_create_execution_binding_verification(
             self.project_root,
             executor_authority_id,
             expected_admission_sha256=admission_sha256,
@@ -725,6 +959,7 @@ class ExecutorRunOnceService:
             executor_session_mode=executor_session_mode,
             work_target=work_target,
             repository="JENN2046/colameta",
+            event_stream=event_stream,
         )
         if not binding_result.get("ok"):
             return {
@@ -739,6 +974,8 @@ class ExecutorRunOnceService:
             "executor_authority_id": executor_authority_id,
             "admission_sha256": admission_sha256,
             "execution_binding_path": binding_result.get("execution_binding_path"),
+            "binding": binding_result.get("binding"),
+            "_internal_verification": binding_result.get("_internal_verification"),
         }
 
     def _run_once_under_lease(
@@ -762,6 +999,7 @@ class ExecutorRunOnceService:
         admission_sha256: str = "",
         continuation_recommended_action: str = "",
         claimed_work_target: dict[str, Any] | None = None,
+        _lifecycle_finalizer: Callable[..., dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         provider_norm = self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER
         mode = self._normalize_execution_mode(execution_mode)
@@ -837,10 +1075,6 @@ class ExecutorRunOnceService:
             "execution_mode": mode,
         }
         base_ctx.update(resolve_execution_attempt_binding(plan, current_version_str))
-        if isinstance(executor_authority_id, str) and executor_authority_id.strip():
-            base_ctx["executor_authority_id"] = executor_authority_id.strip()
-        if isinstance(admission_sha256, str) and admission_sha256.strip():
-            base_ctx["admission_sha256"] = admission_sha256.strip()
 
         self._maybe_write_event(run_id, "run_claimed", {
             "run_id": run_id,
@@ -880,6 +1114,34 @@ class ExecutorRunOnceService:
             "current_version": str(state.current_version or ""),
         }, event_context=base_ctx)
 
+        event_stream: dict[str, Any] | None = None
+        if executor_authority_id or admission_sha256:
+            stream_origin = self._event_store.capture_stream_origin(run_id)
+            if not stream_origin.get("ok"):
+                origin_error = str(
+                    stream_origin.get("error_code")
+                    or "FRESH_EXECUTOR_EVENT_ORIGIN_INVALID"
+                )
+                self._maybe_write_event(
+                    run_id,
+                    "executor_blocked",
+                    {"provider": provider_norm, "error_code": origin_error},
+                    event_context={
+                        **base_ctx,
+                        "phase": "authority_gate",
+                        "message": "Fresh executor event origin capture failed.",
+                    },
+                )
+                return self._executor_error(
+                    provider_norm,
+                    origin_error,
+                    "Fresh executor event origin capture failed before authority binding.",
+                    preflight_result.get("current_head"),
+                    mode,
+                )
+            captured_stream = stream_origin.get("stream_origin_contract")
+            event_stream = captured_stream if isinstance(captured_stream, dict) else None
+
         fresh_binding = self._fresh_authority_execution_gate(
             provider=provider_norm,
             executor_session_mode=executor_session_mode,
@@ -894,6 +1156,7 @@ class ExecutorRunOnceService:
                 for key in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
             },
             claimed_work_target=claimed_work_target,
+            event_stream=event_stream,
         )
         if not fresh_binding.get("ok"):
             gate_error = str(
@@ -908,7 +1171,7 @@ class ExecutorRunOnceService:
                 },
                 event_context={
                     **base_ctx,
-                    "phase": "executor_blocked",
+                    "phase": "authority_gate",
                     "message": "Fresh executor authority gate blocked provider start.",
                 },
             )
@@ -927,6 +1190,18 @@ class ExecutorRunOnceService:
         if fresh_binding.get("admission_sha256"):
             base_ctx["admission_sha256"] = fresh_binding["admission_sha256"]
 
+        binding_creation_evidence = fresh_binding.get("_internal_verification")
+        durable_lifecycle: dict[str, Any] = {}
+        if (
+            isinstance(binding_creation_evidence, dict)
+            and isinstance(binding_creation_evidence.get("binding"), dict)
+            and isinstance(fresh_binding.get("binding"), dict)
+        ):
+            durable_lifecycle["binding_creation"] = {
+                "ok": True,
+                "record": fresh_binding["binding"],
+                "durable_contract": binding_creation_evidence["binding"],
+            }
         execution_result = self._execute_provider(
             provider=provider_norm,
             plan=plan,
@@ -942,7 +1217,33 @@ class ExecutorRunOnceService:
             event_context=base_ctx,
             executor_authority_id=base_ctx.get("executor_authority_id", ""),
             admission_sha256=base_ctx.get("admission_sha256", ""),
+            durable_lifecycle=durable_lifecycle,
         )
+
+        fresh_expected = bool(
+            base_ctx.get("executor_authority_id")
+            or base_ctx.get("admission_sha256")
+        )
+        durable_lineage_proof: dict[str, Any] | None = None
+        provider_path_entered = bool(
+            execution_result.pop("_provider_path_entered", True)
+        )
+        session_binding_result: dict[str, Any] = {"ok": True}
+        if fresh_expected and provider_path_entered:
+            session_binding_result = ExecutorSessionStore(
+                self.project_root
+            ).bind_private_lineage(base_ctx)
+            if not session_binding_result.get("ok"):
+                execution_result = self._executor_error(
+                    provider_norm,
+                    str(
+                        session_binding_result.get("error_code")
+                        or "SESSION_LINEAGE_MISMATCH"
+                    ),
+                    "Fresh executor session lineage persistence failed.",
+                    head_before,
+                    mode,
+                )
 
         state_mutations.persist_executor_run_post_provider_state(
             state=state,
@@ -987,43 +1288,57 @@ class ExecutorRunOnceService:
             execution_result["interruption_kind"] = interruption_kind
             execution_result["recovery_options"] = recovery_options
             report_id = ""
-            if classification in {"executor_resource_exhausted", "executor_infrastructure_failed"}:
-                interruption_report = self._record_executor_interruption_report(
-                    state=state,
-                    plan=plan,
-                    provider=provider_norm,
-                    execution_mode=mode,
-                    commit_head_before=head_before,
-                    commit_head_after=head_after,
-                    raw_execution_result=raw_execution_result,
-                    execution_result=execution_result,
-                    continuation_decision_before=continuation_decision_before,
-                    resume_invocation_before=resume_invocation_before,
-                    execution_lineage_extra=self._build_preview_lineage_extra(
-                        run_id=run_id,
-                        preview_id=preview_id,
-                        preview_claimed_at=preview_claimed_at,
-                        preview_claim_status=preview_claim_status,
-                        model=model,
-                        model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
-                        reasoning_effort=reasoning_effort,
-                        reasoning_effort_source=reasoning_effort_source,
-                        executor_authority_id=executor_authority_id,
-                        admission_sha256=admission_sha256,
+            interruption_report = self._record_executor_interruption_report(
+                state=state,
+                plan=plan,
+                provider=provider_norm,
+                execution_mode=mode,
+                commit_head_before=head_before,
+                commit_head_after=head_after,
+                raw_execution_result=raw_execution_result,
+                execution_result=execution_result,
+                continuation_decision_before=continuation_decision_before,
+                resume_invocation_before=resume_invocation_before,
+                execution_lineage_extra=self._build_preview_lineage_extra(
+                    run_id=run_id,
+                    preview_id=preview_id,
+                    preview_claimed_at=preview_claimed_at,
+                    preview_claim_status=preview_claim_status,
+                    model=model,
+                    model_source=model_source or str(execution_result.get("model_source") or ("request" if model else "")) or None,
+                    reasoning_effort=reasoning_effort,
+                    reasoning_effort_source=reasoning_effort_source,
+                    executor_authority_id=executor_authority_id,
+                    admission_sha256=admission_sha256,
+                ),
+                changed_files=changed_files_after,
+                preexisting_runner_files=preexisting_runner_files_set,
+                include_report_markdown=include_report_markdown,
+                max_report_chars=max_report_chars,
+            )
+            if not interruption_report.get("ok"):
+                return _public_executor_workflow_projection(
+                    self._executor_error(
+                        provider_norm,
+                        str(
+                            interruption_report.get("error_code")
+                            or "TERMINAL_REPORT_PERSISTENCE_FAILED"
+                        ),
+                        "Provider terminal outcome could not be durably persisted.",
+                        head_before,
+                        mode,
                     ),
-                    changed_files=changed_files_after,
-                    preexisting_runner_files=preexisting_runner_files_set,
-                    include_report_markdown=include_report_markdown,
-                    max_report_chars=max_report_chars,
+                    executor_authority_id=executor_authority_id,
+                    admission_sha256=admission_sha256,
                 )
-                report_id = str(interruption_report.get("latest_report_id") or "")
-                if report_id:
-                    execution_result["latest_report_id"] = report_id
-                report_summary = interruption_report.get("report_summary")
-                if isinstance(report_summary, dict) and report_summary:
-                    execution_result["report_summary"] = report_summary
-                if include_report_markdown and "report" in interruption_report:
-                    execution_result["report"] = interruption_report.get("report")
+            report_id = str(interruption_report.get("latest_report_id") or "")
+            if report_id:
+                execution_result["latest_report_id"] = report_id
+            report_summary = interruption_report.get("report_summary")
+            if isinstance(report_summary, dict) and report_summary:
+                execution_result["report_summary"] = report_summary
+            if include_report_markdown and "report" in interruption_report:
+                execution_result["report"] = interruption_report.get("report")
             self._maybe_write_event(run_id, "executor_failed", {
                 "error_code": error_code,
                 "message": error_message,
@@ -1053,7 +1368,43 @@ class ExecutorRunOnceService:
                 "interruption_kind": interruption_kind,
                 "report_id": report_id,
             }, event_context=base_ctx)
-            return execution_result
+            if fresh_expected and provider_path_entered:
+                post_verification = self._finalize_and_verify_fresh_lifecycle(
+                    run_id=run_id,
+                    report_id=report_id,
+                    expected_context=base_ctx,
+                    pre_provider_snapshot=durable_lifecycle.get("pre_provider"),
+                    finalizer=_lifecycle_finalizer,
+                    final_status="FAILED",
+                    error_code=error_code,
+                    message=error_message,
+                    blockers=self._string_list(execution_result.get("blockers", [])),
+                    warnings=self._string_list(execution_result.get("warnings", [])),
+                )
+                if not post_verification.get("ok"):
+                    execution_result["ok"] = False
+                    execution_result["status"] = "failed"
+                    execution_result["error_code"] = str(
+                        post_verification.get("error_code")
+                        or "POST_PERSISTENCE_LINEAGE_INVALID"
+                    )
+                    execution_result["message"] = (
+                        "Fresh executor durable lineage verification failed."
+                    )
+                else:
+                    durable_lineage_proof = {
+                        "verified": True,
+                        "safe_digest": str(post_verification.get("safe_digest") or ""),
+                    }
+            projected = _public_executor_workflow_projection(
+                execution_result,
+                executor_authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+            )
+            if durable_lineage_proof is not None:
+                projected["fresh_authority_bound"] = True
+                projected["fresh_authority_proof"] = durable_lineage_proof
+            return projected
 
         post_provider_written_at = state.updated_at
 
@@ -1126,7 +1477,7 @@ class ExecutorRunOnceService:
             )
         report_status = "failed" if no_changes_blocked else ("completed" if run_status == "PASSED" else "failed")
 
-        self._record_executor_run_report(
+        report_write_result = self._record_executor_run_report(
             state=state,
             plan=plan,
             provider=provider_norm,
@@ -1153,6 +1504,27 @@ class ExecutorRunOnceService:
             completion_evidence=completion_evidence,
             preexisting_runner_files=preexisting_runner_files_set,
         )
+        if not report_write_result.get("ok"):
+            return _public_executor_workflow_projection(
+                self._executor_error(
+                    provider_norm,
+                    str(
+                        report_write_result.get("error_code")
+                        or "REPORT_WRITE_FAILED"
+                    ),
+                    "Executor terminal report could not be durably persisted.",
+                    head_before,
+                    mode,
+                ),
+                executor_authority_id=executor_authority_id,
+                admission_sha256=admission_sha256,
+            )
+
+        self._maybe_write_event(run_id, "executor_finished", {
+            "provider": provider_norm,
+            "is_fix": is_fix,
+            "report_id": str(report_write_result.get("report_id") or ""),
+        }, event_context=base_ctx)
 
         self._maybe_write_event(run_id, "heartbeat", {
             "lifecycle_point": "before_report",
@@ -1161,6 +1533,7 @@ class ExecutorRunOnceService:
         self._maybe_write_event(run_id, "report_written", {
             "report_status": report_status,
             "run_status": str(run_status or ""),
+            "report_id": str(report_write_result.get("report_id") or ""),
         }, event_context=base_ctx)
 
         post_data = self.collect_post_run_data(
@@ -1227,7 +1600,7 @@ class ExecutorRunOnceService:
             event_context=base_ctx,
         )
 
-        return {
+        response = {
             "ok": final_ok,
             "action": "run_once",
             "status": "failed" if had_error else "completed",
@@ -1265,6 +1638,44 @@ class ExecutorRunOnceService:
             "reason": reason,
             "report": post_data.get("report") if include_report_markdown else None,
         }
+        if fresh_expected and provider_path_entered:
+            report_id = str(report_write_result.get("report_id") or "")
+            post_verification = self._finalize_and_verify_fresh_lifecycle(
+                run_id=run_id,
+                report_id=report_id,
+                expected_context=base_ctx,
+                pre_provider_snapshot=durable_lifecycle.get("pre_provider"),
+                finalizer=_lifecycle_finalizer,
+                final_status="COMPLETED" if final_ok else "FAILED",
+                error_code=str(response.get("error_code") or ""),
+                message=str(response.get("message") or ""),
+                blockers=self._string_list(response.get("blockers", [])),
+                warnings=self._string_list(response.get("warnings", [])),
+            )
+            if not post_verification.get("ok"):
+                return self._executor_error(
+                    provider_norm,
+                    str(
+                        post_verification.get("error_code")
+                        or "POST_PERSISTENCE_LINEAGE_INVALID"
+                    ),
+                    "Fresh executor durable lineage verification failed.",
+                    head_before,
+                    mode,
+                )
+            durable_lineage_proof = {
+                "verified": True,
+                "safe_digest": str(post_verification.get("safe_digest") or ""),
+            }
+        projected = _public_executor_workflow_projection(
+            response,
+            executor_authority_id=executor_authority_id,
+            admission_sha256=admission_sha256,
+        )
+        if durable_lineage_proof is not None:
+            projected["fresh_authority_bound"] = True
+            projected["fresh_authority_proof"] = durable_lineage_proof
+        return projected
 
     def _execute_provider(
         self,
@@ -1283,6 +1694,7 @@ class ExecutorRunOnceService:
         event_context: dict[str, Any] | None = None,
         executor_authority_id: str = "",
         admission_sha256: str = "",
+        durable_lifecycle: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         not_found_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
         unauthorized_error: type[BaseException] | tuple[type[BaseException], ...] = tuple()
@@ -1332,10 +1744,83 @@ class ExecutorRunOnceService:
                 unsupported_error = tuple()
                 model_quota_error = tuple()
 
-            self._maybe_write_event(run_id, "executor_started", {
+            self._maybe_write_event(run_id, "executor_dispatch_started", {
                 "provider": provider,
                 "is_fix": is_fix,
             }, event_context=event_context)
+
+            if executor_authority_id or admission_sha256:
+                binding_verification = self._read_durable_binding_verification(
+                    executor_authority_id,
+                    expected_run_id=run_id,
+                )
+                claim_verification = self._read_durable_claim_verification(
+                    str((event_context or {}).get("preview_id") or ""),
+                    expected_run_id=run_id,
+                )
+                durable_binding_context = (
+                    binding_verification.get("record")
+                    if binding_verification.get("ok")
+                    else None
+                )
+                durable_claim_context = (
+                    claim_verification.get("record")
+                    if claim_verification.get("ok")
+                    else None
+                )
+                lineage_verification = self._event_store.verify_private_lineage(
+                    run_id,
+                    expected_event_context=event_context or {},
+                    event_type="executor_dispatch_started",
+                    claim_context=durable_claim_context,
+                    binding_context=durable_binding_context,
+                    required_surfaces=("binding", "claim"),
+                    expected_prefix=(
+                        durable_binding_context.get("event_stream")
+                        if isinstance(durable_binding_context, dict)
+                        else None
+                    ),
+                )
+                if not lineage_verification.get("ok"):
+                    blocked = self._executor_error(
+                        provider,
+                        str(
+                            lineage_verification.get("error_code")
+                            or "FRESH_EXECUTOR_EVENT_LINEAGE_INVALID"
+                        ),
+                        "Fresh executor event lineage verification failed before provider start.",
+                        head_before,
+                        execution_mode,
+                    )
+                    blocked["_provider_path_entered"] = False
+                    return blocked
+                pre_provider_snapshot = self._capture_pre_provider_lineage(
+                    run_id=run_id,
+                    expected_context=event_context or {},
+                    binding_context=durable_binding_context,
+                    claim_context=durable_claim_context,
+                    binding_verification=(
+                        durable_lifecycle.get("binding_creation")
+                        if isinstance(durable_lifecycle, dict)
+                        else None
+                    ),
+                    claim_verification=claim_verification,
+                )
+                if not pre_provider_snapshot.get("ok"):
+                    blocked = self._executor_error(
+                        provider,
+                        str(
+                            pre_provider_snapshot.get("error_code")
+                            or "PRE_PROVIDER_DURABLE_LINEAGE_INVALID"
+                        ),
+                        "Fresh executor durable state could not be pinned before provider start.",
+                        head_before,
+                        execution_mode,
+                    )
+                    blocked["_provider_path_entered"] = False
+                    return blocked
+                if isinstance(durable_lifecycle, dict):
+                    durable_lifecycle["pre_provider"] = pre_provider_snapshot
 
             execution_result = (
                 executor.run_current_fix(
@@ -1359,10 +1844,6 @@ class ExecutorRunOnceService:
                 )
             )
 
-            self._maybe_write_event(run_id, "executor_finished", {
-                "provider": provider,
-                "is_fix": is_fix,
-            }, event_context=event_context)
         except FileNotFoundError:
             return self._executor_error(provider, "FIX_PROMPT_MISSING", "当前修复提示词不存在。", head_before, execution_mode)
         except not_found_error as exc:  # type: ignore[misc]
@@ -1687,7 +2168,7 @@ class ExecutorRunOnceService:
                 str(execution_result.get("message") or "执行器中断，业务验收尚未开始。"),
             ],
         }
-        self._record_executor_run_report(
+        report_write_result = self._record_executor_run_report(
             state=state,
             plan=plan,
             provider=provider,
@@ -1703,11 +2184,27 @@ class ExecutorRunOnceService:
             completion_evidence=completion_evidence,
             preexisting_runner_files=preexisting_runner_files,
         )
-        return self._get_latest_report_summary(
+        if not report_write_result.get("ok"):
+            return {
+                "ok": False,
+                "error_code": str(
+                    report_write_result.get("error_code")
+                    or "TERMINAL_REPORT_PERSISTENCE_FAILED"
+                ),
+            }
+        report_id = str(report_write_result.get("report_id") or "")
+        summary = self._get_latest_report_summary(
             self.project_root,
             include_report_markdown=include_report_markdown,
             max_report_chars=max_report_chars,
+            report_id=report_id,
         )
+        if summary.get("latest_report_id") != report_id:
+            return {
+                "ok": False,
+                "error_code": "TERMINAL_REPORT_READBACK_FAILED",
+            }
+        return {"ok": True, **summary}
 
     def _executor_error(
         self,
@@ -1826,11 +2323,13 @@ class ExecutorRunOnceService:
         *,
         include_report_markdown: bool,
         max_report_chars: int,
+        report_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             store = ExecutorRunReportStore(project_root)
             report = store.get_report(
-                latest=True,
+                report_id=report_id,
+                latest=report_id is None,
                 include_markdown=include_report_markdown,
                 max_markdown_chars=max_report_chars,
             )
@@ -1950,7 +2449,7 @@ class ExecutorRunOnceService:
         execution_lineage_extra: dict[str, Any] | None = None,
         completion_evidence: dict[str, Any] | None = None,
         preexisting_runner_files: set | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         try:
             store = ExecutorRunReportStore(self.project_root)
             version = str(state.current_version or "")
@@ -2043,7 +2542,7 @@ class ExecutorRunOnceService:
             )
             ce = dict(completion_evidence) if isinstance(completion_evidence, dict) else None
             attempt_binding = resolve_execution_attempt_binding(plan, version_plan or version)
-            store.record_report(
+            return store.record_report(
                 version=version,
                 version_name=version_name,
                 provider=provider,
@@ -2068,6 +2567,573 @@ class ExecutorRunOnceService:
             import logging
 
             logging.getLogger(__name__).warning("Failed to record executor run report", exc_info=True)
+            return {
+                "ok": False,
+                "error_code": "REPORT_WRITE_FAILED",
+            }
+
+    def _capture_parsed_surface(
+        self,
+        *,
+        name: str,
+        surface: dict[str, Any] | None,
+        run_id: str,
+        mutable_fields: frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        if not isinstance(surface, dict):
+            return {"ok": False, "error_code": f"{name}_LINEAGE_MISSING"}
+        if not isinstance(surface.get("schema_version"), str) or not str(
+            surface.get("schema_version")
+        ).strip():
+            return {"ok": False, "error_code": f"{name}_SCHEMA_MISSING"}
+        if "run_id" not in surface:
+            return {"ok": False, "error_code": f"{name}_RUN_ID_MISSING"}
+        if surface.get("run_id") != run_id:
+            return {"ok": False, "error_code": f"{name}_RUN_ID_MISMATCH"}
+        if self._event_store._surface_private_lineage(surface, run_id) is None:
+            return {"ok": False, "error_code": f"{name}_LINEAGE_INVALID"}
+        immutable_contract = self._event_store.immutable_surface_contract(
+            surface,
+            mutable_fields=mutable_fields,
+        )
+        return {
+            "ok": True,
+            "record": surface,
+            "immutable_contract": immutable_contract,
+            "durable_contract": {
+                "content_sha256": self._event_store.contract_digest(surface),
+                "contract_sha256": self._event_store.contract_digest(
+                    immutable_contract
+                ),
+            },
+        }
+
+    def _capture_verified_surface(
+        self,
+        *,
+        name: str,
+        verification: dict[str, Any] | None,
+        run_id: str,
+        mutable_fields: frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        """Consume a private FD-anchored verifier without recreating evidence."""
+
+        if not isinstance(verification, dict) or not verification.get("ok"):
+            return {
+                "ok": False,
+                "error_code": str(
+                    (verification or {}).get("error_code")
+                    or f"{name}_DURABLE_VERIFICATION_FAILED"
+                ),
+            }
+        record = verification.get("record")
+        parsed = self._capture_parsed_surface(
+            name=name,
+            surface=record if isinstance(record, dict) else None,
+            run_id=run_id,
+            mutable_fields=mutable_fields,
+        )
+        if not parsed.get("ok"):
+            return parsed
+        durable = verification.get("durable_contract")
+        if not isinstance(durable, dict):
+            return {"ok": False, "error_code": f"{name}_DURABLE_CONTRACT_MISSING"}
+        identity = durable.get("identity")
+        metadata = durable.get("metadata")
+        metadata_common = {
+            "device", "inode", "mode", "uid", "gid", "size", "mtime_ns",
+            "ctime_ns",
+        }
+        metadata_keys = set(metadata) if isinstance(metadata, dict) else set()
+        required_metadata = metadata_common | (
+            {"nlink"} if "nlink" in metadata_keys else {"link_count"}
+        )
+        if not (
+            isinstance(identity, dict)
+            and isinstance(identity.get("device"), int)
+            and isinstance(identity.get("inode"), int)
+            and isinstance(metadata, dict)
+            and set(metadata) == required_metadata
+            and all(
+                isinstance(metadata.get(field), int)
+                and not isinstance(metadata.get(field), bool)
+                for field in required_metadata
+            )
+            and metadata.get("device") == identity["device"]
+            and metadata.get("inode") == identity["inode"]
+            and (
+                "size" not in durable
+                or durable.get("size") == metadata["size"]
+            )
+            and isinstance(durable.get("raw_sha256"), str)
+            and len(durable["raw_sha256"]) == 64
+            and isinstance(durable.get("content_sha256"), str)
+            and len(durable["content_sha256"]) == 64
+        ):
+            return {"ok": False, "error_code": f"{name}_DURABLE_CONTRACT_INVALID"}
+        return {
+            "ok": True,
+            "record": parsed["record"],
+            "immutable_contract": parsed["immutable_contract"],
+            "durable_contract": {
+                **durable,
+                "contract_sha256": self._event_store.contract_digest(
+                    parsed["immutable_contract"]
+                ),
+            },
+        }
+
+    @staticmethod
+    def _snapshot_matches(
+        first: dict[str, Any],
+        second: dict[str, Any],
+    ) -> bool:
+        first_durable = first.get("durable_contract")
+        second_durable = second.get("durable_contract")
+        if not isinstance(first_durable, dict) or not isinstance(second_durable, dict):
+            return False
+        return bool(
+            first_durable == second_durable
+            and first.get("immutable_contract") == second.get("immutable_contract")
+            and first.get("record") == second.get("record")
+        )
+
+    @staticmethod
+    def _lifecycle_snapshot_matches(
+        first: dict[str, Any],
+        second: dict[str, Any],
+        *,
+        mutable_fields: frozenset[str] = frozenset(),
+    ) -> bool:
+        first_durable = first.get("durable_contract")
+        second_durable = second.get("durable_contract")
+        first_record = first.get("record")
+        second_record = second.get("record")
+        if not all(
+            isinstance(value, dict)
+            for value in (first_durable, second_durable, first_record, second_record)
+        ):
+            return False
+        if first.get("immutable_contract") != second.get("immutable_contract"):
+            return False
+        if first_record == second_record:
+            return first_durable == second_durable
+        changed_fields = {
+            key
+            for key in set(first_record) | set(second_record)
+            if first_record.get(key) != second_record.get(key)
+        }
+        return bool(changed_fields and changed_fields.issubset(mutable_fields))
+
+    def _capture_pre_provider_lineage(
+        self,
+        *,
+        run_id: str,
+        expected_context: dict[str, Any],
+        binding_context: dict[str, Any] | None,
+        claim_context: dict[str, Any] | None,
+        binding_verification: dict[str, Any] | None = None,
+        claim_verification: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        expected = self._event_store._surface_private_lineage(
+            {
+                "schema_version": self._event_store.SCHEMA_VERSION,
+                **expected_context,
+            },
+            run_id,
+        )
+        if expected is None:
+            return {"ok": False, "error_code": "EXPECTED_PRIVATE_LINEAGE_INVALID"}
+        authority_id = str(expected_context.get("executor_authority_id") or "")
+        preview_id = str(expected_context.get("preview_id") or "")
+        if not isinstance(binding_verification, dict):
+            binding_verification = self._read_durable_binding_verification(
+                authority_id,
+                expected_run_id=run_id,
+            )
+        if not isinstance(claim_verification, dict):
+            claim_verification = self._read_durable_claim_verification(
+                preview_id,
+                expected_run_id=run_id,
+            )
+        first_binding = self._capture_verified_surface(
+            name="BINDING",
+            verification=binding_verification,
+            run_id=run_id,
+        )
+        first_claim = self._capture_verified_surface(
+            name="CLAIM",
+            verification=claim_verification,
+            run_id=run_id,
+            mutable_fields=_CLAIM_MUTABLE_FIELDS,
+        )
+        first_event = self._event_store.capture_durable_contract(
+            run_id,
+            expected_prefix=(
+                binding_context.get("event_stream")
+                if isinstance(binding_context, dict)
+                else None
+            ),
+            expected_lineage=expected_context,
+        )
+        for snapshot in (first_binding, first_claim, first_event):
+            if not snapshot.get("ok"):
+                return snapshot
+        events = first_event.get("events")
+        if not isinstance(events, list) or not any(
+            isinstance(record, dict)
+            and record.get("event_type") == "executor_dispatch_started"
+            and self._event_store._private_lineage(record, run_id) == expected
+            for record in events
+        ):
+            return {"ok": False, "error_code": "PRIVATE_EVENT_LINEAGE_MISSING"}
+
+        # Reopen/reread all three pre-provider durable surfaces before dispatch.
+        second_binding = self._capture_verified_surface(
+            name="BINDING",
+            verification=self._read_durable_binding_verification(
+                authority_id,
+                expected_run_id=run_id,
+            ),
+            run_id=run_id,
+        )
+        second_claim = self._capture_verified_surface(
+            name="CLAIM",
+            verification=self._read_durable_claim_verification(
+                preview_id,
+                expected_run_id=run_id,
+            ),
+            run_id=run_id,
+            mutable_fields=_CLAIM_MUTABLE_FIELDS,
+        )
+        second_event = self._event_store.capture_durable_contract(
+            run_id,
+            expected_prefix=first_event.get("durable_contract"),
+            expected_lineage=expected_context,
+        )
+        for snapshot in (second_binding, second_claim, second_event):
+            if not snapshot.get("ok"):
+                return snapshot
+        if not self._snapshot_matches(first_binding, second_binding):
+            return {"ok": False, "error_code": "BINDING_PRE_PROVIDER_DRIFT"}
+        if not self._snapshot_matches(first_claim, second_claim):
+            return {"ok": False, "error_code": "CLAIM_PRE_PROVIDER_DRIFT"}
+        if first_event.get("durable_contract") != second_event.get("durable_contract"):
+            return {"ok": False, "error_code": "EVENT_PRE_PROVIDER_DRIFT"}
+        return {
+            "ok": True,
+            "binding": second_binding,
+            "claim": second_claim,
+            "event": second_event,
+        }
+
+    def _capture_post_persistence_round(
+        self,
+        *,
+        run_id: str,
+        report_id: str,
+        expected_context: dict[str, Any],
+        expected_event_prefix: dict[str, Any],
+    ) -> dict[str, Any]:
+        authority_id = str(expected_context.get("executor_authority_id") or "")
+        preview_id = str(expected_context.get("preview_id") or "")
+        report = ExecutorRunReportStore(self.project_root).read_durable_contract(
+            report_id=report_id,
+            expected_run_id=run_id,
+        )
+        session = ExecutorSessionStore(self.project_root).read_durable_contract(
+            expected_run_id=run_id,
+        )
+        event = self._event_store.capture_durable_contract(
+            run_id,
+            expected_prefix=expected_event_prefix,
+            expected_lineage=expected_context,
+        )
+        binding = self._capture_verified_surface(
+            name="BINDING",
+            verification=self._read_durable_binding_verification(
+                authority_id,
+                expected_run_id=run_id,
+            ),
+            run_id=run_id,
+        )
+        claim = self._capture_verified_surface(
+            name="CLAIM",
+            verification=self._read_durable_claim_verification(
+                preview_id,
+                expected_run_id=run_id,
+            ),
+            run_id=run_id,
+            mutable_fields=_CLAIM_MUTABLE_FIELDS,
+        )
+        for snapshot in (report, session, event, binding, claim):
+            if not snapshot.get("ok"):
+                return snapshot
+        expected = self._event_store._surface_private_lineage(
+            {
+                "schema_version": self._event_store.SCHEMA_VERSION,
+                **expected_context,
+            },
+            run_id,
+        )
+        if expected is None:
+            return {"ok": False, "error_code": "EXPECTED_PRIVATE_LINEAGE_INVALID"}
+        for name, snapshot in (
+            ("REPORT", report),
+            ("SESSION", session),
+            ("BINDING", binding),
+            ("CLAIM", claim),
+        ):
+            record = snapshot.get("record")
+            if not isinstance(record, dict) or (
+                self._event_store._surface_private_lineage(record, run_id) != expected
+            ):
+                return {"ok": False, "error_code": f"{name}_LINEAGE_MISMATCH"}
+        events = event.get("events")
+        if not isinstance(events, list) or not any(
+            isinstance(record, dict)
+            and record.get("event_type") in {"executor_finished", "executor_failed"}
+            and self._event_store._private_lineage(record, run_id) == expected
+            for record in events
+        ):
+            return {"ok": False, "error_code": "PRIVATE_EVENT_LINEAGE_MISSING"}
+        if not any(
+            isinstance(record, dict)
+            and record.get("event_type") in {"run_completed", "run_failed"}
+            and self._event_store._private_lineage(record, run_id) == expected
+            for record in events
+        ):
+            return {"ok": False, "error_code": "TERMINAL_EVENT_LINEAGE_MISSING"}
+        claim_record = claim.get("record")
+        if not isinstance(claim_record, dict) or claim_record.get("status") not in {
+            "COMPLETED",
+            "FAILED",
+        }:
+            return {"ok": False, "error_code": "CLAIM_NOT_FINALIZED"}
+        if report_id and claim_record.get("report_id") != report_id:
+            return {"ok": False, "error_code": "CLAIM_REPORT_ID_MISMATCH"}
+        for snapshot in (report, session):
+            record = snapshot.get("record")
+            if isinstance(record, dict):
+                snapshot["immutable_contract"] = self._event_store.immutable_surface_contract(
+                    record
+                )
+        return {
+            "ok": True,
+            "report": report,
+            "session": session,
+            "event": event,
+            "binding": binding,
+            "claim": claim,
+        }
+
+    def _verify_post_persistence_lineage(
+        self,
+        *,
+        run_id: str,
+        report_id: str,
+        expected_context: dict[str, Any],
+        pre_provider_snapshot: dict[str, Any] | None = None,
+        finalized_claim_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not report_id:
+            return {
+                "ok": False,
+                "error_code": "REPORT_LINEAGE_MISSING",
+                "safe_digest": "",
+            }
+        if not isinstance(pre_provider_snapshot, dict) or not pre_provider_snapshot.get("ok"):
+            return {
+                "ok": False,
+                "error_code": "PRE_PROVIDER_DURABLE_SNAPSHOT_MISSING",
+                "safe_digest": "",
+            }
+        pre_event = pre_provider_snapshot.get("event")
+        pre_binding = pre_provider_snapshot.get("binding")
+        pre_claim = pre_provider_snapshot.get("claim")
+        if not all(isinstance(item, dict) for item in (pre_event, pre_binding, pre_claim)):
+            return {
+                "ok": False,
+                "error_code": "PRE_PROVIDER_DURABLE_SNAPSHOT_INVALID",
+                "safe_digest": "",
+            }
+        event_prefix = pre_event.get("durable_contract")
+        if not isinstance(event_prefix, dict):
+            return {
+                "ok": False,
+                "error_code": "PRE_PROVIDER_EVENT_CONTRACT_MISSING",
+                "safe_digest": "",
+            }
+        if finalized_claim_snapshot is None:
+            candidate = pre_provider_snapshot.get("finalized_claim")
+            if isinstance(candidate, dict):
+                finalized_claim_snapshot = candidate
+        first = self._capture_post_persistence_round(
+            run_id=run_id,
+            report_id=report_id,
+            expected_context=expected_context,
+            expected_event_prefix=event_prefix,
+        )
+        if not first.get("ok"):
+            return {
+                "ok": False,
+                "error_code": str(first.get("error_code") or "POST_PERSISTENCE_LINEAGE_INVALID"),
+                "safe_digest": "",
+            }
+        if not self._lifecycle_snapshot_matches(pre_binding, first["binding"]):
+            return {"ok": False, "error_code": "BINDING_LIFECYCLE_DRIFT", "safe_digest": ""}
+        if not self._lifecycle_snapshot_matches(
+            pre_claim,
+            first["claim"],
+            mutable_fields=_CLAIM_MUTABLE_FIELDS,
+        ):
+            return {"ok": False, "error_code": "CLAIM_LIFECYCLE_DRIFT", "safe_digest": ""}
+        if isinstance(finalized_claim_snapshot, dict) and not self._snapshot_matches(
+            finalized_claim_snapshot,
+            first["claim"],
+        ):
+            return {
+                "ok": False,
+                "error_code": "CLAIM_LIFECYCLE_DRIFT",
+                "safe_digest": "",
+            }
+
+        # Immediately reopen/reread every durable surface before proof output.
+        first_event_contract = first["event"].get("durable_contract")
+        second = self._capture_post_persistence_round(
+            run_id=run_id,
+            report_id=report_id,
+            expected_context=expected_context,
+            expected_event_prefix=(
+                first_event_contract if isinstance(first_event_contract, dict) else {}
+            ),
+        )
+        if not second.get("ok"):
+            return {
+                "ok": False,
+                "error_code": str(second.get("error_code") or "POST_PERSISTENCE_SECOND_READ_FAILED"),
+                "safe_digest": "",
+            }
+        for name in ("report", "session", "binding", "claim"):
+            if not self._snapshot_matches(first[name], second[name]):
+                return {
+                    "ok": False,
+                    "error_code": f"{name.upper()}_SECOND_READ_DRIFT",
+                    "safe_digest": "",
+                }
+        if first["event"].get("durable_contract") != second["event"].get(
+            "durable_contract"
+        ):
+            return {
+                "ok": False,
+                "error_code": "EVENT_SECOND_READ_DRIFT",
+                "safe_digest": "",
+            }
+        safe_payload = {
+            name: second[name].get("durable_contract", {})
+            for name in ("report", "session", "event", "binding", "claim")
+        }
+        safe_digest = self._event_store.contract_digest({
+            "schema": "executor-final-durable-proof-safe-digest.v1",
+            "surfaces": safe_payload,
+        })
+        return {"ok": True, "error_code": None, "safe_digest": safe_digest}
+
+    def _finalize_and_verify_fresh_lifecycle(
+        self,
+        *,
+        run_id: str,
+        report_id: str,
+        expected_context: dict[str, Any],
+        pre_provider_snapshot: dict[str, Any] | None,
+        finalizer: Callable[..., dict[str, Any]] | None,
+        final_status: str,
+        error_code: str = "",
+        message: str = "",
+        exception_type: str = "",
+        blockers: list[str] | None = None,
+        warnings: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Complete every lifecycle write, then perform the final proof read.
+
+        The MCP manager supplies a callback that stops its heartbeat worker,
+        removes the consumed preview, and finalizes the manager-owned claim.
+        Direct service callers use the same claim finalization contract locally.
+        Nothing in this method mutates durable lifecycle state after the verifier
+        returns.
+        """
+
+        preview_id = str(expected_context.get("preview_id") or "")
+        finalized_claim_verification: dict[str, Any] | None = None
+        try:
+            if callable(finalizer):
+                finalized = finalizer(
+                    preview_id=preview_id,
+                    run_id=run_id,
+                    final_status=final_status,
+                    report_id=report_id,
+                    error_code=error_code,
+                    message=message,
+                    exception_type=exception_type,
+                    blockers=list(blockers or []),
+                    warnings=list(warnings or []),
+                )
+                if not isinstance(finalized, dict) or finalized.get("ok") is not True:
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            (finalized or {}).get("error_code")
+                            or "LIFECYCLE_FINALIZATION_FAILED"
+                        ),
+                        "safe_digest": "",
+                    }
+                candidate = finalized.get("_claim_verification")
+                if isinstance(candidate, dict):
+                    finalized_claim_verification = candidate
+            else:
+                self._claim_store().finalize_claim(
+                    preview_id=preview_id,
+                    run_id=run_id,
+                    final_status=final_status,
+                    report_id=report_id,
+                    error_code=error_code,
+                    message=message,
+                    exception_type=exception_type,
+                    blockers=blockers,
+                    warnings=warnings,
+                )
+                finalized_claim_verification = self._read_durable_claim_verification(
+                    preview_id,
+                    expected_run_id=run_id,
+                )
+        except Exception:
+            return {
+                "ok": False,
+                "error_code": "LIFECYCLE_FINALIZATION_FAILED",
+                "safe_digest": "",
+            }
+        finalized_claim_snapshot = self._capture_verified_surface(
+            name="CLAIM",
+            verification=finalized_claim_verification,
+            run_id=run_id,
+            mutable_fields=_CLAIM_MUTABLE_FIELDS,
+        )
+        if not finalized_claim_snapshot.get("ok"):
+            return {
+                "ok": False,
+                "error_code": str(
+                    finalized_claim_snapshot.get("error_code")
+                    or "CLAIM_FINALIZATION_VERIFICATION_FAILED"
+                ),
+                "safe_digest": "",
+            }
+        return self._verify_post_persistence_lineage(
+            run_id=run_id,
+            report_id=report_id,
+            expected_context=expected_context,
+            pre_provider_snapshot=pre_provider_snapshot,
+            finalized_claim_snapshot=finalized_claim_snapshot,
+        )
 
     def _collect_changed_files_for_evidence(
         self,

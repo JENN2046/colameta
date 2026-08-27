@@ -9,6 +9,7 @@ import re
 import socket
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -105,6 +106,25 @@ class WebRemoteGitMutationPolicyBaselineTests(unittest.TestCase):
         assert sanitized["commits"][0]["subject"] == "Bearer ***"
         for mutation_field in ("preview_id", "command_summary", "pushed", "preview_path"):
             assert mutation_field not in sanitized
+
+    def test_executor_web_public_projection_is_an_exact_allowlist(self) -> None:
+        from runner.web_console import public_executor_web_projection
+
+        authority_id = "a" * 32
+        projected = public_executor_web_projection({
+            "ok": False,
+            "error_code": "SYNTHETIC_FAILURE",
+            "message": f"copied={authority_id}",
+            "executor_authority_id": authority_id,
+            authority_id: "private dictionary key",
+            "attacker_controlled_extra": {"nested": "must not survive"},
+        })
+
+        assert projected == {
+            "ok": False,
+            "error_code": "SYNTHETIC_FAILURE",
+            "message": "copied=[private-lineage-redacted]",
+        }
 
     def test_commit_preview_and_confirm_web_git_boundaries_are_preserved(self) -> None:
         from runner import web_console
@@ -432,6 +452,10 @@ class WebConsoleSecurityTests(unittest.TestCase):
         self.tmp_path = Path(self._tmp.name)
         self.project = self.tmp_path / "managed-project"
         self.project.mkdir()
+        self.project.chmod(0o755)
+        project_stat = self.project.stat()
+        assert project_stat.st_uid == os.geteuid()
+        assert stat.S_IMODE(project_stat.st_mode) == 0o755
         from runner.mcp_runner_plan import ensure_minimal_runner_managed_project
 
         result = ensure_minimal_runner_managed_project(str(self.project))
@@ -545,7 +569,11 @@ class WebConsoleSecurityTests(unittest.TestCase):
         calls: list[dict[str, Any]] = []
         original_execute = self.server._api_execute_current_version
 
-        def safe_execute(mode: str, wrap: bool = True) -> dict[str, Any]:
+        def safe_execute(
+            mode: str,
+            wrap: bool = True,
+            request_params: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             calls.append({"mode": mode, "wrap": wrap})
             return {
                 "ok": True,

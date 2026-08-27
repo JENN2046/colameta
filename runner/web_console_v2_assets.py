@@ -1142,6 +1142,7 @@ function liveRunEventLabel(evt) {{
     return "Runner 仍在等待执行器";
   }}
   if (t === "executor_preparing") return `准备启动 ${{provider}} 执行器`;
+  if (t === "executor_dispatch_started") return `正在调用 ${{provider}} 执行器适配器`;
   if (t === "executor_started") return `${{provider}} 已启动，正在执行任务`;
   if (t === "executor_finished") return `${{provider}} 已返回结果`;
   if (t === "executor_failed") return `${{provider}} 执行失败`;
@@ -1168,6 +1169,7 @@ function liveRunEventDetail(evt) {{
     const mode = d.execution_mode || evt.execution_mode || "run";
     return `版本 ${{version}} · 模式 ${{mode}}`;
   }}
+  if (t === "executor_dispatch_started") return "已通过执行授权门，正在创建 provider 进程。";
   if (t === "executor_started") return "这一步可能持续几分钟；如果执行器没有流式输出，Runner 会等它结束后再显示后续结果。";
   if (t === "executor_finished") return "执行器进程已结束，Runner 正在检查改动并运行验收。";
   if (t === "executor_failed") return d.message || d.error_code || "执行器失败，但没有返回详细错误。";
@@ -1248,7 +1250,7 @@ function lastMeaningfulStage(events) {{
   const stageNames = [
     "run_completed", "report_written", "validation_finished",
     "git_diff_changed", "executor_finished", "executor_failed",
-    "executor_started", "executor_preparing", "worker_started",
+    "executor_started", "executor_dispatch_started", "executor_preparing", "worker_started",
     "run_claimed"
   ];
   for (let i = events.length - 1; i >= 0; i--) {{

@@ -89,12 +89,14 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
     def test_unknown_tool_action_fails_closed_before_handler(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        handler_calls: list[dict] = []
+        server.tools["manage_git_remote"] = lambda params: handler_calls.append(params)
 
         result = server.call_tool_for_agent("manage_git_remote", {"action": "push_apply_typo"})
 
         assert result["ok"] is False
-        assert result["error_code"] == "TOOL_POLICY_DENIED"
-        assert result["details"]["policy"] == "mcp_tool_registry_fail_closed"
+        assert result["error_code"] == "TOOL_NOT_EXPOSED"
+        assert handler_calls == []
 
     def test_run_mcp_workflow_policy_matrix_covers_supported_workflow_phases(self) -> None:
         project = self.make_git_checkout()
@@ -5533,6 +5535,8 @@ vm.runInThisContext({json.dumps(widget_script)});
     def test_external_oauth_remote_policy_denies_git_remote_push_apply(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=False)
+        handler_calls: list[dict] = []
+        server.tools["manage_git_remote"] = lambda params: handler_calls.append(params)
 
         result = server.call_tool_for_agent(
             "manage_git_remote",
@@ -5541,9 +5545,8 @@ vm.runInThisContext({json.dumps(widget_script)});
         )
 
         assert result["ok"] is False
-        assert result["error_code"] == "REMOTE_POLICY_DENIED"
-        assert result["details"]["policy"] == "remote_public"
-        assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+        assert result["error_code"] == "TOOL_NOT_EXPOSED"
+        assert handler_calls == []
 
     def test_external_oauth_remote_policy_denies_executor_and_validation_runs(self) -> None:
         project = self.make_git_checkout()
@@ -5622,14 +5625,28 @@ vm.runInThisContext({json.dumps(widget_script)});
     def test_external_oauth_remote_policy_denies_preview_badged_durable_memory_writes(self) -> None:
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=False)
-        calls = [
-            ("manage_project_memory", {"project_name": "demo-project", "action": "add", "content": "remote write"}),
+        exposed_result = server.call_tool_for_agent(
+            "manage_project_memory",
+            {"project_name": "demo-project", "action": "add", "content": "remote write"},
+            auth_context=self.external_oauth_context(),
+        )
+        assert exposed_result["ok"] is False
+        assert exposed_result["error_code"] == "REMOTE_POLICY_DENIED"
+        assert exposed_result["details"]["policy"] == "remote_public"
+        assert exposed_result["details"]["required_scope"] == "mcp:commit"
+        assert exposed_result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+
+        hidden_calls = [
             ("manage_runner_record", {"project_name": "demo-project", "action": "delete", "id": "rec-1"}),
             ("todo_add", {"project_name": "demo-project", "content": "remote todo"}),
             ("decision_update", {"project_name": "demo-project", "id": "decision-1", "decision": "remote decision"}),
         ]
+        handler_calls: list[str] = []
 
-        for tool_name, params in calls:
+        for tool_name, params in hidden_calls:
+            server.tools[tool_name] = (
+                lambda _params, name=tool_name: handler_calls.append(name)
+            )
             result = server.call_tool_for_agent(
                 tool_name,
                 params,
@@ -5637,10 +5654,8 @@ vm.runInThisContext({json.dumps(widget_script)});
             )
 
             assert result["ok"] is False
-            assert result["error_code"] == "REMOTE_POLICY_DENIED"
-            assert result["details"]["policy"] == "remote_public"
-            assert result["details"]["required_scope"] == "mcp:commit"
-            assert result["details"]["reason_code"] == "REMOTE_MCP_COMMIT_DENIED"
+            assert result["error_code"] == "TOOL_NOT_EXPOSED"
+        assert handler_calls == []
 
     def test_external_oauth_remote_policy_denies_run_mcp_workflow_plan_update_apply(self) -> None:
         project = self.make_git_checkout()

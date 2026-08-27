@@ -264,6 +264,7 @@ def test_mcp_operation_lease_releases_when_preflight_raises(
 ) -> None:
     project = tmp_path / action
     project.mkdir()
+    project.chmod(0o755)
     manager = MCPExecutorWorkflowManager.__new__(MCPExecutorWorkflowManager)
     manager.project_root = str(project)
     manager._service = SimpleNamespace(
@@ -308,6 +309,7 @@ def test_background_worker_heartbeat_start_failure_releases_lease_and_finalizes_
 ) -> None:
     project = tmp_path / "heartbeat"
     project.mkdir()
+    project.chmod(0o755)
     lease = ProjectOperationLease(project).acquire()
     assert lease.held
     manager = MCPExecutorWorkflowManager.__new__(MCPExecutorWorkflowManager)
@@ -345,6 +347,7 @@ def test_outer_background_worker_start_failure_deletes_preview_and_releases_leas
 ) -> None:
     project = tmp_path / "outer-worker"
     project.mkdir()
+    project.chmod(0o755)
     lease = ProjectOperationLease(project).acquire()
     assert lease.held
     manager = MCPExecutorWorkflowManager.__new__(MCPExecutorWorkflowManager)

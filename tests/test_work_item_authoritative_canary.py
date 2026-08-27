@@ -73,7 +73,7 @@ def test_schema_v5_and_frozen_runtime_policy_contracts(tmp_path: Path) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(activation_leases)")}
         assert "fixture_bindings_json" in columns
     policy = validate_runtime_policy_contracts()
-    assert policy["tool_count"] == 14
+    assert policy["tool_count"] == 16
     assert policy["allowed_write_count"] == 7
     assert policy["denied_write_count"] == 9
 
@@ -738,7 +738,7 @@ def test_authoritative_canary_mcp_profile_is_exact_and_default_deny(
         exposure_profile="authoritative_canary",
     )
     assert tuple(server._visible_tool_names()) == AUTHORITATIVE_CANARY_TOOLS
-    assert len(server._tool_defs_payload()) == 14
+    assert len(server._tool_defs_payload()) == 16
     denied = server._call_tool("manage_git", {}, auth_context={"mode": "token"})
     assert denied["error_code"] == "TOOL_NOT_EXPOSED"
     agent_denied = server.call_tool_for_agent(

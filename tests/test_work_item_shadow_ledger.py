@@ -173,6 +173,73 @@ def test_multiple_task_versions_attempts_and_idempotent_completion(tmp_path: Pat
     validate_governance_record("artifact_reference.v1", current["artifact_refs"][0])
 
 
+def test_exact_attempt_artifact_projection_excludes_cross_target_rows(tmp_path: Path) -> None:
+    service = WorkItemApplicationService(tmp_path, enabled=True)
+    first_item = create(service, "artifact-projection-one")
+    second_item = create(service, "artifact-projection-two")
+    first_attempt = service.create_execution_attempt(
+        {
+            "work_item_id": first_item["work_item_id"],
+            "task_version": 1,
+            "source_event_key": "projection:attempt:one",
+        }
+    )["attempt"]
+    second_attempt = service.create_execution_attempt(
+        {
+            "work_item_id": second_item["work_item_id"],
+            "task_version": 1,
+            "source_event_key": "projection:attempt:two",
+        }
+    )["attempt"]
+    for ordinal, (item, attempt) in enumerate(
+        ((first_item, first_attempt), (second_item, second_attempt)), start=1
+    ):
+        service.register_artifact_reference(
+            {
+                "work_item_id": item["work_item_id"],
+                "task_version": 1,
+                "attempt_id": attempt["attempt_id"],
+                "kind": "report",
+                "uri": f"https://e.invalid/projection/{ordinal}",
+                "immutable_ref": f"projection:report:{ordinal}",
+                "digest": f"{ordinal}" * 64,
+                "source_event_key": f"projection:artifact:{ordinal}",
+            }
+        )
+
+    projection = service.resolve_execution_attempt_artifact_refs(
+        work_item_id=first_item["work_item_id"],
+        task_version=1,
+        attempt_id=first_attempt["attempt_id"],
+    )
+    assert projection["ledger_backed"] is True
+    assert projection["synthetic_empty"] is False
+    assert projection["artifact_count"] == 1
+    assert projection["artifact_refs"] == sorted(projection["artifact_refs"])
+    with pytest.raises(WorkItemGovernanceError) as wrong_item:
+        service.resolve_execution_attempt_artifact_refs(
+            work_item_id=second_item["work_item_id"],
+            task_version=1,
+            attempt_id=first_attempt["attempt_id"],
+        )
+    assert wrong_item.value.code == "EXECUTION_ATTEMPT_TARGET_MISMATCH"
+    service.complete_execution_attempt(
+        {
+            "attempt_id": first_attempt["attempt_id"],
+            "status": "failed",
+            "source_event_key": "projection:complete:first",
+            "artifacts": [],
+        }
+    )
+    with pytest.raises(WorkItemGovernanceError) as inactive:
+        service.resolve_execution_attempt_artifact_refs(
+            work_item_id=first_item["work_item_id"],
+            task_version=1,
+            attempt_id=first_attempt["attempt_id"],
+        )
+    assert inactive.value.code == "EXECUTION_ATTEMPT_NOT_DISPATCH_ELIGIBLE"
+
+
 def test_old_task_version_replay_returns_the_original_version(tmp_path: Path) -> None:
     service = WorkItemApplicationService(tmp_path, enabled=True)
     item = create(service)

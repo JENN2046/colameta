@@ -290,7 +290,7 @@
       ],
       "properties": {
         "profile": {"const": "authoritative_canary"},
-        "listed_tool_count": {"const": 14},
+        "listed_tool_count": {"const": 16},
         "listed_tools_sha256": {"$ref": "#/$defs/sha256"},
         "definition_dispatch_exact_match": {"const": true},
         "hidden_jsonrpc_call_rejected": {"const": true},

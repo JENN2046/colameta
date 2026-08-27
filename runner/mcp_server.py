@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from runner.http_server_utils import ReusableThreadingHTTPServer
 from runner.http_url_policy import HTTPRedirectPolicy, open_http_url
 from runner.mcp_external_oauth import ExternalOAuthConfig, ExternalOAuthProvider
@@ -236,6 +238,7 @@ from runner.work_item_governance.pilot import (
 from runner.work_item_governance.pilot_snapshot import PilotConformanceLedgerSnapshot
 from runner.work_item_mcp_adapter import (
     AUTHORITATIVE_CANARY_MCP_TOOLS,
+    WORK_ITEM_AUTHORITY_BRIDGE_TOOLS,
     WORK_ITEM_APPLY_TOOLS,
     WORK_ITEM_MCP_TOOLS,
     WORK_ITEM_PREVIEW_TOOLS,
@@ -432,6 +435,268 @@ _PROFILE_ORDERS: dict[str, tuple[str, ...]] = {
     MCP_EXPOSURE_PROFILE_LEGACY: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS + LEGACY_EXTRA_TOOLS,
     MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY: AUTHORITATIVE_CANARY_MCP_TOOLS,
 }
+
+
+_VALIDATION_RUN_PUBLIC_PARAMS_BY_ACTION: dict[str, frozenset[str]] = {
+    "run": frozenset({
+        "action", "preview_id", "project_name", "context_binding",
+    }),
+    "status": frozenset({"action", "run_id", "project_name"}),
+}
+
+_VALIDATION_RUN_PUBLIC_IN_PROGRESS_RESULT_FIELDS_BY_ACTION: dict[
+    str,
+    frozenset[str],
+] = {
+    "run": frozenset({
+        "ok", "action", "run_id", "preview_id", "status", "passed",
+    }),
+    "status": frozenset({
+        "ok", "action", "run_id", "preview_id", "status", "passed",
+    }),
+}
+
+_VALIDATION_RUN_PUBLIC_OPAQUE_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,80}")
+
+
+_EXECUTOR_WORKFLOW_PUBLIC_PARAMS_BY_ACTION: dict[str, frozenset[str]] = {
+    "preflight": frozenset({"action", "project_name", "project_root", "provider", "execution_mode"}),
+    "run_once_preview": frozenset({
+        "action", "project_name", "project_root", "provider", "model",
+        "execution_mode", "executor_session_mode", "reason",
+    }),
+    "run_once": frozenset({
+        "action", "project_name", "project_root", "provider", "model",
+        "execution_mode", "preview_id", "max_diff_chars",
+        "include_diff_summary", "include_report_markdown", "max_report_chars",
+        "executor_session_mode", "reason", "profile_id",
+    }),
+    "run_bounded_preview": frozenset({
+        "action", "project_name", "project_root", "provider", "max_iterations",
+        "trusted_mode", "stop_on_acceptance_failure", "stop_on_scope_violation",
+        "stop_on_diff_too_large", "max_total_diff_chars", "allow_fix",
+        "allow_commit",
+    }),
+    "run_bounded": frozenset({
+        "action", "project_name", "project_root", "provider", "preview_id",
+        "max_iterations", "trusted_mode", "include_diff_summary",
+        "include_report_markdown", "max_report_chars", "reason", "profile_id",
+    }),
+    "get_audit_package": frozenset({
+        "action", "project_name", "project_root", "latest", "report_id",
+        "version", "section", "include_markdown", "max_chars",
+    }),
+    "refresh_audit_package": frozenset({"action", "project_name", "project_root", "version", "reason"}),
+    "recheck_report_preview": frozenset({"action", "project_name", "project_root", "report_id", "version"}),
+    "recheck_report_apply": frozenset({"action", "project_name", "project_root", "preview_id"}),
+    "manual_fix_prompt_preview": frozenset({
+        "action", "project_name", "project_root", "version", "report_id",
+    }),
+    "manual_fix_prompt_apply": frozenset({"action", "project_name", "project_root", "preview_id"}),
+    "manual_validation_preview": frozenset({
+        "action", "project_name", "project_root", "validation_run_id", "version",
+        "reason",
+    }),
+    "manual_validation_apply": frozenset({"action", "project_name", "project_root", "preview_id"}),
+    "scope_mismatch_preview": frozenset({
+        "action", "project_name", "project_root", "report_id", "version",
+    }),
+    "scope_mismatch_apply": frozenset({
+        "action", "project_name", "project_root", "preview_id", "resolution",
+    }),
+    "state_lineage_reconciliation_preview": frozenset({
+        "action", "project_name", "project_root", "expected_head",
+        "expected_branch", "target_next_version", "bindings",
+    }),
+    "state_lineage_reconciliation_apply": frozenset({"action", "project_name", "project_root", "preview_id"}),
+    "final_version_closeout_preview": frozenset({
+        "action", "project_name", "project_root", "target_version",
+        "accepted_commit", "accepted_commit_subject", "commit_files",
+        "evidence_refs", "evidence_summary", "expected_head", "expected_branch",
+        "version", "reason",
+    }),
+    "final_version_closeout_apply": frozenset({"action", "project_name", "project_root", "preview_id"}),
+    "reconcile_orphaned_claims_preview": frozenset({"action", "project_name", "project_root"}),
+    "reconcile_orphaned_claims_apply": frozenset({"action", "project_name", "project_root", "preview_id"}),
+    "status": frozenset({
+        "action", "project_name", "project_root", "provider", "preview_id",
+        "run_id", "profile_id", "poll_attempt",
+    }),
+}
+
+_EXECUTOR_WORKFLOW_RESULT_COMMON_FIELDS = frozenset({
+    "ok", "action", "status", "risk_level", "error_code", "message",
+    "details", "workflow_id", "workflow_record_warning",
+})
+
+_EXECUTOR_WORKFLOW_PUBLIC_ERROR_DETAIL_FIELDS = frozenset({
+    "policy", "tool", "action", "required_scope", "reason_code",
+    "required_param", "next_action", "available_project_names", "path",
+    "validator", "unexpected_fields",
+})
+
+_EXECUTOR_WORKFLOW_PUBLIC_RESULT_FIELDS_BY_ACTION: dict[str, frozenset[str]] = {
+    "preflight": frozenset({
+        "preflight_blocked", "blocks", "warnings", "current_version",
+        "current_version_index", "current_head", "current_branch", "runner_status",
+        "provider", "resolved_provider", "mainline_provider", "git_status_short",
+        "git_dirty", "blocking_git_status_short", "blocking_git_changed_files",
+        "runner_memory_files", "preexisting_runner_files", "ignored_runner_local_files",
+        "ignored_runner_runtime_files", "ignored_runner_archive_files",
+        "execution_branch_status", "execution_branch_required",
+        "execution_branch_ready", "execution_mode", "executor_inventory",
+        "runner_input_source", "runner_input_overlay", "work_item_id", "task_version",
+        "attempt_id", "artifact_refs",
+    }),
+    "run_once_preview": frozenset({
+        "preview_id", "provider", "execution_mode", "current_version",
+        "pending_count", "has_pending_versions", "pending_versions",
+        "next_not_started_version", "ignored_runner_archive_files", "created_at",
+        "expires_at", "executor_session_readiness", "executor_session_affinity",
+        "continuation_decision", "continuation_snapshot", "continuation_action_gate",
+        "selected_executor_profile", "executor_session_continuation_facts",
+        "preflight_summary", "warnings", "warning_codes", "blocks",
+    }),
+    "run_once": frozenset({
+        "preview_id", "run_id", "provider", "execution_mode",
+        "executor_session_mode", "classification", "blocks", "warnings",
+        "next_actions", "canonical_continuation_decision", "continuation_snapshot",
+        "preview_claimed_at", "preview_claim_status",
+    }),
+    "run_bounded_preview": frozenset({
+        "preview_id", "provider", "execution_mode", "current_version",
+        "max_iterations", "trusted_mode", "allow_fix", "allow_commit", "gates",
+        "loop_plan", "stop_conditions", "next_actions", "blocks", "warnings",
+        "created_at", "expires_at", "ignored_runner_archive_files",
+    }),
+    "run_bounded": frozenset({
+        "preview_id", "run_id", "provider", "execution_mode", "max_iterations",
+        "iterations_requested", "iterations_completed", "stopped", "stop_reason",
+        "stop_conditions_triggered", "loop_summary", "iteration_results",
+        "changed_files", "total_changed_files", "diff_summary", "total_diff_chars",
+        "latest_report_id", "report_summary", "classification", "next_actions",
+        "blockers", "warnings", "trusted_mode", "allow_fix", "allow_commit",
+        "workflow_steps", "preview_claimed_at", "preview_claim_status",
+    }),
+    "get_audit_package": frozenset({
+        "audit_package_id", "report_id", "version", "provider", "execution_mode",
+        "summary", "lineage", "evidence_paths", "changed_files",
+        "acceptance_summary", "scope_summary", "completion_evidence",
+        "recommended_next_reads", "source", "section", "commit", "validation",
+        "scope", "report_excerpt", "truncated",
+    }),
+    "refresh_audit_package": frozenset({
+        "version", "audit_package_id", "source", "json_file", "latest_package_file",
+        "base_package_file", "refresh_package_files",
+    }),
+    "recheck_report_preview": frozenset({"preview_id", "report_id", "target_version", "proposed_state_update", "blockers", "warnings", "expires_at"}),
+    "recheck_report_apply": frozenset({
+        "preview_id", "report_id", "target_version", "old_runner_status",
+        "new_runner_status", "old_version_status", "new_version_status",
+        "state_file", "proposed_state_update", "audit_refresh_result",
+        "blockers", "warnings",
+    }),
+    "manual_fix_prompt_preview": frozenset({"preview_id", "report_id", "target_version", "expires_at", "blockers", "warnings"}),
+    "manual_fix_prompt_apply": frozenset({
+        "preview_id", "report_id", "target_version", "old_runner_status",
+        "new_runner_status", "old_version_status", "new_version_status", "state_file",
+        "fix_prompt_file", "manual_fix_prompt_file", "evidence_path", "evidence_kind",
+        "audit_package_id", "attempt_before", "attempt_after",
+    }),
+    "manual_validation_preview": frozenset({"preview_id", "validation_run_id", "target_version", "expires_at", "blockers", "warnings"}),
+    "manual_validation_apply": frozenset({
+        "preview_id", "validation_run_id", "target_version", "old_runner_status",
+        "new_runner_status", "old_version_status", "new_version_status", "state_file",
+    }),
+    "scope_mismatch_preview": frozenset({
+        "preview_id", "report_id", "version", "scope_status", "changed_files_source",
+        "changed_files", "allowed_files", "inside_allowed_files", "outside_allowed_files",
+        "forbidden_files", "forbidden_files_hit", "head_match", "head_mismatch",
+        "resolution_options", "can_apply", "expires_at", "blockers", "warnings",
+    }),
+    "scope_mismatch_apply": frozenset({
+        "preview_id", "version", "resolution", "scope_status", "outside_allowed_files",
+        "forbidden_files_hit", "allowed_resolutions", "old_runner_status",
+        "new_runner_status", "old_version_status", "new_version_status", "state_file",
+        "resolution_metadata", "next_action", "note", "blockers", "warnings",
+    }),
+    "state_lineage_reconciliation_preview": frozenset({"preview_id", "target_next_version", "bindings", "expires_at", "blockers", "warnings"}),
+    "state_lineage_reconciliation_apply": frozenset({
+        "preview_id", "before_state_summary", "after_state_summary", "versions_updated",
+        "state_file", "files_touched", "forbidden_side_effects",
+    }),
+    "final_version_closeout_preview": frozenset({"preview_id", "target_version", "accepted_commit", "expires_at", "blockers", "warnings"}),
+    "final_version_closeout_apply": frozenset({
+        "preview_id", "before_state_summary", "after_state_summary", "versions_updated",
+        "state_file", "files_touched", "forbidden_side_effects",
+    }),
+    "reconcile_orphaned_claims_preview": frozenset({"preview_id", "candidate_count", "candidates"}),
+    "reconcile_orphaned_claims_apply": frozenset({
+        "preview_id", "final_status", "applied_count", "skipped_count", "candidates",
+        "applied", "skipped",
+    }),
+    "status": frozenset({
+        "polling_profile_id", "next_poll_after_seconds", "max_poll_attempts",
+        "max_total_poll_seconds", "poll_attempt", "remaining_poll_attempts",
+        "polling_exhausted", "terminal", "executor_run_status", "polling_guidance",
+        "session_status", "continuation_snapshot", "preview_id", "run_id",
+        "ignored_runner_archive_files", "possible_report_id", "last_meaningful_progress",
+        "model", "model_source", "preview_claim_status", "claimed_at", "finished_at",
+        "report_id", "worker_pid", "thread_started_at", "worker_started_at",
+        "last_heartbeat_at", "heartbeat_interval_seconds", "heartbeat_timeout_seconds",
+        "exception_type", "blockers", "warnings", "provider_status", "terminal_reason",
+        "diagnostics", "next_actions", "events",
+    }),
+}
+
+# Nested executor results are projected through this closed vocabulary after the
+# action-specific root projection. It intentionally excludes Authority pair
+# aliases, project/session identity records, raw exception details, and opaque
+# provider evidence.
+_EXECUTOR_WORKFLOW_PUBLIC_NESTED_FIELDS = frozenset({
+    "ok", "action", "status", "risk_level", "error_code", "message", "code",
+    "reason", "warning", "warnings", "blockers", "blocks", "available",
+    "provider", "model", "model_source", "execution_mode", "version",
+    "current_version", "target_version", "run_id", "preview_id", "report_id",
+    "workflow_id", "tool", "params", "arguments", "requires_confirmation",
+    "label", "policy", "profile_id", "requested_profile_id", "fallback_profile_id",
+    "next_poll_after_seconds", "max_poll_attempts", "max_total_poll_seconds",
+    "on_exhausted", "available", "stale", "age_seconds", "stale_after_seconds",
+    "event_type", "stage", "timestamp", "allowed", "selected_action",
+    "recommended_action", "resume_allowed", "start_new_allowed",
+    "requested_session_mode", "decision", "decision_reason", "should_start_new",
+    "should_resume", "hard_blockers", "resume_blockers", "risk_warnings",
+    "resume_warnings", "classification", "severity", "decision_source",
+    "continuation_available", "provider_resume_supported", "session_resume_available",
+    "source", "summary", "scope", "lineage", "validation", "commit",
+    "changed_files", "changed_files_count", "changed_files_sample", "committed_files",
+    "committed_files_count", "validation_status_summary", "scope_status_summary",
+    "validation_inconsistent", "validation_inconsistency_reasons",
+    "validation_truth_source", "validation_command_count",
+    "validation_failed_command_count", "validation_command_records_sample",
+    "sample_validation_results", "has_report_markdown", "truncated", "package_role",
+    "commit_hash", "commit_hash_short", "commit_message", "committed_at",
+    "commit_head_before", "commit_head_after", "commit_metadata_status",
+    "json_file", "markdown_file", "log_file", "audit_file", "evidence_paths",
+    "mode", "present", "count", "candidate_count", "candidates", "applied",
+    "skipped", "applied_count", "skipped_count", "current_status", "final_status",
+    "iteration", "iterations_requested", "iterations_completed", "stop_reason",
+    "stop_conditions_triggered", "trusted_mode", "allow_fix", "allow_commit",
+    "stop_on_acceptance_failure", "stop_on_scope_violation", "stop_on_diff_too_large",
+    "max_total_diff_chars", "max_iterations", "workflow_steps", "terminal",
+    "executor_run_status", "preview_claim_status", "claimed_at", "finished_at",
+    "worker_pid", "thread_started_at", "worker_started_at", "last_heartbeat_at",
+    "heartbeat_interval_seconds", "heartbeat_timeout_seconds", "exception_type",
+    "terminal_reason", "provider_status", "diagnostics", "next_actions",
+    "created_at", "expires_at", "current_head", "current_branch", "runner_status",
+    "git_clean", "execution_branch_status", "preflight_blocked", "can_apply",
+    "resolution", "resolution_options", "old_runner_status", "new_runner_status",
+    "old_version_status", "new_version_status", "state_file", "files_touched",
+    "forbidden_side_effects", "versions_updated", "before_state_summary",
+    "after_state_summary", "latest_report_id", "report_summary", "diff_summary",
+    "total_diff_chars", "total_changed_files", "stopped", "loop_summary",
+    "iteration_results", "workflow_record_warning",
+})
 
 
 _SUPPORTED_MCP_WORKFLOWS = SUPPORTED_CORE_WORKFLOWS
@@ -838,6 +1103,12 @@ def _build_mcp_tool_policies() -> dict[str, MCPToolPolicy]:
     policies.update({name: _static_policy(name, "mcp:read") for name in WORK_ITEM_READ_TOOLS})
     policies.update({name: _static_policy(name, "mcp:preview") for name in WORK_ITEM_PREVIEW_TOOLS})
     policies.update({name: _static_policy(name, "mcp:commit") for name in WORK_ITEM_APPLY_TOOLS})
+    policies["preview_execution_attempt_create"] = _static_policy(
+        "preview_execution_attempt_create", "mcp:preview"
+    )
+    policies["apply_execution_attempt_create"] = _static_policy(
+        "apply_execution_attempt_create", "mcp:commit"
+    )
     for name in ("preview_insert_version", "preview_update_version", "manage_plan_workflow"):
         policies[name] = _static_policy(name, "mcp:preview")
     for name in (
@@ -1145,6 +1416,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if work_item_scope_mode == PILOT_SCOPE_MODE and self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
             raise PlanningBridgeError("bounded Pilot scope requires the authoritative_canary exposure profile.")
         self._token_transport_proof_validator = None
+        self._stage_attempt_proof_consumption_lock = threading.Lock()
+        self._stage_attempt_consumed_proof_digests: set[str] = set()
         self._preflight_conformance_only = False
         self._preflight_conformance_ledger_snapshot_binding_digest: str | None = None
         self._mcp_result_artifact_store = MCPResultArtifactStore(
@@ -1289,7 +1562,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self.tools.update(
             {
                 name: (lambda params, command_name=name: self._tool_work_item_command(command_name, params))
-                for name in WORK_ITEM_MCP_TOOLS
+                for name in WORK_ITEM_MCP_TOOLS + WORK_ITEM_AUTHORITY_BRIDGE_TOOLS
             }
         )
         self.tool_defs = build_mcp_tool_definitions(
@@ -1343,6 +1616,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
         )
         bounded_pilot = self.work_item_scope_mode == PILOT_SCOPE_MODE
+        if name in WORK_ITEM_AUTHORITY_BRIDGE_TOOLS and not (
+            authoritative_canary
+            and self.work_item_scope_mode in {None, PILOT_SCOPE_MODE}
+        ):
+            raise MCPToolInputError(
+                "AUTHORITY_PRIMITIVE_COMPOSITION_REQUIRED",
+                "Execution Attempt authority primitives require the exact authenticated Canary or Pilot composition.",
+            )
         if authoritative_canary and params.get("project_name") is not None:
             raise MCPToolInputError(
                 "ACTIVATION_PROJECT_ROUTING_DENIED",
@@ -1356,7 +1637,23 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             )
         clean = self._strip_project_name_param(params)
         try:
-            return execute_work_item_mcp_command(
+            from runner.stage_attempt_admission_bridge import (
+                StageAttemptAdmissionGrantIssuer,
+            )
+
+            issuer = StageAttemptAdmissionGrantIssuer(self.project_root)
+            if name == "apply_execution_attempt_create":
+                grant_id = str(clean.get("grant_id") or "")
+                execution_context = clean.get("execution_context")
+                preview = issuer.load_signed_preview_for_apply(
+                    grant_id,
+                    expected_execution_context=execution_context,
+                )
+                clean = {
+                    "preview": preview,
+                    "execution_context": execution_context,
+                }
+            result = execute_work_item_mcp_command(
                 self.project_root,
                 name,
                 clean,
@@ -1370,8 +1667,132 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 bounded_single_project_pilot=bounded_pilot,
                 authenticated_request_proof=current_authenticated_token_request_proof(),
             )
+            if name == "preview_execution_attempt_create":
+                return issuer.store_signed_preview(result)
+            if name == "apply_execution_attempt_create":
+                admission = issuer.record_attempt_admission(
+                    grant_id,
+                    expected_execution_context=execution_context,
+                    apply_result=result,
+                )
+                return {
+                    "status": "attempt_admitted",
+                    "grant_id": grant_id,
+                    "task_id": admission["task_id"],
+                    "attempt": result.get("attempt"),
+                    "idempotent_replay": result.get("idempotent_replay", False),
+                    "provider_started": False,
+                }
+            return result
         except WorkItemGovernanceError as exc:
             raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
+
+    def _require_stage_attempt_governance_composition(self) -> tuple[bool, bool]:
+        authoritative_canary = (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY
+        )
+        bounded_pilot = self.work_item_scope_mode == PILOT_SCOPE_MODE
+        if not authoritative_canary:
+            raise MCPToolInputError(
+                "STAGE_ATTEMPT_GOVERNANCE_COMPOSITION_REQUIRED",
+                "Stage Attempt grants require an exact authenticated Work Item governance composition.",
+            )
+        return authoritative_canary and not bounded_pilot, bounded_pilot
+
+    def _consume_fresh_stage_attempt_request_proof(self) -> AuthenticatedTokenRequestProof:
+        proof = current_authenticated_token_request_proof()
+        if (
+            type(proof) is not AuthenticatedTokenRequestProof
+            or not proof.structurally_valid()
+            or not proof.active
+        ):
+            raise MCPToolInputError(
+                "AUTHENTICATED_REQUEST_CONTEXT_REQUIRED",
+                "Stage Attempt admission requires one fresh authenticated request proof.",
+            )
+        proof_digest = hashlib.sha256(
+            (
+                proof.listener_instance_nonce
+                + ":"
+                + proof.request_nonce
+                + ":"
+                + proof.signature
+            ).encode("utf-8")
+        ).hexdigest()
+        with self._stage_attempt_proof_consumption_lock:
+            if proof_digest in self._stage_attempt_consumed_proof_digests:
+                raise MCPToolInputError(
+                    "AUTHENTICATED_REQUEST_PROOF_REPLAYED",
+                    "Each Stage Attempt governance operation requires a fresh authenticated request.",
+                )
+            self._stage_attempt_consumed_proof_digests.add(proof_digest)
+        return proof
+
+    def _mint_stage_task_attempt_admission_grant(
+        self,
+        *,
+        command: dict[str, Any],
+        execution_context: dict[str, Any],
+        ttl_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Composition-root-only minting; this is not an MCP tool surface."""
+
+        from runner.stage_attempt_admission_bridge import StageAttemptAdmissionGrantIssuer
+
+        authoritative_canary, bounded_pilot = self._require_stage_attempt_governance_composition()
+        request_proof = self._consume_fresh_stage_attempt_request_proof()
+        try:
+            preview_result = execute_work_item_mcp_command(
+                self.project_root,
+                "preview_execution_attempt_create",
+                {
+                    "command": command,
+                    "execution_context": execution_context,
+                    "ttl_seconds": ttl_seconds,
+                },
+                principal_context=current_work_item_principal(),
+                authoritative_canary=authoritative_canary,
+                bounded_single_project_pilot=bounded_pilot,
+                authenticated_request_proof=request_proof,
+            )
+            return StageAttemptAdmissionGrantIssuer(self.project_root).store_signed_preview(
+                preview_result
+            )
+        except WorkItemGovernanceError as exc:
+            raise MCPToolInputError(exc.code, str(exc), exc.details) from exc
+
+    def _stage_task_attempt_admission_bridge(self) -> Any:
+        """Return the read-only Stage-facing opaque admission view."""
+
+        from runner.stage_attempt_admission_bridge import StageAttemptAdmissionBridge
+
+        def inspect_signed_transport(
+            preview: dict[str, Any], execution_context: dict[str, Any]
+        ) -> dict[str, Any]:
+            return execute_work_item_mcp_command(
+                self.project_root,
+                "inspect_execution_attempt_create_preview_transport",
+                {"preview": preview, "execution_context": execution_context},
+            )
+
+        def resolve_attempt_artifacts(
+            work_item_id: str, task_version: int, attempt_id: str
+        ) -> dict[str, Any]:
+            return execute_work_item_mcp_command(
+                self.project_root,
+                "resolve_execution_attempt_artifact_refs",
+                {
+                    "work_item_id": work_item_id,
+                    "task_version": task_version,
+                    "attempt_id": attempt_id,
+                },
+            )
+
+        return StageAttemptAdmissionBridge(
+            self.project_root,
+            inspect_signed_transport=inspect_signed_transport,
+            resolve_attempt_artifacts=resolve_attempt_artifacts,
+        )
 
     def validate_project(self, mode: str | None = None) -> None:
         if not os.path.isdir(self.project_root):
@@ -3817,13 +4238,19 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     arguments,
                     auth_context=auth_context,
                 )
+                projection_arguments = arguments
+                if name == "manage_executor_workflow" and isinstance(arguments, dict):
+                    projection_arguments = self._project_executor_workflow_public_payload(
+                        arguments,
+                        tool_result,
+                    )["params"]
                 if method == "tools/call":
-                    return self._result(req_id, self._as_mcp_call_result(tool_result, arguments))
+                    return self._result(req_id, self._as_mcp_call_result(tool_result, projection_arguments))
                 return self._result(
                     req_id,
                     self._commander_public_project_tool_result(
                         tool_result,
-                        arguments,
+                        projection_arguments,
                     ),
                 )
             if method == "apply_plan_patch":
@@ -3843,6 +4270,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "direct_tool_method_disabled",
                         "Direct named JSON-RPC tool methods are disabled; use tools/call.",
                     )
+                projection_params = params
+                if method == "manage_executor_workflow" and isinstance(params, dict):
+                    projection_params = self._project_executor_workflow_public_payload(
+                        params,
+                        {},
+                    )["params"]
                 return self._result(
                     req_id,
                     self._commander_public_project_tool_result(
@@ -3851,14 +4284,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             params,
                             auth_context=auth_context,
                         ),
-                        params,
+                        projection_params,
                     ),
                 )
             return self._protocol_error(req_id, -32601, "method_not_found", f"未知方法：{method}")
-        except Exception as e:
+        except Exception:
             return self._result(
                 req_id,
-                self._tool_error("internal", "INTERNAL_ERROR", "服务器内部错误。", {"message": str(e)}),
+                self._tool_error("internal", "INTERNAL_ERROR", "服务器内部错误。"),
             )
 
     def _tool_oauth_scopes(
@@ -4296,7 +4729,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
     def _get_exposed_tool_names(self, profile: str | None = None) -> set[str]:
         profile_name = profile or self.mcp_exposure_profile
-        tool_order = _PROFILE_ORDERS.get(profile_name, _PROFILE_ORDERS[MCP_EXPOSURE_PROFILE_NORMAL])
+        tool_order = _PROFILE_ORDERS.get(profile_name, ())
         return set(tool_order)
 
     def _filter_tools_by_exposure_profile(self, tools: list[MCPToolDef]) -> list[MCPToolDef]:
@@ -5340,6 +5773,91 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         params: Any,
         auth_context: MCPAuthContext = None,
     ) -> dict[str, Any]:
+        """Dispatch and project every result, including fail-closed exceptions."""
+        safe_params = params if isinstance(params, dict) else {}
+        try:
+            result = self._dispatch_tool_result(
+                name,
+                params,
+                auth_context=auth_context,
+            )
+        except Exception:
+            tool_name = name if isinstance(name, str) and name else "unknown"
+            result = self._tool_error(
+                tool_name,
+                "TOOL_EXEC_ERROR",
+                "工具执行失败。",
+            )
+        if name == "manage_executor_workflow":
+            result = self._project_executor_workflow_tool_result(
+                safe_params,
+                result,
+            )
+        return self._commander_public_project_tool_result(result, safe_params)
+
+    def _project_executor_workflow_tool_result(
+        self,
+        params: dict[str, Any],
+        tool_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply the final exact public boundary to one executor workflow call."""
+        if not isinstance(tool_result, dict):
+            return self._tool_error(
+                "manage_executor_workflow",
+                "EXECUTOR_WORKFLOW_INVALID_RESULT",
+                "Executor workflow returned an invalid result.",
+            )
+        inner = tool_result.get("data")
+        if tool_result.get("ok") is True and isinstance(inner, dict):
+            projected = self._project_executor_workflow_public_payload(params, inner)
+            projected_inner = projected["result"]
+            if projected_inner.get("ok") is not True:
+                public_error = {
+                    "ok": False,
+                    "tool": "manage_executor_workflow",
+                    "error_code": str(
+                        projected_inner.get("error_code")
+                        or "EXECUTOR_WORKFLOW_FAILED"
+                    ),
+                    "message": str(
+                        projected_inner.get("message")
+                        or "Executor workflow request failed closed."
+                    ),
+                }
+                if isinstance(projected_inner.get("details"), dict):
+                    public_error["details"] = projected_inner["details"]
+                return public_error
+            return {
+                "ok": True,
+                "tool": "manage_executor_workflow",
+                "data": projected_inner,
+            }
+
+        projected = self._project_executor_workflow_public_payload(
+            params,
+            tool_result,
+        )["result"]
+        public_error = {
+            "ok": False,
+            "tool": "manage_executor_workflow",
+            "error_code": str(
+                projected.get("error_code") or "EXECUTOR_WORKFLOW_FAILED"
+            ),
+            "message": str(
+                projected.get("message")
+                or "Executor workflow request failed closed."
+            ),
+        }
+        if isinstance(projected.get("details"), dict):
+            public_error["details"] = projected["details"]
+        return public_error
+
+    def _dispatch_tool_result(
+        self,
+        name: Any,
+        params: Any,
+        auth_context: MCPAuthContext = None,
+    ) -> dict[str, Any]:
         if not isinstance(name, str) or not name:
             return self._tool_error("unknown", "INVALID_TOOL", "tool 名称无效。")
         if name == "apply_plan_patch":
@@ -5348,14 +5866,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 "TOOL_NOT_EXPOSED",
                 "apply_plan_patch is intentionally not exposed over MCP. Runner applies pending patches locally via Web Console or CLI.",
             )
-        if (
-            self.mcp_exposure_profile
-            in {
-                MCP_EXPOSURE_PROFILE_COMMANDER,
-                MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY,
-            }
-            and name not in self._get_exposed_tool_names(self.mcp_exposure_profile)
-        ):
+        if name not in self._get_exposed_tool_names(self.mcp_exposure_profile):
             return self._tool_error(
                 name,
                 "TOOL_NOT_EXPOSED",
@@ -5390,6 +5901,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             params = {}
         if not isinstance(params, dict):
             return self._tool_error(name, "INVALID_PARAMS", "tool 参数必须是 JSON 对象。")
+        schema_error = self._exact_public_tool_schema_error(name, params)
+        if schema_error is not None:
+            return schema_error
         is_unscoped_result_artifact_read = (
             name == "run_mcp_workflow"
             and _policy_string_param(params, "workflow") == MCP_RESULT_ARTIFACT_WORKFLOW
@@ -5482,9 +5996,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 clean_data = dict(data)
                 result["_meta"] = copy.deepcopy(clean_data.pop("_meta"))
                 result["data"] = clean_data
+            projection_params = params
+            if name == "manage_executor_workflow":
+                projection_params = self._project_executor_workflow_public_payload(
+                    params,
+                    data if isinstance(data, dict) else {},
+                )["params"]
             return self._commander_public_project_tool_result(
                 result,
-                params,
+                projection_params,
                 prevalidated_review_manifest_page_binding=(
                     prevalidated_review_manifest_page_binding
                 ),
@@ -5497,18 +6017,84 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         except PlanningBridgeError as e:
             if operator_request:
                 return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
-            return self._tool_error(name, "BRIDGE_ERROR", str(e))
-        except SourceReviewError as e:
+            return self._tool_error(
+                name,
+                e.error_code or "BRIDGE_ERROR",
+                "Planning bridge request failed.",
+            )
+        except SourceReviewError:
             if operator_request:
                 return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
-            return self._tool_error(name, "SOURCE_REVIEW_ERROR", str(e))
-        except Exception as e:
+            return self._tool_error(
+                name,
+                "SOURCE_REVIEW_ERROR",
+                "Source review request failed.",
+            )
+        except Exception:
             self._stop_authoritative_canary_if_inactive()
             if operator_request:
                 return {"ok": False, "tool": name, "error_code": "OPERATOR_REQUEST_FAILED", "message": "Operator request failed closed."}
-            return self._tool_error(name, "TOOL_EXEC_ERROR", "工具执行失败。", {"message": str(e)})
+            return self._tool_error(name, "TOOL_EXEC_ERROR", "工具执行失败。")
         finally:
             _COMMANDER_PUBLIC_REQUEST.reset(commander_request_token)
+
+    def _exact_public_tool_schema_error(
+        self,
+        name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Fail closed at dispatch for inputs whose exact catalog schema is security-sensitive."""
+        if name != "manage_executor_workflow":
+            return None
+        tool_def = next(
+            (candidate for candidate in self.tool_defs if candidate.name == name),
+            None,
+        )
+        if tool_def is None:
+            return self._tool_error(
+                name,
+                "TOOL_SCHEMA_UNAVAILABLE",
+                "Tool input schema is unavailable; dispatch was denied.",
+            )
+        errors = sorted(
+            Draft202012Validator(tool_def.input_schema).iter_errors(params),
+            key=lambda error: (
+                tuple(str(part) for part in error.absolute_path),
+                tuple(str(part) for part in error.absolute_schema_path),
+            ),
+        )
+        if not errors:
+            action_raw = params.get("action")
+            action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+            allowed = set(
+                _EXECUTOR_WORKFLOW_PUBLIC_PARAMS_BY_ACTION.get(
+                    action,
+                    frozenset({"action"}),
+                )
+            )
+            if action in {"run_once_preview", "run_once"}:
+                allowed.update({"executor_authority_id", "admission_sha256"})
+            if action == "manual_fix_prompt_preview":
+                allowed.add("manual_fix_prompt")
+            unexpected = sorted(str(key) for key in params if key not in allowed)
+            if not unexpected:
+                return None
+            return self._tool_error(
+                name,
+                "INVALID_TOOL_INPUT_SCHEMA",
+                "Tool arguments do not match the exact action input schema.",
+                {"unexpected_fields": unexpected},
+            )
+        first = errors[0]
+        return self._tool_error(
+            name,
+            "INVALID_TOOL_INPUT_SCHEMA",
+            "Tool arguments do not match the exact public input schema.",
+            {
+                "path": [str(part) for part in first.absolute_path],
+                "validator": str(first.validator or "schema"),
+            },
+        )
 
     def _stop_authoritative_canary_if_inactive(self) -> None:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY:
@@ -8922,6 +9508,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         return spec
 
     def _normalize_acceptance_commands_param(self, commands: list[Any]) -> list[Any]:
+        from runner.acceptance_command_policy import acceptance_command_rejection_code
+
         if not isinstance(commands, list) or not commands:
             raise MCPToolInputError("INVALID_ACCEPTANCE_COMMANDS", "acceptance_commands 必须是非空列表。")
         result: list[Any] = []
@@ -8929,14 +9517,25 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             if isinstance(item, str):
                 if not item.strip():
                     raise MCPToolInputError("INVALID_ACCEPTANCE_COMMANDS", f"acceptance_commands[{idx}] 字符串命令不能为空。")
-                result.append(item.strip())
+                command = item.strip()
+                rejection_code = acceptance_command_rejection_code(command)
+                if rejection_code:
+                    raise MCPToolInputError(
+                        "ACCEPTANCE_COMMAND_NOT_EXECUTABLE",
+                        f"acceptance_commands[{idx}] 被 execution policy 拒绝（{rejection_code}）。",
+                    )
+                result.append(command)
             elif isinstance(item, dict):
                 cmd_val = item.get("command")
                 if not isinstance(cmd_val, str) or not cmd_val.strip():
                     raise MCPToolInputError("INVALID_ACCEPTANCE_COMMANDS", f"acceptance_commands[{idx}] 缺少非空 command。")
                 command = cmd_val.strip()
-                if "\n" in command or "\r" in command:
-                    raise MCPToolInputError("INVALID_ACCEPTANCE_COMMANDS", f"acceptance_commands[{idx}] 不允许多行命令。")
+                rejection_code = acceptance_command_rejection_code(command)
+                if rejection_code:
+                    raise MCPToolInputError(
+                        "ACCEPTANCE_COMMAND_NOT_EXECUTABLE",
+                        f"acceptance_commands[{idx}] 被 execution policy 拒绝（{rejection_code}）。",
+                    )
                 entry: dict[str, Any] = {"command": command}
                 ts_raw = item.get("timeout_seconds")
                 if ts_raw is not None:
@@ -9610,6 +10209,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         reason_raw = params.get("reason")
         reason = reason_raw.strip() if isinstance(reason_raw, str) else ""
         executor_session_mode = params.get("executor_session_mode", "auto")
+        executor_authority_id = params.get("executor_authority_id")
+        admission_sha256 = params.get("admission_sha256")
         max_iterations = self._bounded_int_param(params.get("max_iterations"), default=1, minimum=1, maximum=3)
         trusted_mode = self._bool_param(params.get("trusted_mode"), default=False)
         stop_on_acceptance_failure = self._bool_param(params.get("stop_on_acceptance_failure"), default=True)
@@ -9701,8 +10302,18 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         }
         if action.strip().lower() == "run_once" or "executor_session_mode" in params:
             workflow_params["executor_session_mode"] = executor_session_mode
+        if "executor_authority_id" in params:
+            workflow_params["executor_authority_id"] = executor_authority_id
+        if "admission_sha256" in params:
+            workflow_params["admission_sha256"] = admission_sha256
         result = manager.handle(action.strip().lower(), workflow_params)
-        self._record_workflow_if_needed("manage_executor_workflow", action.strip().lower(), params, result)
+        result = self._project_executor_workflow_public_payload(params, result)["result"]
+        self._record_workflow_if_needed(
+            "manage_executor_workflow",
+            action.strip().lower(),
+            params,
+            result,
+        )
         return self._with_project_identity(result)
 
     def _tool_manage_validation_run(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -9798,7 +10409,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             )
         if params.get("project_name") is not None:
             return self._route_project_name_tool("manage_stage_parallel_executor_group", params, require_managed=True)
-        manager = MCPStageParallelExecutorGroupManager(self.project_root)
+        manager = MCPStageParallelExecutorGroupManager(
+            self.project_root,
+            attempt_bridge=self._stage_task_attempt_admission_bridge(),
+        )
         result = manager.handle(action, params)
         self._record_workflow_if_needed("manage_stage_parallel_executor_group", action, params, result)
         return self._with_project_identity(result)
@@ -10813,12 +11427,121 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         store = WorkflowRecordStore(self.project_root)
         return store.get_run(workflow_id.strip())
 
+    def _project_validation_run_in_progress_public_payload(
+        self,
+        action: str,
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, dict[str, Any]] | None:
+        """Keep only the typed public continuation for a running validation."""
+
+        if (
+            action not in _VALIDATION_RUN_PUBLIC_IN_PROGRESS_RESULT_FIELDS_BY_ACTION
+            or result.get("ok") is not True
+            or result.get("status") != "running"
+        ):
+            return None
+
+        projector = self._commander_public_projector()
+        allowed_params = _VALIDATION_RUN_PUBLIC_PARAMS_BY_ACTION[action]
+        allowed_result = (
+            _VALIDATION_RUN_PUBLIC_IN_PROGRESS_RESULT_FIELDS_BY_ACTION[action]
+        )
+        projected_params = projector.sanitize_for_artifact({
+            key: value
+            for key, value in params.items()
+            if key in allowed_params
+        })
+        projected_result = projector.sanitize_for_artifact({
+            key: value
+            for key, value in result.items()
+            if key in allowed_result
+        })
+        safe_params = (
+            projected_params if isinstance(projected_params, dict) else {}
+        )
+        safe_result = (
+            projected_result if isinstance(projected_result, dict) else {}
+        )
+
+        run_id = result.get("run_id")
+        preview_id = result.get("preview_id")
+        if not (
+            isinstance(run_id, str)
+            and _VALIDATION_RUN_PUBLIC_OPAQUE_ID_RE.fullmatch(run_id)
+            and isinstance(preview_id, str)
+            and _VALIDATION_RUN_PUBLIC_OPAQUE_ID_RE.fullmatch(preview_id)
+        ):
+            return {
+                "params": {"action": action},
+                "result": {
+                    "ok": False,
+                    "action": action,
+                    "status": "failed",
+                    "error_code": "PUBLIC_PROJECTION_FAILED",
+                    "message": (
+                        "Validation continuation could not be projected safely."
+                    ),
+                },
+            }
+
+        safe_params["action"] = action
+        if action == "status":
+            safe_params["run_id"] = run_id
+        safe_result.update({
+            "ok": True,
+            "action": action,
+            "run_id": run_id,
+            "preview_id": preview_id,
+            "status": "running",
+            "passed": None,
+        })
+        return {"params": safe_params, "result": safe_result}
+
     def _record_workflow_if_needed(self, tool_name: str, action: str, params: dict[str, Any], result: dict[str, Any]) -> str | None:
         if not should_record_tool(tool_name, action):
             return None
         if not isinstance(result, dict):
             return None
-        ret = record_tool_call(self.project_root, tool_name, action, params, result)
+        record_params = params
+        record_result = result
+        if _COMMANDER_PUBLIC_REQUEST.get():
+            validation_projection = (
+                self._project_validation_run_in_progress_public_payload(
+                    action,
+                    params,
+                    result,
+                )
+                if tool_name == "manage_validation_run"
+                else None
+            )
+            if validation_projection is not None:
+                record_params = validation_projection["params"]
+                record_result = validation_projection["result"]
+            else:
+                projector = self._commander_public_projector()
+                projected_params = projector.sanitize_for_artifact(params)
+                projected_result = projector.sanitize_for_artifact(result)
+                record_params = projected_params if isinstance(projected_params, dict) else {}
+                record_result = projected_result if isinstance(projected_result, dict) else {}
+            result.clear()
+            result.update(record_result)
+        if tool_name == "manage_executor_workflow":
+            projected = self._project_executor_workflow_public_payload(
+                record_params,
+                record_result,
+            )
+            record_params = projected["params"]
+            record_result = projected["result"]
+            result.clear()
+            result.update(record_result)
+        ret = record_tool_call(
+            self.project_root,
+            tool_name,
+            action,
+            record_params,
+            record_result,
+        )
         warning = ret.get("warning")
         if warning:
             existing = result.get("workflow_record_warning")
@@ -10831,6 +11554,233 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             result["workflow_id"] = wf_id.strip()
             return wf_id.strip()
         return None
+
+    @staticmethod
+    def _executor_workflow_private_key(key: Any) -> bool:
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).strip().lower())
+        return normalized in {
+            "executorauthorityid",
+            "authorityid",
+            "authorityalias",
+            "authoritysha256",
+            "admissionsha256",
+            "expectedadmissionsha256",
+            "admissionhash",
+            "admissiondigest",
+        }
+
+    @staticmethod
+    def _executor_workflow_internal_identity_key(key: Any) -> bool:
+        normalized = re.sub(r"[^a-z0-9]", "", str(key).strip().lower())
+        return (
+            normalized == "projectidentity"
+            or (
+                normalized.startswith("fresh")
+                and ("authority" in normalized or "admission" in normalized)
+            )
+            or normalized in {
+                "resumeidentitykind",
+                "resumeidentitypresent",
+                "sessionidentitykind",
+                "sessionidentitypresent",
+                "conversationidentitypresent",
+                "cacheaffinityexpected",
+            }
+        )
+
+    @classmethod
+    def _collect_executor_workflow_private_values(cls, value: Any) -> set[str]:
+        private_values: set[str] = set()
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if cls._executor_workflow_private_key(key) and isinstance(child, str) and child:
+                    private_values.add(child)
+                private_values.update(cls._collect_executor_workflow_private_values(child))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                private_values.update(cls._collect_executor_workflow_private_values(child))
+        return private_values
+
+    @staticmethod
+    def _redact_executor_workflow_private_text(
+        text: str,
+        private_values: set[str],
+    ) -> str:
+        redacted = text
+        for private_value in sorted(private_values, key=len, reverse=True):
+            if private_value:
+                redacted = re.sub(
+                    re.escape(private_value),
+                    "[private-lineage-redacted]",
+                    redacted,
+                    flags=re.IGNORECASE,
+                )
+        return redacted
+
+    @classmethod
+    def _project_executor_workflow_nested_value(
+        cls,
+        value: Any,
+        private_values: set[str],
+    ) -> Any:
+        if isinstance(value, dict):
+            projected: dict[str, Any] = {}
+            for key, child in value.items():
+                if (
+                    cls._executor_workflow_private_key(key)
+                    or cls._executor_workflow_internal_identity_key(key)
+                ):
+                    continue
+                key_text = str(key)
+                if key_text not in _EXECUTOR_WORKFLOW_PUBLIC_NESTED_FIELDS:
+                    continue
+                projected[key_text] = cls._project_executor_workflow_nested_value(
+                    child,
+                    private_values,
+                )
+            return projected
+        if isinstance(value, (list, tuple)):
+            return [
+                cls._project_executor_workflow_nested_value(child, private_values)
+                for child in value
+            ]
+        if isinstance(value, str):
+            return cls._redact_executor_workflow_private_text(value, private_values)
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return None
+
+    @classmethod
+    def _project_executor_workflow_params(
+        cls,
+        params: dict[str, Any],
+        *,
+        private_values: set[str],
+    ) -> dict[str, Any]:
+        action_raw = params.get("action")
+        action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
+        allowed = _EXECUTOR_WORKFLOW_PUBLIC_PARAMS_BY_ACTION.get(action, frozenset({"action"}))
+        projected: dict[str, Any] = {}
+        for key, value in params.items():
+            if (
+                key not in allowed
+                or cls._executor_workflow_private_key(key)
+                or cls._executor_workflow_internal_identity_key(key)
+            ):
+                continue
+            projected[key] = cls._project_executor_workflow_nested_value(
+                value,
+                private_values,
+            )
+        if action:
+            projected["action"] = action
+        return projected
+
+    @classmethod
+    def _project_executor_workflow_result(
+        cls,
+        action: str,
+        result: dict[str, Any],
+        *,
+        private_values: set[str],
+    ) -> dict[str, Any]:
+        if result.get("ok") is not True:
+            error_code_raw = result.get("error_code")
+            message_raw = result.get("message")
+            details_raw = result.get("details")
+            details: dict[str, Any] = {}
+            if isinstance(details_raw, dict):
+                for key, value in details_raw.items():
+                    if (
+                        key not in _EXECUTOR_WORKFLOW_PUBLIC_ERROR_DETAIL_FIELDS
+                        or cls._executor_workflow_private_key(key)
+                        or cls._executor_workflow_internal_identity_key(key)
+                    ):
+                        continue
+                    if isinstance(value, str):
+                        details[key] = cls._redact_executor_workflow_private_text(
+                            value,
+                            private_values,
+                        )
+                    elif isinstance(value, (bool, int, float)) or value is None:
+                        details[key] = value
+                    elif isinstance(value, (list, tuple)):
+                        details[key] = [
+                            cls._redact_executor_workflow_private_text(
+                                child,
+                                private_values,
+                            )
+                            for child in value
+                            if isinstance(child, str)
+                        ]
+            projected_error: dict[str, Any] = {
+                "ok": False,
+                "action": action,
+                "status": "failed",
+                "risk_level": str(result.get("risk_level") or "blocked"),
+                "error_code": (
+                    cls._redact_executor_workflow_private_text(
+                        error_code_raw,
+                        private_values,
+                    )
+                    if isinstance(error_code_raw, str) and error_code_raw
+                    else "EXECUTOR_WORKFLOW_FAILED"
+                ),
+                "message": (
+                    cls._redact_executor_workflow_private_text(
+                        message_raw,
+                        private_values,
+                    )
+                    if isinstance(message_raw, str) and message_raw
+                    else "Executor workflow request failed closed."
+                ),
+            }
+            if details:
+                projected_error["details"] = details
+            return projected_error
+
+        allowed = (
+            _EXECUTOR_WORKFLOW_RESULT_COMMON_FIELDS
+            | _EXECUTOR_WORKFLOW_PUBLIC_RESULT_FIELDS_BY_ACTION.get(action, frozenset())
+        )
+        projected: dict[str, Any] = {}
+        for key, value in result.items():
+            if (
+                key not in allowed
+                or cls._executor_workflow_private_key(key)
+                or cls._executor_workflow_internal_identity_key(key)
+            ):
+                continue
+            projected[key] = cls._project_executor_workflow_nested_value(
+                value,
+                private_values,
+            )
+        projected["ok"] = True
+        projected["action"] = action
+        return projected
+
+    @classmethod
+    def _project_executor_workflow_public_payload(
+        cls,
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        source = {"params": params, "result": result}
+        private_values = cls._collect_executor_workflow_private_values(source)
+        safe_params = cls._project_executor_workflow_params(
+            params,
+            private_values=private_values,
+        )
+        action = str(safe_params.get("action") or "")
+        safe_result = cls._project_executor_workflow_result(
+            action,
+            result,
+            private_values=private_values,
+        )
+        return {
+            "params": safe_params,
+            "result": safe_result,
+        }
 
     def _result(self, req_id: Any, result: dict[str, Any]) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}

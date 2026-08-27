@@ -175,6 +175,19 @@ def _manage_stage_parallel_executor_group_input_schema() -> dict[str, Any]:
         "type": "string",
         "description": "preview 可选。记录创建 executor preview group 的原因。",
     }
+    properties["task_authorizations"] = {
+        "type": "array",
+        "description": "Exact per-task opaque Attempt-admission grant handles for the resumable lifecycle.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "minLength": 1},
+                "grant_id": {"type": "string", "minLength": 1},
+            },
+            "required": ["task_id", "grant_id"],
+            "additionalProperties": False,
+        },
+    }
     return {
         "type": "object",
         "properties": properties,
@@ -3745,20 +3758,46 @@ def build_mcp_tool_definitions(
                     "evidence_summary": {"type": "string", "description": "final_version_closeout_preview 可选。当 evidence_refs 不足时提供 closeout evidence 摘要。"},
                     "bindings": {
                         "type": "array",
+                        "minItems": 1,
                         "description": "state_lineage_reconciliation_preview 必填。版本对账绑定列表。",
                         "items": {
                             "type": "object",
-                            "additionalProperties": True,
                             "properties": {
-                                "version": {"type": "string"},
-                                "target_status": {"type": "string"},
-                                "accepted_commit": {"type": "string"},
-                                "accepted_commit_subject": {"type": "string"},
-                                "commit_files": {"type": "array", "items": {"type": "string"}},
-                                "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                                "evidence_summary": {"type": "string"},
-                                "reason": {"type": "string"},
+                                "version": {"type": "string", "pattern": "\\S"},
+                                "target_status": {"type": "string", "enum": ["PASSED", "NOT_STARTED"]},
+                                "accepted_commit": {"type": "string", "pattern": "^[0-9a-fA-F]{40}$"},
+                                "accepted_commit_subject": {"type": "string", "pattern": "\\S"},
+                                "commit_files": {
+                                    "type": "array",
+                                    "items": {"type": "string", "pattern": "\\S"},
+                                },
+                                "evidence_refs": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {"type": "string", "pattern": "\\S"},
+                                },
+                                "evidence_summary": {"type": "string", "pattern": "\\S"},
+                                "reason": {"type": "string", "pattern": "\\S"},
                             },
+                            "required": ["version", "target_status", "reason"],
+                            "allOf": [
+                                {
+                                    "if": {
+                                        "properties": {"target_status": {"const": "PASSED"}},
+                                        "required": ["target_status"],
+                                    },
+                                    "then": {
+                                        "required": ["accepted_commit", "accepted_commit_subject"],
+                                    },
+                                },
+                                {
+                                    "anyOf": [
+                                        {"required": ["evidence_refs"]},
+                                        {"required": ["evidence_summary"]},
+                                    ],
+                                },
+                            ],
+                            "additionalProperties": False,
                         },
                     },
                     "run_id": {"type": "string", "description": "status 可选。执行器运行 ID。"},
@@ -3769,6 +3808,8 @@ def build_mcp_tool_definitions(
                     "include_report_markdown": {"type": "boolean", "default": False, "description": "run_once 可选。是否返回报告 markdown。默认 false。"},
                     "max_report_chars": {"type": "integer", "default": 30000, "minimum": 1, "maximum": 60000, "description": "run_once 可选。报告 markdown 最大字符数。默认 30000，最大 60000。"},
                     "executor_session_mode": {"type": "string", "enum": ["auto", "resume_existing", "start_new"], "default": "auto", "description": "run_once 可选。执行器会话模式：auto（默认）使用自动续接决策；resume_existing 要求续接现有会话；start_new 启动新会话。默认 auto。"},
+                    "executor_authority_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "仅 run_once_preview/run_once 且 executor_session_mode=start_new 可用。必须与 admission_sha256 成对提供；仅作为私有输入由执行 gate 验证，不在公开输出中返回。"},
+                    "admission_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "仅 run_once_preview/run_once 且 executor_session_mode=start_new 可用。必须与 executor_authority_id 成对提供；仅作为私有输入由执行 gate 验证，不在公开输出中返回。"},
                     "reason": {"type": "string", "description": "可选。执行理由说明。"},
                     "max_iterations": {"type": "integer", "default": 1, "minimum": 1, "maximum": 3, "description": "run_bounded 可选。循环轮数，默认 1，最小 1，最大 3。"},
                     "trusted_mode": {"type": "boolean", "default": False, "description": "run_bounded 可选。仅 trusted_mode=true 时允许 max_iterations>1。默认 false。"},
@@ -3786,6 +3827,54 @@ def build_mcp_tool_definitions(
                     "max_chars": {"type": "integer", "default": 20000, "minimum": 1, "maximum": 60000, "description": "get_audit_package 可选。返回字符上限。"},
                 },
                 "required": ["action"],
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {
+                                "action": {"const": "state_lineage_reconciliation_preview"},
+                            },
+                            "required": ["action"],
+                        },
+                        "then": {
+                            "required": ["expected_head", "target_next_version", "bindings"],
+                        },
+                    },
+                    {
+                        "if": {"required": ["executor_authority_id"]},
+                        "then": {"required": ["admission_sha256"]},
+                    },
+                    {
+                        "if": {"required": ["admission_sha256"]},
+                        "then": {"required": ["executor_authority_id"]},
+                    },
+                    {
+                        "if": {
+                            "anyOf": [
+                                {"required": ["executor_authority_id"]},
+                                {"required": ["admission_sha256"]},
+                            ]
+                        },
+                        "then": {
+                            "properties": {
+                                "action": {"enum": ["run_once_preview", "run_once"]},
+                                "executor_session_mode": {"const": "start_new"},
+                            },
+                            "required": ["executor_session_mode"],
+                        },
+                    },
+                    {
+                        "if": {
+                            "properties": {
+                                "action": {"enum": ["run_once_preview", "run_once"]},
+                                "executor_session_mode": {"const": "start_new"},
+                            },
+                            "required": ["action", "executor_session_mode"],
+                        },
+                        "then": {
+                            "required": ["executor_authority_id", "admission_sha256"]
+                        },
+                    },
+                ],
                 "additionalProperties": False,
             },
             output_schema=common_output_schema,

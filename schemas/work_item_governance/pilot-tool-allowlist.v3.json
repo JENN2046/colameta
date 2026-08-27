@@ -4,7 +4,7 @@
   "exposure_profile": "authoritative_canary",
   "scope_mode": "bounded_single_project_pilot.v1",
   "default_policy": "deny",
-  "expected_tool_count": 14,
+  "expected_tool_count": 16,
   "enforcement": {
     "tool_definitions": "exact_match_required",
     "central_dispatch": "exact_match_required",
@@ -24,6 +24,8 @@
     {"name": "get_execution_attempt_dispatch_authority", "class": "read", "scope": "mcp:read", "active_lease_required": true, "bound_work_item_required": true, "execution_receipt_recheck_required": true},
     {"name": "preview_work_item_create", "class": "preview", "scope": "mcp:preview", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": false, "scope_envelope_required": true},
     {"name": "preview_work_item_transition", "class": "preview", "scope": "mcp:preview", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true, "scope_envelope_required": true},
+    {"name": "preview_execution_attempt_create", "class": "preview", "scope": "mcp:preview", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true, "scope_envelope_required": true, "result_constraint": "opaque Stage-bound grant identity with zero domain writes"},
+    {"name": "apply_execution_attempt_create", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true, "execution_receipt_required": true, "constraint": "exact signed grant target only"},
     {"name": "apply_work_item_create", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": false, "atomic_first_binding": true},
     {"name": "add_task_version", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true},
     {"name": "create_execution_attempt", "class": "write", "scope": "mcp:commit", "active_lease_required": true, "sealed_request_context_required": true, "bound_work_item_required": true, "execution_receipt_required": true},

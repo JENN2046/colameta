@@ -25,6 +25,7 @@ from runner.executor_registry import (
     normalize_execution_provider,
 )
 from runner.executor_inventory import get_executor_inventory_summary
+from runner.executor_events import public_executor_projection
 from runner.project_identity import build_project_identity
 from runner.product_console import (
     build_product_console_map,
@@ -37,6 +38,7 @@ from runner.mcp_executor_workflow import (
     CLAIM_HEARTBEAT_STALE_MULTIPLIER,
     CLAIM_HEARTBEAT_STALE_MIN_SECONDS,
     CLAIMS_DIR,
+    MCPExecutorWorkflowManager,
     PREVIEWS_DIR,
 )
 from runner.execution_profile import resolve_version_execution_provider, get_version_execution_summary
@@ -44,7 +46,6 @@ from runner.workspace import ProjectWorkspace
 from runner.plan_loader import PlanLoader
 from runner.state_store import StateStore
 from runner.state_machine import RunnerStateMachine
-from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_git_remote import MCPGitRemoteManager
 from runner.mcp_decisions import MCPDecisionRecordsManager
@@ -62,6 +63,7 @@ from runner.project_registry import ProjectRegistry
 from runner.runner_settings import RunnerSettingsStore
 from runner.executor_session import (
     ExecutorSessionStore,
+    public_executor_session_projection,
     select_executor_identity_for_display,
 )
 from runner.continuation_snapshot import (
@@ -96,6 +98,78 @@ from runner.stable_promotion_readiness import DEFAULT_STABLE_RUNTIME_DIR
 
 WEB_CSRF_HEADER = "X-ColaMeta-CSRF"
 WEB_READ_AUTH_HEADER = "X-ColaMeta-Read-Auth"
+_PUBLIC_EXECUTOR_WEB_RESULT_FIELDS = frozenset({
+    "ok", "status", "action", "error_code", "message", "provider",
+    "execution_mode", "version", "run_id", "preview_id", "report_id",
+    "workflow_id", "started", "active", "claimed", "claim_status",
+    "created_at", "started_at", "finished_at", "updated_at", "blockers",
+    "warnings", "next_action", "continuation_decision", "session_mode",
+    "model", "model_source", "reasoning_effort", "reasoning_effort_source",
+    "work_item_id", "task_version", "attempt_id", "artifact_refs",
+})
+_PUBLIC_EXECUTOR_WEB_NOTICE_FIELDS = frozenset({
+    "code", "error_code", "message", "reason", "status", "field", "path",
+    "kind", "severity",
+})
+_PUBLIC_EXECUTOR_WEB_NEXT_ACTION_FIELDS = frozenset({
+    "action", "tool", "reason", "label", "requires_confirmation",
+})
+_PUBLIC_EXECUTOR_WEB_DECISION_FIELDS = frozenset({
+    "ok", "schema_version", "classification", "resume_allowed",
+    "start_new_allowed", "recommended_action", "reason", "severity",
+    "decision_source", "requested_provider", "selected_provider",
+    "provider_matches", "identity_present", "provider_resume_supported",
+    "resume_invocation_verified", "continuation_available",
+    "session_resume_available", "should_resume", "should_start_new",
+    "manual_confirmation_required", "hard_blockers", "resume_blockers",
+    "risk_level", "risk_warnings", "resume_warnings", "next_action_hint",
+    "decision_owner", "decision", "decision_reason", "recommended_default",
+    "policy", "actual_executor_resume_attempted",
+})
+
+
+def public_executor_web_projection(value: Any) -> dict[str, Any]:
+    """Return the exact public Web shape for executor workflow outcomes."""
+    projected = public_executor_projection(value)
+    if not isinstance(projected, dict):
+        return {}
+    result = {
+        key: projected[key]
+        for key in _PUBLIC_EXECUTOR_WEB_RESULT_FIELDS
+        if key in projected
+    }
+    for key in ("blockers", "warnings"):
+        notices = result.get(key)
+        if not isinstance(notices, list):
+            continue
+        result[key] = [
+            (
+                {
+                    field: item[field]
+                    for field in _PUBLIC_EXECUTOR_WEB_NOTICE_FIELDS
+                    if field in item
+                }
+                if isinstance(item, dict)
+                else item
+            )
+            for item in notices
+            if isinstance(item, (str, dict))
+        ]
+    if isinstance(result.get("next_action"), dict):
+        result["next_action"] = {
+            key: result["next_action"][key]
+            for key in _PUBLIC_EXECUTOR_WEB_NEXT_ACTION_FIELDS
+            if key in result["next_action"]
+        }
+    if isinstance(result.get("continuation_decision"), dict):
+        result["continuation_decision"] = {
+            key: result["continuation_decision"][key]
+            for key in _PUBLIC_EXECUTOR_WEB_DECISION_FIELDS
+            if key in result["continuation_decision"]
+        }
+    return result
+
+
 SENSITIVE_WEB_GET_PATHS = frozenset({
     "/api/status",
     "/api/v2/status",
@@ -549,7 +623,8 @@ class WebConsoleServer:
                 self.operation_name = ""
                 self.operation_started_at = None
                 self._active_project_operation_lease = None
-            project_lease.release()
+            if project_lease is not None:
+                project_lease.release()
 
     def _load_runtime_context(self) -> tuple[ProjectWorkspace, Any, Any, StateStore, RunnerStateMachine]:
         workspace = ProjectWorkspace.from_project_path(self.project_root)
@@ -781,13 +856,13 @@ class WebConsoleServer:
                     return
                 if path == "/api/run-current-version":
                     self._send_json(server._with_dangerous_action_receipt(
-                        server._api_run_current_version(),
+                        server._api_run_current_version(body or {}),
                         dangerous_receipt,
                     ))
                     return
                 if path == "/api/fix-current-version":
                     self._send_json(server._with_dangerous_action_receipt(
-                        server._api_fix_current_version(),
+                        server._api_fix_current_version(body or {}),
                         dangerous_receipt,
                     ))
                     return
@@ -2696,8 +2771,10 @@ class WebConsoleServer:
             requested_provider
         )
         projection = captured.project(requested_provider)
-        session_status = dict(captured.session_status)
-        preview = dict(captured.continuation_preview)
+        projected_session = public_executor_session_projection(captured.session_status)
+        projected_preview = public_executor_projection(captured.continuation_preview)
+        session_status = dict(projected_session) if isinstance(projected_session, dict) else {}
+        preview = dict(projected_preview) if isinstance(projected_preview, dict) else {}
         decision = projection["canonical_continuation_decision"]
         invocation = projection["resume_invocation_preview"]
         classification = decision["head_mismatch_classification"]
@@ -3072,10 +3149,17 @@ class WebConsoleServer:
         result = operation.get("result") if isinstance(operation, dict) else None
         return result if isinstance(result, dict) else operation
 
-    def _job_operation_callable(self, operation: str):
+    def _job_operation_callable(
+        self, operation: str, payload: dict[str, Any] | None = None
+    ):
+        request_params = dict(payload or {})
         operations = {
-            "run_current_version": lambda: self._api_execute_current_version("run", wrap=False),
-            "fix_current_version": lambda: self._api_execute_current_version("fix", wrap=False),
+            "run_current_version": lambda: self._api_execute_current_version(
+                "run", wrap=False, request_params=request_params
+            ),
+            "fix_current_version": lambda: self._api_execute_current_version(
+                "fix", wrap=False, request_params=request_params
+            ),
             "rerun_acceptance": lambda: self._api_rerun_acceptance(wrap=False),
             "checkpoint_review": lambda: self._api_checkpoint_review(wrap=False),
             "commit_confirm": lambda: self._api_commit_confirm(wrap=False),
@@ -3084,7 +3168,7 @@ class WebConsoleServer:
 
     def _api_start_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         operation = str(payload.get("operation") or "").strip()
-        fn = self._job_operation_callable(operation)
+        fn = self._job_operation_callable(operation, payload)
         if fn is None:
             return {
                 "ok": False,
@@ -3092,20 +3176,23 @@ class WebConsoleServer:
                 "message": "当前操作不可用。",
             }
 
-        project_lease = ProjectOperationLease(
-            self.project_root,
-            operation_kind=operation,
-            surface="web_job",
-        ).acquire()
-        if not project_lease.held:
-            return {
-                "ok": False,
-                "error_code": project_lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE",
-                "message": "当前项目已有跨进程操作，或项目操作锁不可用。",
-            }
+        project_lease: ProjectOperationLease | None = None
+        if operation not in {"run_current_version", "fix_current_version"}:
+            project_lease = ProjectOperationLease(
+                self.project_root,
+                operation_kind=operation,
+                surface="web_job",
+            ).acquire()
+            if not project_lease.held:
+                return {
+                    "ok": False,
+                    "error_code": project_lease.error_code or "PROJECT_OPERATION_LEASE_UNAVAILABLE",
+                    "message": "当前项目已有跨进程操作，或项目操作锁不可用。",
+                }
         with self.operation_lock:
             if self.operation_running or self.job.get("status") == "running":
-                project_lease.release()
+                if project_lease is not None:
+                    project_lease.release()
                 return {
                     "ok": False,
                     "error_code": "JOB_ALREADY_RUNNING",
@@ -3144,7 +3231,8 @@ class WebConsoleServer:
                 self.operation_started_at = None
                 self._active_project_operation_lease = None
                 self.job = {"status": "idle"}
-            project_lease.release()
+            if project_lease is not None:
+                project_lease.release()
             raise
         return {
             "ok": True,
@@ -3159,7 +3247,7 @@ class WebConsoleServer:
         job_id: str,
         operation: str,
         fn,
-        project_lease: ProjectOperationLease,
+        project_lease: ProjectOperationLease | None,
     ) -> None:
         try:
             started_at = self.operation_started_at or self._now_iso()
@@ -3182,7 +3270,8 @@ class WebConsoleServer:
                 self.operation_name = ""
                 self.operation_started_at = None
                 self._active_project_operation_lease = None
-            project_lease.release()
+            if project_lease is not None:
+                project_lease.release()
 
     def _api_job_status(self) -> dict[str, Any]:
         with self.operation_lock:
@@ -3281,7 +3370,12 @@ class WebConsoleServer:
             return "当前版本运行完成，验收通过。"
         return "当前版本运行完成，验收未通过。"
 
-    def _api_execute_current_version(self, mode: str, wrap: bool = True) -> dict[str, Any]:
+    def _api_execute_current_version(
+        self,
+        mode: str,
+        wrap: bool = True,
+        request_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         def _do() -> dict[str, Any]:
             workspace, plan, state, _, _ = self._load_runtime_context()
 
@@ -3334,71 +3428,73 @@ class WebConsoleServer:
                     "message": "当前版本尚未进入修复执行阶段。请先在终端按 F 准备修复提示词。",
                 }
 
-            service = ExecutorRunOnceService(self.project_root)
             execution_mode = "fix" if is_fix else "run"
-            run_ret = service.run_once(
-                provider=provider,
-                execution_mode=execution_mode,
-                include_diff_summary=True,
-                include_report_markdown=False,
-                max_report_chars=30000,
-                reason="web_console",
-                operation_lease=self._active_project_operation_lease,
-            )
-            if not run_ret.get("ok"):
-                return {
-                    "ok": False,
-                    "error_code": str(run_ret.get("error_code") or "EXECUTOR_FAILED"),
-                    "message": str(run_ret.get("message") or "执行器运行失败。"),
-                    "provider": provider,
-                    "execution_mode": execution_mode,
-                    "classification": run_ret.get("classification"),
-                    "blocks": run_ret.get("blocks", []),
-                    "warnings": run_ret.get("warnings", []),
-                    "log_path": run_ret.get("log_path", ""),
-                }
-
-            run_status = str(run_ret.get("run_status") or "")
-            scope_status = str(run_ret.get("scope_status") or "NOT_CHECKED")
-            message = self._build_run_once_message(
-                run_status=run_status,
-                scope_status=scope_status,
-                execution_mode=execution_mode,
-            )
-            lineage = {}
-            report_summary = run_ret.get("report_summary", {})
-            if isinstance(report_summary, dict) and isinstance(report_summary.get("execution_lineage"), dict):
-                lineage = report_summary.get("execution_lineage", {})
-
-            return {
-                "ok": True,
-                "message": message,
+            incoming = request_params if isinstance(request_params, dict) else {}
+            workflow_params: dict[str, Any] = {
                 "provider": provider,
                 "execution_mode": execution_mode,
-                "run_status": run_status,
-                "runner_status": run_ret.get("runner_status"),
-                "audit_file": run_ret.get("audit_file", ""),
-                "scope_status": scope_status,
-                "failed_command_indexes": run_ret.get("failed_command_indexes", []),
-                "command_results": run_ret.get("command_results", []),
-                "log_path": run_ret.get("log_path", ""),
-                "summary_path": run_ret.get("summary_path", ""),
-                "summary": "",
-                "attempted_resume": bool(lineage.get("attempted_resume", False)),
-                "used_resume": bool(lineage.get("used_resume", False)),
-                "fallback_to_new_session": bool(lineage.get("fallback_to_new_session", False)),
-                "resume_failed_reason": lineage.get("resume_failed_reason"),
-                "command_shape": lineage.get("command_shape"),
-                "version": run_ret.get("version") or state.current_version,
+                "executor_session_mode": incoming.get(
+                    "executor_session_mode", "auto"
+                ),
+                "reason": "web_console",
+                "profile_id": "local_codex_commander",
+            }
+            for key in ("executor_authority_id", "admission_sha256", "model"):
+                if key in incoming:
+                    workflow_params[key] = incoming[key]
+
+            manager = MCPExecutorWorkflowManager(self.project_root)
+            preview_ret = manager.handle("run_once_preview", workflow_params)
+            if not preview_ret.get("ok"):
+                projected_preview = public_executor_web_projection(preview_ret)
+                return projected_preview if isinstance(projected_preview, dict) else {
+                    "ok": False,
+                    "error_code": "EXECUTOR_PREVIEW_FAILED",
+                    "message": "Executor governed preview failed.",
+                }
+            preview_id = str(preview_ret.get("preview_id") or "")
+            if not preview_id:
+                return {
+                    "ok": False,
+                    "error_code": "EXECUTOR_PREVIEW_ID_MISSING",
+                    "message": "Executor governed preview did not produce an id.",
+                }
+            run_ret = manager.handle(
+                "run_once",
+                {**workflow_params, "preview_id": preview_id},
+            )
+            if not run_ret.get("ok"):
+                projected_run = public_executor_web_projection(run_ret)
+                return projected_run if isinstance(projected_run, dict) else {
+                    "ok": False,
+                    "error_code": "EXECUTOR_RUN_FAILED",
+                    "message": "Executor governed run failed.",
+                }
+            projected_run = public_executor_web_projection(run_ret)
+            if not isinstance(projected_run, dict):
+                return {
+                    "ok": False,
+                    "error_code": "EXECUTOR_RESULT_INVALID",
+                    "message": "Executor governed result is invalid.",
+                }
+            return {
+                **projected_run,
+                "message": "执行器 governed preview 已认领，后台运行已启动。",
+                "provider": provider,
+                "execution_mode": execution_mode,
+                "version": state.current_version,
             }
 
-        operation_name = "fix_current_version" if mode == "fix" else "run_current_version"
-        if not wrap:
-            return _do()
-        return self._run_operation(operation_name, _do)
+        # MCPExecutorWorkflowManager owns the operation lease and claim.  An
+        # outer Web operation lease would deadlock the same governed run.
+        return _do()
 
-    def _api_run_current_version(self) -> dict[str, Any]:
-        return self._api_execute_current_version("run")
+    def _api_run_current_version(
+        self, request_params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._api_execute_current_version(
+            "run", request_params=request_params
+        )
 
     def _api_run_current_version_preview(self) -> dict[str, Any]:
         def _do() -> dict[str, Any]:
@@ -3426,8 +3522,12 @@ class WebConsoleServer:
     def _api_run_current_version_confirm_with_project(self) -> dict[str, Any]:
         return self._api_run_current_version()
 
-    def _api_fix_current_version(self) -> dict[str, Any]:
-        return self._api_execute_current_version("fix")
+    def _api_fix_current_version(
+        self, request_params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._api_execute_current_version(
+            "fix", request_params=request_params
+        )
 
     def _api_reload_plan(self) -> dict[str, Any]:
         def _do() -> dict[str, Any]:
@@ -3935,6 +4035,21 @@ class WebConsoleServer:
                 self.project_root, "latest_run_status", {}
             )
             live_data = inspect_result.get("live")
+            if (
+                inspect_result.get("ok") is False
+                and str(inspect_result.get("status") or "") == "integrity_failed"
+            ):
+                return {
+                    "ok": False,
+                    "available": True,
+                    "status": "integrity_failed",
+                    "terminal": True,
+                    "error_code": str(
+                        inspect_result.get("error_code")
+                        or "EVENT_INTEGRITY_FAILED"
+                    ),
+                    "events": [],
+                }
             if isinstance(live_data, dict) and inspect_result.get("ok") and live_data.get("available"):
                 self._enrich_live_run_progress_status(live_data)
                 return self._with_executor_identity_display(

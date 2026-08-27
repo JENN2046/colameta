@@ -41,6 +41,10 @@ WORK_ITEM_APPLY_TOOLS = (
     "record_outbox_delivery_result",
     "recover_outbox_event",
 )
+WORK_ITEM_AUTHORITY_BRIDGE_TOOLS = (
+    "preview_execution_attempt_create",
+    "apply_execution_attempt_create",
+)
 WORK_ITEM_MCP_TOOLS = WORK_ITEM_READ_TOOLS + WORK_ITEM_PREVIEW_TOOLS + WORK_ITEM_APPLY_TOOLS
 AUTHORITATIVE_CANARY_MCP_TOOLS = AUTHORITATIVE_CANARY_TOOLS
 BOUNDED_PILOT_MCP_TOOLS = PILOT_TOOLS
@@ -131,6 +135,21 @@ def work_item_mcp_tool_specs(
         },
         ["command"],
     )
+    attempt_preview_schema = schema(
+        {
+            "command": {"type": "object", "additionalProperties": True},
+            "execution_context": {"type": "object", "additionalProperties": True},
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+        },
+        ["command", "execution_context"],
+    )
+    attempt_apply_schema = schema(
+        {
+            "grant_id": {"type": "string", "minLength": 1},
+            "execution_context": {"type": "object", "additionalProperties": True},
+        },
+        ["grant_id", "execution_context"],
+    )
     apply_schema = schema(
         {"preview": {"type": "object", "additionalProperties": True}},
         ["preview"],
@@ -156,6 +175,15 @@ def work_item_mcp_tool_specs(
                 "openWorldHint": False,
                 "idempotentHint": True,
             }
+        elif name == "preview_execution_attempt_create":
+            input_schema = attempt_preview_schema
+            scope = "mcp:preview"
+            annotations = {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+                "idempotentHint": False,
+            }
         elif name in WORK_ITEM_PREVIEW_TOOLS:
             input_schema = preview_schema
             scope = "mcp:preview"
@@ -164,6 +192,15 @@ def work_item_mcp_tool_specs(
                 "destructiveHint": False,
                 "openWorldHint": False,
                 "idempotentHint": False,
+            }
+        elif name == "apply_execution_attempt_create":
+            input_schema = attempt_apply_schema
+            scope = "mcp:commit"
+            annotations = {
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+                "idempotentHint": True,
             }
         elif name in {
             "apply_work_item_create",

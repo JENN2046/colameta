@@ -1957,7 +1957,7 @@ def test_operator_outer_error_response_does_not_expose_exception_details(tmp_pat
         "project_name": "project",
         "operations": [_commit_operation("commit", "preview_3901")],
     })
-    assert result["error_code"] == "OPERATOR_REQUEST_FAILED"
+    assert result["error_code"] == "INTERNAL_ERROR"
     assert "details" not in result
     assert "/private/project/path" not in json.dumps(result)
 
@@ -2061,9 +2061,7 @@ def test_execute_scope_gate_binds_requested_digest_before_handler_ticket_race(
     result = server._call_tool("run_mcp_workflow", params, auth_context=auth)
 
     assert result["ok"] is False
-    assert result["error_code"] == "INSUFFICIENT_SCOPE"
-    assert result["details"]["required_scopes"] == ["mcp:commit", "mcp:plan"]
-    assert result["details"]["missing_scopes"] == ["mcp:commit"]
+    assert result["error_code"] == "SCOPE_VIOLATION"
     assert swap_attempted is True
     assert dispatch_calls == []
     assert permits.read(plan_preview["batch_preview_id"])["state"] == "pending"
@@ -2313,7 +2311,7 @@ def test_exact_plan_patch_dispatch_does_not_apply_second_pending_patch(tmp_path:
             "description": f"description {version}",
             "prompt": f"prompt {version}",
             "allowed_files": ["runner/**"],
-            "acceptance_commands": ["python -m pytest -q"],
+            "acceptance_commands": ["git diff --check"],
         }
 
     selected = bridge.preview_insert_version(str(project), spec("v1"))

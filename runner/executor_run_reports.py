@@ -16,6 +16,11 @@ from runner.executor_validation_truth import (
     summarize_legacy_validation_results,
     validation_truth_from_summary,
 )
+from runner.executor_events import (
+    ExecutorEventStore,
+    public_executor_projection,
+    read_trusted_owned_regular_file,
+)
 from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 REPORTS_SUBDIR = primary_project_runner_relpath("reports", "executor-runs")
@@ -30,6 +35,352 @@ MAX_COMMITTED_FILES = 200
 REPORT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 VERSION_SAFE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_REPORT_ID_RETRIES = 5
+
+_REPORT_REQUIRED_FIELDS = frozenset({
+    "schema_version", "project_root", "version", "version_name", "provider",
+    "execution_mode", "status", "started_at", "finished_at", "report_id",
+    "json_file", "markdown_file", "commit_head_before", "commit_head_after",
+    "changed_files", "log_file", "audit_file", "summary", "execution_lineage",
+    "completion_evidence", "token_usage", "report_markdown",
+    "report_markdown_full_length", "report_markdown_full_available", "truncated",
+})
+_REPORT_OPTIONAL_FIELDS = frozenset({
+    "work_item_id", "task_version", "attempt_id", "artifact_refs",
+})
+_REPORT_STRING_FIELDS = frozenset({
+    "schema_version", "project_root", "version", "version_name", "provider",
+    "execution_mode", "status", "started_at", "finished_at", "report_id",
+    "json_file", "markdown_file", "commit_head_before", "commit_head_after",
+    "log_file", "audit_file", "report_markdown", "work_item_id", "attempt_id",
+})
+_REPORT_SUMMARY_REQUIRED_FIELDS = frozenset({
+    "changed_files", "validation_results", "validation_status_summary",
+    "validation_inconsistent", "validation_inconsistency_reasons",
+    "validation_truth_source", "validation_command_count",
+    "validation_failed_command_count", "validation_command_records",
+    "validation_sample", "risk_and_followups", "executor_report_available",
+    "executor_report_full_length", "executor_report_preview_length",
+    "executor_report_preview_truncated",
+})
+_VALIDATION_COMMAND_REQUIRED_FIELDS = frozenset({
+    "id", "command_index", "command", "original_command", "executed_command",
+    "status", "status_recorded", "derived_status", "exit_code", "stdout_excerpt",
+    "stdout_truncated", "stderr_excerpt", "stderr_truncated", "source",
+    "inconsistency_reasons", "inconsistency_reason",
+})
+_VALIDATION_COMMAND_OPTIONAL_FIELDS = frozenset({"raw_summary"})
+_REPORT_LINEAGE_DEFAULTS: dict[str, Any] = {
+    "attempted_resume": False,
+    "actual_executor_resume_attempted": False,
+    "used_resume": False,
+    "fallback_to_new_session": False,
+    "resume_failed_reason": "",
+    "command_shape": "",
+    "continuation_decision": "",
+    "continuation_decision_reason": "",
+    "continuation_available_before_run": False,
+    "identity_kind": "",
+    "identity_present": False,
+    "resume_identity_present": False,
+    "conversation_identity_present": False,
+    "provider_matches": False,
+    "provider_resume_supported": False,
+    "session_resume_available": False,
+    "resume_invocation_verified": False,
+    "risk_warnings": [],
+    "resume_warnings": [],
+    "hard_blockers": [],
+    "resume_blockers": [],
+}
+_REPORT_LINEAGE_OPTIONAL_FIELDS = frozenset({
+    "run_id", "preview_id", "preview_claimed_at", "preview_claim_status", "model",
+    "model_source", "reasoning_effort", "reasoning_effort_source", "prompt_file",
+    "prompt_sha256", "prompt_sha256_status", "executor_authority_id",
+    "admission_sha256", "version", "provider", "execution_mode", "work_item_id",
+    "task_version", "attempt_id", "artifact_refs", "session_id_full",
+})
+_REPORT_LINEAGE_FIELDS = frozenset(_REPORT_LINEAGE_DEFAULTS) | _REPORT_LINEAGE_OPTIONAL_FIELDS
+_REPORT_LINEAGE_STRING_FIELDS = frozenset({
+    "resume_failed_reason", "command_shape", "continuation_decision",
+    "continuation_decision_reason", "identity_kind", "run_id", "preview_id",
+    "preview_claimed_at", "preview_claim_status", "model", "model_source",
+    "reasoning_effort", "reasoning_effort_source", "prompt_file", "prompt_sha256",
+    "prompt_sha256_status", "executor_authority_id", "admission_sha256", "version",
+    "provider", "execution_mode", "work_item_id", "attempt_id", "session_id_full",
+})
+_REPORT_LINEAGE_BOOL_FIELDS = frozenset({
+    "attempted_resume", "actual_executor_resume_attempted", "used_resume",
+    "fallback_to_new_session", "continuation_available_before_run",
+    "identity_present", "resume_identity_present", "conversation_identity_present",
+    "provider_matches", "provider_resume_supported", "session_resume_available",
+    "resume_invocation_verified",
+})
+_REPORT_LINEAGE_LIST_FIELDS = frozenset({
+    "risk_warnings", "resume_warnings", "hard_blockers", "resume_blockers",
+    "artifact_refs",
+})
+
+
+def _string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _validate_validation_command_record(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    keys = frozenset(value)
+    if not _VALIDATION_COMMAND_REQUIRED_FIELDS.issubset(keys) or not keys.issubset(
+        _VALIDATION_COMMAND_REQUIRED_FIELDS | _VALIDATION_COMMAND_OPTIONAL_FIELDS
+    ):
+        return False
+    string_fields = (
+        _VALIDATION_COMMAND_REQUIRED_FIELDS
+        - {"command_index", "exit_code", "stdout_truncated", "stderr_truncated", "inconsistency_reasons"}
+    ) | _VALIDATION_COMMAND_OPTIONAL_FIELDS
+    if any(not isinstance(value.get(field), str) for field in string_fields & keys):
+        return False
+    if type(value.get("command_index")) is not int or value["command_index"] < 1:
+        return False
+    exit_code = value.get("exit_code")
+    if exit_code is not None and type(exit_code) is not int:
+        return False
+    if type(value.get("stdout_truncated")) is not bool or type(value.get("stderr_truncated")) is not bool:
+        return False
+    return _string_list(value.get("inconsistency_reasons"))
+
+
+def _validate_report_summary(value: Any) -> bool:
+    if not isinstance(value, dict) or frozenset(value) != _REPORT_SUMMARY_REQUIRED_FIELDS:
+        return False
+    for field in (
+        "changed_files", "validation_results", "validation_inconsistency_reasons",
+        "validation_sample", "risk_and_followups",
+    ):
+        if not _string_list(value.get(field)):
+            return False
+    for field in ("validation_status_summary", "validation_truth_source"):
+        if not isinstance(value.get(field), str):
+            return False
+    for field in (
+        "validation_inconsistent", "executor_report_available",
+        "executor_report_preview_truncated",
+    ):
+        if type(value.get(field)) is not bool:
+            return False
+    for field in (
+        "validation_command_count", "validation_failed_command_count",
+        "executor_report_full_length", "executor_report_preview_length",
+    ):
+        if type(value.get(field)) is not int or value[field] < 0:
+            return False
+    records = value.get("validation_command_records")
+    return isinstance(records, list) and all(
+        _validate_validation_command_record(item) for item in records
+    )
+
+
+def _validate_report_lineage(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    keys = frozenset(value)
+    if not frozenset(_REPORT_LINEAGE_DEFAULTS).issubset(keys) or not keys.issubset(
+        _REPORT_LINEAGE_FIELDS
+    ):
+        return False
+    if any(not isinstance(value.get(field), str) for field in _REPORT_LINEAGE_STRING_FIELDS & keys):
+        return False
+    if any(type(value.get(field)) is not bool for field in _REPORT_LINEAGE_BOOL_FIELDS):
+        return False
+    if any(not _string_list(value.get(field)) for field in _REPORT_LINEAGE_LIST_FIELDS & keys):
+        return False
+    if "task_version" in value and (type(value["task_version"]) is not int or value["task_version"] < 1):
+        return False
+    authority_fields = {"executor_authority_id", "admission_sha256"}
+    if bool(keys & authority_fields) != authority_fields.issubset(keys):
+        return False
+    if authority_fields.issubset(keys) and (
+        re.fullmatch(r"[0-9a-f]{32}", value["executor_authority_id"]) is None
+        or re.fullmatch(r"[0-9a-f]{64}", value["admission_sha256"]) is None
+    ):
+        return False
+    run_fields = {"run_id", "preview_id"}
+    if bool(keys & run_fields) != run_fields.issubset(keys):
+        return False
+    work_fields = {"work_item_id", "task_version", "attempt_id", "artifact_refs"}
+    if bool(keys & work_fields) != work_fields.issubset(keys):
+        return False
+    if work_fields.issubset(keys) and optional_work_item_reference_rejections(
+        {field: value[field] for field in work_fields}
+    ):
+        return False
+    return True
+
+
+def _normalize_report_lineage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not frozenset(value).issubset(_REPORT_LINEAGE_FIELDS):
+        raise ValueError("REPORT_LINEAGE_FIELDS_INVALID")
+    normalized = {
+        key: list(default) if isinstance(default, list) else default
+        for key, default in _REPORT_LINEAGE_DEFAULTS.items()
+    }
+    normalized.update(value)
+    if not _validate_report_lineage(normalized):
+        raise ValueError("REPORT_LINEAGE_TYPES_INVALID")
+    return normalized
+
+
+def _validate_report_contract(
+    value: Any,
+    *,
+    expected_project_root: str | None = None,
+    expected_report_id: str | None = None,
+) -> str | None:
+    if not isinstance(value, dict):
+        return "REPORT_CONTRACT_NOT_OBJECT"
+    keys = frozenset(value)
+    if "schema_version" not in keys:
+        return "REPORT_SCHEMA_MISSING"
+    if value.get("schema_version") != SCHEMA_VERSION:
+        return "REPORT_SCHEMA_INVALID"
+    if not _REPORT_REQUIRED_FIELDS.issubset(keys):
+        return "REPORT_CONTRACT_INCOMPLETE"
+    if not keys.issubset(_REPORT_REQUIRED_FIELDS | _REPORT_OPTIONAL_FIELDS):
+        return "REPORT_CONTRACT_FIELDS_INVALID"
+    if any(not isinstance(value.get(field), str) for field in _REPORT_STRING_FIELDS & keys):
+        return "REPORT_CONTRACT_TYPES_INVALID"
+    if expected_project_root is not None and value.get("project_root") != expected_project_root:
+        return "REPORT_PROJECT_ROOT_MISMATCH"
+    if expected_report_id is not None and value.get("report_id") != expected_report_id:
+        return "REPORT_ID_MISMATCH"
+    if not _string_list(value.get("changed_files")):
+        return "REPORT_CONTRACT_TYPES_INVALID"
+    for field in ("report_markdown_full_available", "truncated"):
+        if type(value.get(field)) is not bool:
+            return "REPORT_CONTRACT_TYPES_INVALID"
+    if type(value.get("report_markdown_full_length")) is not int or value["report_markdown_full_length"] < 0:
+        return "REPORT_CONTRACT_TYPES_INVALID"
+    if not _validate_report_summary(value.get("summary")):
+        return "REPORT_SUMMARY_INVALID"
+    if not _validate_report_lineage(value.get("execution_lineage")):
+        return "REPORT_LINEAGE_INVALID"
+    if not isinstance(value.get("completion_evidence"), dict):
+        return "REPORT_CONTRACT_TYPES_INVALID"
+    if value.get("token_usage") is not None and not isinstance(value.get("token_usage"), dict):
+        return "REPORT_CONTRACT_TYPES_INVALID"
+    work_fields = {"work_item_id", "task_version", "attempt_id", "artifact_refs"}
+    if bool(keys & work_fields) != work_fields.issubset(keys):
+        return "REPORT_WORK_TARGET_INCOMPLETE"
+    if work_fields.issubset(keys) and optional_work_item_reference_rejections(
+        {field: value[field] for field in work_fields}
+    ):
+        return "REPORT_WORK_TARGET_INVALID"
+    return None
+
+_PUBLIC_REPORT_FIELDS = frozenset({
+    "schema_version", "project_root", "version", "version_name", "provider",
+    "execution_mode", "status", "started_at", "finished_at", "duration_seconds",
+    "report_id", "json_file", "markdown_file", "commit_head_before",
+    "commit_head_after", "changed_files", "log_file", "audit_file", "summary",
+    "execution_lineage", "completion_evidence", "token_usage",
+    "report_markdown_full_length", "report_markdown_full_available", "truncated",
+    "work_item_id", "task_version", "attempt_id", "artifact_refs", "events",
+})
+_PUBLIC_REPORT_SUMMARY_FIELDS = frozenset({
+    "changed_files", "validation_results", "validation_status_summary",
+    "validation_inconsistent", "validation_inconsistency_reasons",
+    "validation_truth_source", "validation_command_count",
+    "validation_failed_command_count", "validation_command_records",
+    "validation_sample", "risk_and_followups", "executor_report_available",
+    "executor_report_full_length", "executor_report_preview_length",
+    "executor_report_preview_truncated",
+})
+_PUBLIC_REPORT_LINEAGE_FIELDS = frozenset({
+    "run_id", "preview_id", "preview_claimed_at", "preview_claim_status", "model",
+    "model_source", "reasoning_effort", "reasoning_effort_source", "prompt_file",
+    "prompt_sha256", "prompt_sha256_status", "attempted_resume",
+    "actual_executor_resume_attempted", "used_resume", "fallback_to_new_session",
+    "resume_failed_reason", "command_shape", "continuation_decision",
+    "continuation_decision_reason", "continuation_available_before_run",
+    "identity_kind", "identity_present", "resume_identity_present",
+    "conversation_identity_present", "provider_matches", "provider_resume_supported",
+    "session_resume_available", "resume_invocation_verified", "risk_warnings",
+    "resume_warnings", "hard_blockers", "resume_blockers", "work_item_id",
+    "task_version", "attempt_id", "artifact_refs", "session_id_full",
+})
+_PUBLIC_COMPLETION_EVIDENCE_FIELDS = frozenset({
+    "mode", "provider", "version", "allowed_files_present", "allow_no_changes",
+    "executor_changed_files", "validation_commands", "notes", "missing_required_files",
+    "required_changed_files", "classification", "error_code", "interruption_kind",
+    "message", "provider_status", "summary_excerpt", "terminal_reason",
+    "has_partial_worktree", "recovery_options",
+})
+_PUBLIC_TOKEN_USAGE_FIELDS = frozenset({
+    "available", "source", "provider", "prompt_input_tokens", "fresh_input_tokens",
+    "cache_read_tokens", "cache_write_tokens", "output_tokens",
+    "reasoning_output_tokens", "total_tokens", "cache_hit_rate",
+    "cache_hit_rate_percent", "input_tokens", "cached_input_tokens", "warnings",
+})
+_PUBLIC_VALIDATION_COMMAND_FIELDS = frozenset({
+    "id", "command_index", "command", "original_command", "executed_command",
+    "status", "status_recorded", "derived_status", "exit_code", "stdout_excerpt",
+    "stdout_truncated", "stderr_excerpt", "stderr_truncated", "source", "raw_summary",
+    "inconsistency_reasons", "inconsistency_reason",
+})
+
+
+def _allowlisted_public_mapping(value: Any, allowed: frozenset[str]) -> dict[str, Any]:
+    projected = public_executor_projection(value)
+    if not isinstance(projected, dict):
+        return {}
+    return {key: projected[key] for key in allowed if key in projected}
+
+
+def public_executor_report_projection(value: Any) -> dict[str, Any]:
+    """Project one report through the report surface's exact public shape."""
+    report = _allowlisted_public_mapping(value, _PUBLIC_REPORT_FIELDS)
+    if "summary" in report:
+        report["summary"] = _allowlisted_public_mapping(
+            report["summary"], _PUBLIC_REPORT_SUMMARY_FIELDS
+        )
+        command_records = report["summary"].get("validation_command_records")
+        if isinstance(command_records, list):
+            report["summary"]["validation_command_records"] = [
+                _allowlisted_public_mapping(item, _PUBLIC_VALIDATION_COMMAND_FIELDS)
+                for item in command_records
+                if isinstance(item, dict)
+            ]
+    if "execution_lineage" in report:
+        report["execution_lineage"] = _allowlisted_public_mapping(
+            report["execution_lineage"], _PUBLIC_REPORT_LINEAGE_FIELDS
+        )
+    if "completion_evidence" in report:
+        report["completion_evidence"] = _allowlisted_public_mapping(
+            report["completion_evidence"], _PUBLIC_COMPLETION_EVIDENCE_FIELDS
+        )
+        recovery_options = report["completion_evidence"].get("recovery_options")
+        if isinstance(recovery_options, list):
+            report["completion_evidence"]["recovery_options"] = [
+                item for item in recovery_options if isinstance(item, str)
+            ]
+    if "token_usage" in report and isinstance(report["token_usage"], dict):
+        report["token_usage"] = _allowlisted_public_mapping(
+            report["token_usage"], _PUBLIC_TOKEN_USAGE_FIELDS
+        )
+    if "events" in report and isinstance(report["events"], list):
+        report["events"] = [
+            _allowlisted_public_mapping(
+                item,
+                frozenset({
+                    "schema_version", "run_id", "preview_id", "version", "provider",
+                    "execution_mode", "event_type", "phase", "level", "message",
+                    "timestamp", "data", "work_item_id", "task_version", "attempt_id",
+                    "artifact_refs",
+                }),
+            )
+            for item in report["events"]
+            if isinstance(item, dict)
+        ]
+    return report
 
 def _redact_sensitive(text: str) -> str:
     return redact_sensitive_text(text, replacement_token="<redacted>", preserve_token_prefix=False)
@@ -143,6 +494,16 @@ class ExecutorRunReportStore:
             summary_validation_command_records,
             executor_report_text=full_report_md,
         )
+        try:
+            normalized_execution_lineage = _normalize_report_lineage(
+                execution_lineage or {}
+            )
+        except ValueError:
+            return {
+                "ok": False,
+                "error_code": "REPORT_LINEAGE_INVALID",
+                "message": "executor report lineage schema invalid.",
+            }
         work_item_binding: dict[str, Any] = {}
         if any(value is not None for value in (work_item_id, task_version, attempt_id, artifact_refs)):
             work_item_binding = {
@@ -197,7 +558,7 @@ class ExecutorRunReportStore:
                         "executor_report_preview_length": len(report_md),
                         "executor_report_preview_truncated": truncated,
                     },
-                    "execution_lineage": dict(execution_lineage or {}),
+                    "execution_lineage": normalized_execution_lineage,
                     "completion_evidence": dict(completion_evidence or {}),
                     "token_usage": dict(token_usage) if isinstance(token_usage, dict) else None,
                     "report_markdown": report_md,
@@ -206,10 +567,33 @@ class ExecutorRunReportStore:
                     "truncated": truncated,
                 }
                 report.update(work_item_binding)
+                contract_error = _validate_report_contract(
+                    report,
+                    expected_project_root=self.project_root,
+                    expected_report_id=report_id,
+                )
+                if contract_error is not None:
+                    return {
+                        "ok": False,
+                        "error_code": contract_error,
+                        "message": "executor report schema invalid.",
+                    }
                 if os.path.exists(json_file) or os.path.exists(md_file):
                     continue
                 try:
                     self._write_json(json_file, report)
+                    persisted = self._load_json_snapshot(json_file)
+                    if (
+                        not isinstance(persisted, dict)
+                        or persisted.get("data") != report
+                        or _validate_report_contract(
+                            persisted.get("data"),
+                            expected_project_root=self.project_root,
+                            expected_report_id=report_id,
+                        )
+                        is not None
+                    ):
+                        raise OSError("persisted report failed readback verification")
                     self._write_markdown(md_file, report, full_report_md)
                 except FileExistsError:
                     try:
@@ -306,6 +690,11 @@ class ExecutorRunReportStore:
                     report = self._load_json(entry.path)
                     if not isinstance(report, dict):
                         continue
+                    if "report_markdown_full_length" in report and _validate_report_contract(
+                        report,
+                        expected_project_root=self.project_root,
+                    ) is not None:
+                        continue
                     list_entry = self._list_entry(report)
                     sort_key = self._report_sort_key(report, entry.path)
                     reports.append((sort_key, list_entry))
@@ -322,6 +711,7 @@ class ExecutorRunReportStore:
         latest: bool = True,
         include_markdown: bool = True,
         max_markdown_chars: int = MAX_MARKDOWN_CHARS,
+        include_private_lineage: bool = False,
     ) -> dict[str, Any]:
         max_md = max(1, min(max_markdown_chars, 60000))
 
@@ -356,7 +746,12 @@ class ExecutorRunReportStore:
                 "message": "No executor run report found.",
             }
 
-        return self._load_report_file(target_path, include_markdown=include_markdown, max_md=max_md)
+        return self._load_report_file(
+            target_path,
+            include_markdown=include_markdown,
+            max_md=max_md,
+            include_private_lineage=include_private_lineage,
+        )
 
     def get_materialized_audit_package(self, report_id: str) -> dict[str, Any]:
         _validate_report_id(report_id)
@@ -530,15 +925,37 @@ class ExecutorRunReportStore:
             "json_file": str(report.get("json_file", "")),
             "markdown_file": str(report.get("markdown_file", "")),
             "executor_model": executor_model,
-            "token_usage": dict(raw_token_usage) if isinstance(raw_token_usage, dict) else None,
+            "token_usage": (
+                _allowlisted_public_mapping(raw_token_usage, _PUBLIC_TOKEN_USAGE_FIELDS)
+                if isinstance(raw_token_usage, dict)
+                else None
+            ),
         }
 
-    def _load_report_file(self, path: str, *, include_markdown: bool, max_md: int) -> dict[str, Any]:
+    def _load_report_file(
+        self,
+        path: str,
+        *,
+        include_markdown: bool,
+        max_md: int,
+        include_private_lineage: bool = False,
+    ) -> dict[str, Any]:
         if not self._is_under_reports_root(path):
             return {"ok": False, "error_code": "ACCESS_DENIED", "message": "Report path is outside reports directory."}
         report = self._load_json(path)
         if not isinstance(report, dict):
             return {"ok": False, "error_code": "REPORT_LOAD_ERROR", "message": "Failed to parse report file."}
+        if "report_markdown_full_length" in report:
+            contract_error = _validate_report_contract(
+                report,
+                expected_project_root=self.project_root,
+            )
+            if contract_error is not None:
+                return {
+                    "ok": False,
+                    "error_code": contract_error,
+                    "message": "Report contract invalid.",
+                }
         result = {"ok": True, "report": {}}
         report_copy = dict(report)
         report_md = report_copy.pop("report_markdown", "")
@@ -552,7 +969,70 @@ class ExecutorRunReportStore:
             else:
                 result["truncated"] = bool(report.get("truncated", False))
             result["report_markdown"] = redacted
-        return result
+        if include_private_lineage:
+            return result
+        projected_result = public_executor_projection(result)
+        public_result = _allowlisted_public_mapping(
+            projected_result,
+            frozenset({"ok", "report", "report_markdown", "truncated"}),
+        )
+        public_result["report"] = public_executor_report_projection(
+            projected_result.get("report")
+            if isinstance(projected_result, dict)
+            else {}
+        )
+        return public_result
+
+    def read_durable_contract(
+        self,
+        *,
+        report_id: str,
+        expected_run_id: str,
+    ) -> dict[str, Any]:
+        """Read a strict complete report plus its durable file identity."""
+        _validate_report_id(report_id)
+        target_path = self._find_report_by_id(report_id)
+        if target_path is None:
+            return {"ok": False, "error_code": "REPORT_NOT_FOUND"}
+        loaded = self._load_json_snapshot(target_path)
+        report = loaded.get("data") if isinstance(loaded, dict) else None
+        if not isinstance(report, dict):
+            return {"ok": False, "error_code": "REPORT_LOAD_ERROR"}
+        if "schema_version" not in report:
+            return {"ok": False, "error_code": "REPORT_SCHEMA_MISSING"}
+        lineage = report.get("execution_lineage")
+        if isinstance(lineage, dict) and "run_id" not in lineage:
+            return {"ok": False, "error_code": "REPORT_RUN_ID_MISSING"}
+        contract_error = _validate_report_contract(
+            report,
+            expected_project_root=self.project_root,
+            expected_report_id=report_id,
+        )
+        if contract_error is not None:
+            return {"ok": False, "error_code": contract_error}
+        lineage = report.get("execution_lineage")
+        if not isinstance(lineage, dict) or "run_id" not in lineage:
+            return {"ok": False, "error_code": "REPORT_RUN_ID_MISSING"}
+        if lineage.get("run_id") != expected_run_id:
+            return {"ok": False, "error_code": "REPORT_RUN_ID_MISMATCH"}
+        if ExecutorEventStore._surface_private_lineage(report, expected_run_id) is None:
+            return {"ok": False, "error_code": "REPORT_LINEAGE_INVALID"}
+        snapshot = loaded.get("snapshot")
+        if not isinstance(snapshot, dict):
+            return {"ok": False, "error_code": "REPORT_DURABLE_IDENTITY_MISSING"}
+        contract = ExecutorEventStore.immutable_surface_contract(report)
+        return {
+            "ok": True,
+            "record": report,
+            "durable_contract": {
+                "identity": snapshot.get("identity"),
+                "metadata": snapshot.get("metadata"),
+                "size": snapshot.get("size"),
+                "raw_sha256": snapshot.get("raw_sha256"),
+                "content_sha256": ExecutorEventStore.contract_digest(report),
+                "contract_sha256": ExecutorEventStore.contract_digest(contract),
+            },
+        }
 
     def _write_json(self, path: str, data: dict[str, Any]) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -561,10 +1041,27 @@ class ExecutorRunReportStore:
 
     def _write_text_no_overwrite(self, path: str, content: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = content.encode("utf-8")
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            directory_fd = os.open(
+                os.path.dirname(path),
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            snapshot = read_trusted_owned_regular_file(
+                path,
+                trusted_root=self.runner_dir,
+            )
+            if snapshot.get("raw") != payload:
+                raise OSError("persisted report artifact failed readback verification")
         except FileExistsError:
             raise
         except Exception:
@@ -1217,12 +1714,29 @@ class ExecutorRunReportStore:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(pointer, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp, pointer_path)
+            directory_fd = os.open(
+                directory,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            snapshot = read_trusted_owned_regular_file(
+                pointer_path,
+                trusted_root=self.runner_dir,
+            )
+            if json.loads(snapshot["raw"].decode("utf-8")) != pointer:
+                raise OSError("latest report pointer failed readback verification")
         except Exception:
             try:
                 os.unlink(tmp)
-            except Exception:
+            except FileNotFoundError:
                 pass
+            raise
 
     def _read_latest_pointer(self, directory: str) -> str | None:
         pointer_path = os.path.join(directory, "latest.json")
@@ -1240,10 +1754,20 @@ class ExecutorRunReportStore:
         return None
 
     def _load_json(self, path: str) -> dict[str, Any] | None:
+        loaded = self._load_json_snapshot(path)
+        data = loaded.get("data") if isinstance(loaded, dict) else None
+        return data if isinstance(data, dict) else None
+
+    def _load_json_snapshot(self, path: str) -> dict[str, Any] | None:
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            return data if isinstance(data, dict) else None
+            snapshot = read_trusted_owned_regular_file(
+                path,
+                trusted_root=self.runner_dir,
+            )
+            data = json.loads(snapshot["raw"].decode("utf-8"))
+            if not isinstance(data, dict):
+                return None
+            return {"data": data, "snapshot": snapshot}
         except Exception:
             return None
 
