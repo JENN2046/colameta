@@ -37,14 +37,6 @@ class ExecutorProcessSupervisor:
         started_at = time.monotonic()
         has_events = event_store is not None and bool(run_id)
 
-        if has_events:
-            event_command = display_command if display_command is not None else list(command)
-            event_store.append(
-                run_id, "executor_started",
-                {"command": event_command, "cwd": cwd},
-                event_context,
-            )
-
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -56,8 +48,17 @@ class ExecutorProcessSupervisor:
             errors="replace",
         )
 
+        if has_events:
+            event_command = display_command if display_command is not None else list(command)
+            event_store.append(
+                run_id, "executor_started",
+                {"command": event_command, "cwd": cwd},
+                event_context,
+            )
+
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
+
         def _reader(stream, lines, event_type):
             try:
                 for raw_line in iter(stream.readline, ""):
@@ -126,20 +127,6 @@ class ExecutorProcessSupervisor:
         stderr = "".join(stderr_lines)
         returncode = proc.returncode if proc.returncode is not None else -1
         elapsed = time.monotonic() - started_at
-
-        if has_events:
-            event_type = "executor_finished" if returncode == 0 and not timed_out else "executor_failed"
-            event_store.append(
-                run_id, event_type,
-                {
-                    "returncode": returncode,
-                    "elapsed_seconds": round(elapsed, 2),
-                    "timed_out": timed_out,
-                    "stdout_preview": stdout[-500:] if stdout else "",
-                    "stderr_preview": stderr[-500:] if stderr else "",
-                },
-                event_context,
-            )
 
         return ExecutorProcessResult(
             stdout=stdout,

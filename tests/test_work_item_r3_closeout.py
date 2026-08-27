@@ -1069,6 +1069,21 @@ def test_closeout_binds_token_generation_digest_to_retained_preflight(
 
 def test_closeout_binds_runtime_contracts_to_authorized_freeze_manifest() -> None:
     project_root = Path(__file__).resolve().parents[1]
+    historical_allowlist = json.loads(
+        (project_root / "docs/work-item-governance/r2-spec/authoritative-canary-tool-allowlist.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    current_allowlist = json.loads(
+        (project_root / "schemas/work_item_governance/authoritative-canary-tool-allowlist.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert historical_allowlist["expected_tool_count"] == 14
+    assert len(historical_allowlist["tools"]) == 14
+    assert current_allowlist["expected_tool_count"] == 16
+    assert len(current_allowlist["tools"]) == 16
+
     spec_binding = {
         field: closeout.sha256_file(project_root / relative_path)
         for field, relative_path in closeout._SPEC_BINDING_PATHS.items()
@@ -1077,9 +1092,14 @@ def test_closeout_binds_runtime_contracts_to_authorized_freeze_manifest() -> Non
 
     violations: list[str] = []
     closeout._verify_spec_binding(receipt, project_root, violations)
-    assert violations == []
+    assert violations == [
+        "spec_freeze_binding:tool_allowlist_sha256",
+        "spec_freeze_binding:preflight_receipt_schema_sha256",
+        "spec_freeze_binding:closeout_receipt_schema_sha256",
+    ]
 
     spec_binding["write_path_inventory_sha256"] = "0" * 64
+    violations = []
     closeout._verify_spec_binding(receipt, project_root, violations)
     assert "spec_digest_mismatch:write_path_inventory_sha256" in violations
     assert "spec_freeze_binding:write_path_inventory_sha256" in violations

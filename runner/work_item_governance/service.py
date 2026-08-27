@@ -881,9 +881,288 @@ class WorkItemApplicationService:
             "writes_delivery_state": False,
         }
 
+    def resolve_execution_attempt_artifact_refs(
+        self,
+        *,
+        work_item_id: str,
+        task_version: int,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        """Resolve one exact Attempt's artifact IDs from the durable ledger.
+
+        An empty list is authoritative only after the exact Attempt and its
+        Work-Item/Task-Version binding have been proven by this ledger read.
+        """
+
+        self._require_enabled()
+        normalized_work_item_id = require_stable_id(work_item_id, "work_item")
+        normalized_task_version = require_positive_integer(task_version, "task_version")
+        normalized_attempt_id = require_stable_id(attempt_id, "attempt")
+        if self.activation_guard is not None:
+            self.activation_guard.assert_read_scope(normalized_work_item_id)
+        with self.ledger.read_connection() as connection:
+            attempt = connection.execute(
+                "SELECT * FROM execution_attempts WHERE attempt_id=?",
+                (normalized_attempt_id,),
+            ).fetchone()
+            if attempt is None:
+                raise WorkItemGovernanceError(
+                    "ATTEMPT_NOT_FOUND",
+                    "The exact execution Attempt does not exist.",
+                )
+            if (
+                attempt["work_item_id"] != normalized_work_item_id
+                or int(attempt["task_version"]) != normalized_task_version
+                or attempt["attempt_kind"] != "runtime"
+                or int(attempt["dispatch_authorized"]) != 1
+            ):
+                raise WorkItemGovernanceError(
+                    "EXECUTION_ATTEMPT_TARGET_MISMATCH",
+                    "The execution Attempt does not belong to the exact governed target.",
+                )
+            work_item = self._work_item_row(connection, normalized_work_item_id)
+            reasons: list[str] = []
+            if attempt["status"] not in {"claimed", "running"}:
+                reasons.append("ATTEMPT_NOT_ACTIVE")
+            if work_item["state"] in TERMINAL_WORK_ITEM_STATES:
+                reasons.append("WORK_ITEM_TERMINAL")
+            if work_item["state"] == "submitted":
+                reasons.append("REVISION_GATE_REQUIRED")
+            if int(work_item["current_task_version"]) != normalized_task_version:
+                reasons.append("TASK_VERSION_STALE")
+            if self.activation_guard is not None and not self.activation_guard.dispatch_authority_active():
+                reasons.append("ACTIVATION_LEASE_INACTIVE")
+            if isinstance(self.activation_guard, PilotActivationGuard) and not reasons:
+                try:
+                    self.activation_guard.assert_attempt_dispatch_authority(
+                        normalized_attempt_id,
+                        normalized_work_item_id,
+                        normalized_task_version,
+                    )
+                except WorkItemGovernanceError as exc:
+                    reasons.append(exc.code)
+            if reasons:
+                raise WorkItemGovernanceError(
+                    "EXECUTION_ATTEMPT_NOT_DISPATCH_ELIGIBLE",
+                    "The exact execution Attempt is no longer dispatch eligible.",
+                    details={"reason_codes": reasons},
+                )
+            rows = connection.execute(
+                """
+                SELECT * FROM artifact_refs
+                WHERE work_item_id=? AND task_version=? AND attempt_id=?
+                ORDER BY artifact_id
+                """,
+                (
+                    normalized_work_item_id,
+                    normalized_task_version,
+                    normalized_attempt_id,
+                ),
+            ).fetchall()
+        artifact_refs = [str(row["artifact_id"]) for row in rows]
+        if len(artifact_refs) != len(set(artifact_refs)):
+            raise WorkItemGovernanceError(
+                "EXECUTION_ATTEMPT_ARTIFACT_DUPLICATE",
+                "The exact Attempt artifact projection contains duplicate IDs.",
+            )
+        return {
+            "status": "artifact_refs_resolved",
+            "work_item_id": normalized_work_item_id,
+            "task_version": normalized_task_version,
+            "attempt_id": normalized_attempt_id,
+            "artifact_refs": artifact_refs,
+            "artifact_count": len(artifact_refs),
+            "ledger_backed": True,
+            "synthetic_empty": False,
+            "dispatch_eligible": True,
+        }
+
     # ------------------------------------------------------------------
     # Task Version and Execution/Evidence binding
     # ------------------------------------------------------------------
+
+    def preview_execution_attempt_create(
+        self,
+        command: dict[str, Any],
+        *,
+        execution_context: dict[str, Any],
+        principal_context: PrincipalContext | None,
+        ttl_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Issue a signed, zero-domain-write admission for one Stage task Attempt."""
+
+        self._require_enabled()
+        normalized_command = self._normalize_execution_attempt_create_command(
+            command,
+            allow_attempt_id=False,
+            derive_stage_source_event_key=True,
+            execution_context=execution_context,
+        )
+        normalized_context = self._normalize_stage_attempt_execution_context(execution_context)
+        principal = self._trusted_principal_projection(principal_context)
+        with self.ledger.read_connection() as connection:
+            mutable_reality = self._assert_execution_attempt_create_eligible(
+                connection,
+                work_item_id=normalized_command["work_item_id"],
+                task_version=normalized_command["task_version"],
+            )
+        signed_command = {
+            "attempt_command": normalized_command,
+            "execution_context": normalized_context,
+            "principal_context": principal,
+            "principal_binding_sha256": canonical_sha256(principal),
+            "operation_family": "create_execution_attempt",
+            "mutable_reality": mutable_reality,
+        }
+        self._activation_preview("create_execution_attempt", normalized_command)
+        preview = self.previews.issue(
+            "execution_attempt_create",
+            signed_command,
+            ttl_seconds=ttl_seconds,
+        )
+        return {
+            "status": "preview_ready",
+            "preview": preview,
+            "preview_id": preview["preview_id"],
+            "execution_attempt_created": False,
+            "attempt_event_written": False,
+            "artifact_written": False,
+            "writes_delivery_state": False,
+        }
+
+    def inspect_execution_attempt_create_preview(
+        self,
+        preview: dict[str, Any],
+        *,
+        expected_execution_context: dict[str, Any],
+        principal_context: PrincipalContext | None,
+    ) -> dict[str, Any]:
+        """Reverify a signed admission without creating an Attempt."""
+
+        self._require_enabled()
+        signed_command, attempt_command, execution_context = (
+            self._verify_execution_attempt_create_preview(
+                preview,
+                expected_execution_context=expected_execution_context,
+                principal_context=principal_context,
+            )
+        )
+        with self.ledger.read_connection() as connection:
+            current_reality = self._assert_execution_attempt_create_eligible(
+                connection,
+                work_item_id=attempt_command["work_item_id"],
+                task_version=attempt_command["task_version"],
+            )
+        self._assert_execution_attempt_reality_unchanged(signed_command, current_reality)
+        self._activation_preview("create_execution_attempt", attempt_command)
+        return {
+            "status": "grant_valid",
+            "preview_id": preview["preview_id"],
+            "execution_context": execution_context,
+            "work_item_id": attempt_command["work_item_id"],
+            "task_version": attempt_command["task_version"],
+            "principal_binding_sha256": signed_command["principal_binding_sha256"],
+            "execution_attempt_created": False,
+            "writes_delivery_state": False,
+        }
+
+    def inspect_execution_attempt_create_preview_transport(
+        self,
+        preview: dict[str, Any],
+        *,
+        expected_execution_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Verify signed grant bytes and exact Stage binding without authority.
+
+        This transport inspection is deliberately read-only.  It does not
+        check mutable governance eligibility and cannot apply the preview;
+        those remain exclusive to a fresh authenticated Work Item request.
+        """
+
+        self._require_enabled()
+        verified = self.previews.verify(
+            preview, expected_operation="execution_attempt_create"
+        )
+        signed = require_object(
+            verified.get("command"), "signed_attempt_admission", non_empty=True
+        )
+        required = {
+            "attempt_command",
+            "execution_context",
+            "principal_context",
+            "principal_binding_sha256",
+            "operation_family",
+            "mutable_reality",
+        }
+        if set(signed) != required or signed.get("operation_family") != "create_execution_attempt":
+            raise WorkItemGovernanceError(
+                "SIGNED_ATTEMPT_PREVIEW_SHAPE_INVALID",
+                "Signed Attempt admission fields are missing or unexpected.",
+            )
+        execution_context = self._normalize_stage_attempt_execution_context(
+            signed.get("execution_context")
+        )
+        expected_context = self._normalize_stage_attempt_execution_context(
+            expected_execution_context
+        )
+        if execution_context != expected_context:
+            raise WorkItemGovernanceError(
+                "STAGE_ATTEMPT_GRANT_CONTEXT_MISMATCH",
+                "Attempt admission grant does not match the requested Stage task context.",
+            )
+        principal = require_object(
+            signed.get("principal_context"), "principal_context", non_empty=True
+        )
+        if signed.get("principal_binding_sha256") != canonical_sha256(principal):
+            raise WorkItemGovernanceError(
+                "PREVIEW_PRINCIPAL_BINDING_INVALID",
+                "Signed Attempt admission Principal binding is invalid.",
+            )
+        command = self._normalize_execution_attempt_create_command(
+            signed.get("attempt_command"), allow_attempt_id=False
+        )
+        return {
+            "status": "grant_transport_valid",
+            "execution_context": execution_context,
+            "work_item_id": command["work_item_id"],
+            "task_version": command["task_version"],
+            "execution_attempt_created": False,
+            "current_governance_revalidated": False,
+        }
+
+    def prepare_execution_attempt_create_apply(
+        self,
+        preview: dict[str, Any],
+        *,
+        expected_execution_context: dict[str, Any],
+        principal_context: PrincipalContext | None,
+    ) -> dict[str, Any]:
+        """Prepare one verified apply for the classified canonical mutation."""
+
+        self._require_enabled()
+        _signed, attempt_command, execution_context = self._verify_execution_attempt_create_preview(
+            preview,
+            expected_execution_context=expected_execution_context,
+            principal_context=principal_context,
+        )
+        # This read-only check gives a stable error before entering the mutation;
+        # create_execution_attempt repeats the same policy inside its transaction.
+        with self.ledger.read_connection() as connection:
+            current_reality = self._assert_execution_attempt_create_eligible(
+                connection,
+                work_item_id=attempt_command["work_item_id"],
+                task_version=attempt_command["task_version"],
+            )
+        expected_reality = self._assert_execution_attempt_reality_unchanged(
+            _signed,
+            current_reality,
+        )
+        return {
+            "attempt_command": attempt_command,
+            "expected_mutable_reality": expected_reality,
+            "preview_id": preview["preview_id"],
+            "execution_context": execution_context,
+        }
 
     def add_task_version(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()
@@ -978,29 +1257,24 @@ class WorkItemApplicationService:
             "idempotent_replay": idempotent,
         }
 
-    def create_execution_attempt(self, command: dict[str, Any]) -> dict[str, Any]:
+    def create_execution_attempt(
+        self,
+        command: dict[str, Any],
+        *,
+        expected_mutable_reality: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self._require_enabled()
-        value = require_object(command, "command", non_empty=True)
-        allowed = {
-            "work_item_id", "task_version", "attempt_id", "status", "objective_ref", "metadata",
-            "source_event_key", "external_refs",
-        }
-        if set(value) - allowed:
-            raise WorkItemGovernanceError("ATTEMPT_FIELD_UNSUPPORTED", "Attempt command has unsupported fields.")
-        work_item_id = require_stable_id(value.get("work_item_id"), "work_item")
-        task_version = require_positive_integer(value.get("task_version"), "task_version")
-        attempt_id_value = value.get("attempt_id")
+        value = self._normalize_execution_attempt_create_command(command, allow_attempt_id=True)
+        work_item_id = value["work_item_id"]
+        task_version = value["task_version"]
+        attempt_id_value = value["attempt_id"]
         attempt_id_supplied = attempt_id_value is not None
-        attempt_id = new_stable_id("attempt") if attempt_id_value is None else require_stable_id(attempt_id_value, "attempt")
-        status = value.get("status", "claimed")
-        if status not in {"claimed", "running"}:
-            raise WorkItemGovernanceError("ATTEMPT_INITIAL_STATUS_INVALID", "New Attempt status must be claimed or running.")
-        metadata = require_metadata_object(value.get("metadata", {}), "metadata")
-        self._reject_sensitive_fields(metadata, "metadata")
-        objective_ref = optional_text(value.get("objective_ref"), "objective_ref", max_length=8192)
-        source_event_key = require_text(value.get("source_event_key"), "source_event_key", max_length=1024)
-        external_refs = self._normalize_external_refs(value.get("external_refs"))
-        sorted_external_refs = sorted(external_refs, key=lambda item: (item["kind"], item["ref"]))
+        attempt_id = new_stable_id("attempt") if attempt_id_value is None else attempt_id_value
+        status = value["status"]
+        metadata = value["metadata"]
+        objective_ref = value["objective_ref"]
+        source_event_key = value["source_event_key"]
+        sorted_external_refs = value["external_refs"]
         claim_payload = {
             "work_item_id": work_item_id,
             "task_version": task_version,
@@ -1022,6 +1296,16 @@ class WorkItemApplicationService:
                     normalized_command=activation_command,
                     source_event_key=source_event_key,
                 )
+                if expected_mutable_reality is not None:
+                    transactional_reality = self._assert_execution_attempt_create_eligible(
+                        connection,
+                        work_item_id=work_item_id,
+                        task_version=task_version,
+                    )
+                    self._assert_execution_attempt_reality_unchanged(
+                        {"mutable_reality": expected_mutable_reality},
+                        transactional_reality,
+                    )
                 existing = connection.execute(
                     "SELECT * FROM execution_attempts WHERE source_event_key=?", (source_event_key,)
                 ).fetchone()
@@ -1068,27 +1352,11 @@ class WorkItemApplicationService:
                         activation.authorize_replay(work_item_id=work_item_id)
                     idempotent = True
                 else:
-                    work_item = self._work_item_row(connection, work_item_id)
-                    if work_item["state"] in TERMINAL_WORK_ITEM_STATES:
-                        raise WorkItemGovernanceError(
-                            "WORK_ITEM_TERMINAL",
-                            "Terminal Work Items cannot start new runtime Attempts.",
-                        )
-                    if work_item["state"] == "submitted":
-                        raise WorkItemGovernanceError(
-                            "REVISION_GATE_REQUIRED",
-                            "Submitted Work Items must return for revision before new runtime execution.",
-                        )
-                    if int(work_item["current_task_version"]) != task_version:
-                        raise WorkItemGovernanceError(
-                            "TASK_VERSION_STALE",
-                            "New runtime Attempts must bind the current Task Version.",
-                            details={
-                                "current_task_version": int(work_item["current_task_version"]),
-                                "requested_task_version": task_version,
-                            },
-                        )
-                    self._assert_task_exists(connection, work_item_id, task_version)
+                    self._assert_execution_attempt_create_eligible(
+                        connection,
+                        work_item_id=work_item_id,
+                        task_version=task_version,
+                    )
                     if activation is not None:
                         activation.authorize_new(
                             work_item_id=work_item_id,
@@ -1113,7 +1381,7 @@ class WorkItemApplicationService:
                     )
                     self._insert_external_refs(
                         connection,
-                        external_refs,
+                        sorted_external_refs,
                         work_item_id=work_item_id,
                         task_version=task_version,
                         attempt_id=attempt_id,
@@ -1141,6 +1409,230 @@ class WorkItemApplicationService:
         except sqlite3.IntegrityError as exc:
             raise self._integrity_error(exc, operation="create_execution_attempt") from exc
         return {"attempt": self._materialize_attempt(row), "idempotent_replay": idempotent}
+
+    def _verify_execution_attempt_create_preview(
+        self,
+        preview: dict[str, Any],
+        *,
+        expected_execution_context: dict[str, Any],
+        principal_context: PrincipalContext | None,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        verified = self.previews.verify(preview, expected_operation="execution_attempt_create")
+        signed = require_object(verified.get("command"), "signed_attempt_admission", non_empty=True)
+        required = {
+            "attempt_command",
+            "execution_context",
+            "principal_context",
+            "principal_binding_sha256",
+            "operation_family",
+            "mutable_reality",
+        }
+        if set(signed) != required or signed.get("operation_family") != "create_execution_attempt":
+            raise WorkItemGovernanceError(
+                "SIGNED_ATTEMPT_PREVIEW_SHAPE_INVALID",
+                "Signed Attempt admission fields are missing or unexpected.",
+            )
+        execution_context = self._normalize_stage_attempt_execution_context(
+            signed.get("execution_context")
+        )
+        expected_context = self._normalize_stage_attempt_execution_context(expected_execution_context)
+        if execution_context != expected_context:
+            raise WorkItemGovernanceError(
+                "STAGE_ATTEMPT_GRANT_CONTEXT_MISMATCH",
+                "Attempt admission grant does not match the requested Stage task context.",
+            )
+        attempt_command = self._normalize_execution_attempt_create_command(
+            signed.get("attempt_command"),
+            allow_attempt_id=False,
+        )
+        principal = self._trusted_principal_projection(principal_context)
+        if (
+            signed.get("principal_context") != principal
+            or signed.get("principal_binding_sha256") != canonical_sha256(principal)
+        ):
+            raise WorkItemGovernanceError(
+                "PREVIEW_PRINCIPAL_MISMATCH",
+                "Apply Principal does not match the Principal bound to the signed preview.",
+            )
+        return signed, attempt_command, execution_context
+
+    @staticmethod
+    def _assert_execution_attempt_reality_unchanged(
+        signed_command: dict[str, Any],
+        current_reality: dict[str, Any],
+    ) -> dict[str, Any]:
+        value = require_object(
+            signed_command.get("mutable_reality"),
+            "mutable_reality",
+            non_empty=True,
+        )
+        if set(value) != {"work_item_id", "task_version", "state", "state_version"}:
+            raise WorkItemGovernanceError(
+                "SIGNED_ATTEMPT_PREVIEW_SHAPE_INVALID",
+                "Signed Attempt mutable reality fields are missing or unexpected.",
+            )
+        signed_reality = {
+            "work_item_id": require_stable_id(value.get("work_item_id"), "work_item"),
+            "task_version": require_positive_integer(value.get("task_version"), "task_version"),
+            "state": require_text(value.get("state"), "state", max_length=64),
+            "state_version": require_non_negative_integer(
+                value.get("state_version"), "state_version"
+            ),
+        }
+        if signed_reality["state"] not in WORK_ITEM_STATES:
+            raise WorkItemGovernanceError(
+                "SIGNED_ATTEMPT_PREVIEW_SHAPE_INVALID",
+                "Signed Attempt Work Item state is invalid.",
+            )
+        if signed_reality != current_reality:
+            raise WorkItemGovernanceError(
+                "WORK_ITEM_REALITY_DRIFT",
+                "Work Item state changed after the Attempt admission preview was issued.",
+                details={
+                    "preview_state": signed_reality["state"],
+                    "current_state": current_reality["state"],
+                },
+            )
+        return signed_reality
+
+    def _normalize_execution_attempt_create_command(
+        self,
+        command: Any,
+        *,
+        allow_attempt_id: bool,
+        derive_stage_source_event_key: bool = False,
+        execution_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        value = require_object(command, "command", non_empty=True)
+        allowed = {
+            "work_item_id", "task_version", "attempt_id", "status", "objective_ref", "metadata",
+            "source_event_key", "external_refs",
+        }
+        if set(value) - allowed:
+            raise WorkItemGovernanceError("ATTEMPT_FIELD_UNSUPPORTED", "Attempt command has unsupported fields.")
+        if not allow_attempt_id and value.get("attempt_id") is not None:
+            raise WorkItemGovernanceError(
+                "STAGE_ATTEMPT_ID_CALLER_SUPPLIED",
+                "Stage Attempt admission cannot accept a caller-supplied Attempt ID.",
+            )
+        work_item_id = require_stable_id(value.get("work_item_id"), "work_item")
+        task_version = require_positive_integer(value.get("task_version"), "task_version")
+        attempt_id = (
+            None
+            if value.get("attempt_id") is None
+            else require_stable_id(value.get("attempt_id"), "attempt")
+        )
+        status = value.get("status", "claimed")
+        if status not in {"claimed", "running"}:
+            raise WorkItemGovernanceError("ATTEMPT_INITIAL_STATUS_INVALID", "New Attempt status must be claimed or running.")
+        metadata = require_metadata_object(value.get("metadata", {}), "metadata")
+        self._reject_sensitive_fields(metadata, "metadata")
+        objective_ref = optional_text(value.get("objective_ref"), "objective_ref", max_length=8192)
+        external_refs = sorted(
+            self._normalize_external_refs(value.get("external_refs")),
+            key=lambda item: (item["kind"], item["ref"]),
+        )
+        if derive_stage_source_event_key:
+            normalized_context = self._normalize_stage_attempt_execution_context(execution_context)
+            source_digest = canonical_sha256(
+                {
+                    "operation_family": "create_execution_attempt",
+                    "project_binding": self.previews.project_binding,
+                    "execution_context": normalized_context,
+                    "work_item_id": work_item_id,
+                    "task_version": task_version,
+                }
+            )
+            source_event_key = f"stage_attempt_admission:{source_digest}"
+            supplied_source = value.get("source_event_key")
+            if supplied_source is not None and supplied_source != source_event_key:
+                raise WorkItemGovernanceError(
+                    "STAGE_ATTEMPT_SOURCE_EVENT_KEY_MISMATCH",
+                    "Stage Attempt source_event_key must be derived from the signed admission context.",
+                )
+        else:
+            source_event_key = require_text(value.get("source_event_key"), "source_event_key", max_length=1024)
+        return {
+            "work_item_id": work_item_id,
+            "task_version": task_version,
+            "attempt_id": attempt_id,
+            "status": status,
+            "objective_ref": objective_ref,
+            "metadata": metadata,
+            "source_event_key": source_event_key,
+            "external_refs": external_refs,
+        }
+
+    @staticmethod
+    def _normalize_stage_attempt_execution_context(value: Any) -> dict[str, str]:
+        context = require_object(value, "execution_context", non_empty=True)
+        required = {
+            "kind", "stage_id", "parallel_group_id", "task_id", "stage_preview_sha256",
+            "base_head", "runner_plan_sha256",
+        }
+        if set(context) != required or context.get("kind") != "stage_parallel_task":
+            raise WorkItemGovernanceError(
+                "STAGE_ATTEMPT_EXECUTION_CONTEXT_INVALID",
+                "Stage Attempt execution context fields are missing or unexpected.",
+            )
+        return {
+            "kind": "stage_parallel_task",
+            "stage_id": require_text(context.get("stage_id"), "stage_id", max_length=256),
+            "parallel_group_id": require_text(
+                context.get("parallel_group_id"), "parallel_group_id", max_length=256
+            ),
+            "task_id": require_text(context.get("task_id"), "task_id", max_length=256),
+            "stage_preview_sha256": require_sha256(
+                context.get("stage_preview_sha256"), "stage_preview_sha256"
+            ),
+            "base_head": require_sha256(context.get("base_head"), "base_head"),
+            "runner_plan_sha256": require_sha256(
+                context.get("runner_plan_sha256"), "runner_plan_sha256"
+            ),
+        }
+
+    @staticmethod
+    def _trusted_principal_projection(principal_context: PrincipalContext | None) -> dict[str, Any]:
+        principal, _actor, _basis = authorize_principal(
+            principal_context,
+            "work_item.start_delivery",
+        )
+        return principal
+
+    def _assert_execution_attempt_create_eligible(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        work_item_id: str,
+        task_version: int,
+    ) -> dict[str, Any]:
+        work_item = self._work_item_row(connection, work_item_id)
+        if work_item["state"] in TERMINAL_WORK_ITEM_STATES:
+            raise WorkItemGovernanceError(
+                "WORK_ITEM_TERMINAL",
+                "Terminal Work Items cannot start new runtime Attempts.",
+            )
+        if work_item["state"] == "submitted":
+            raise WorkItemGovernanceError(
+                "REVISION_GATE_REQUIRED",
+                "Submitted Work Items must return for revision before new runtime execution.",
+            )
+        if int(work_item["current_task_version"]) != task_version:
+            raise WorkItemGovernanceError(
+                "TASK_VERSION_STALE",
+                "New runtime Attempts must bind the current Task Version.",
+                details={
+                    "current_task_version": int(work_item["current_task_version"]),
+                    "requested_task_version": task_version,
+                },
+            )
+        self._assert_task_exists(connection, work_item_id, task_version)
+        return {
+            "work_item_id": work_item_id,
+            "task_version": task_version,
+            "state": str(work_item["state"]),
+            "state_version": int(work_item["state_version"]),
+        }
 
     def register_artifact_reference(self, command: dict[str, Any]) -> dict[str, Any]:
         self._require_enabled()

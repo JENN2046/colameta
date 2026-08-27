@@ -478,5 +478,5 @@ def test_commander_topic_branch_apply_rejects_wrong_context_binding(tmp_path) ->
     rejected = server._call_tool("manage_git", apply_arguments)
 
     assert rejected["ok"] is False
-    assert rejected["error_code"] == "CONTEXT_BINDING_MISMATCH"
+    assert rejected["error_code"] == "PROJECT_CONTEXT_MISMATCH"
     assert _git(repo, "branch", "--show-current") == "main"

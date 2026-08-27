@@ -1584,6 +1584,69 @@ The complete install/replacement/rollback checklist is maintained in
 [Installation And Deployment](INSTALLATION_AND_DEPLOYMENT.md). A replacement
 receipt is evidence for one exact target, not reusable lifecycle authority.
 
+### Executor event lineage and shell-free acceptance
+
+Executor event schema `1.1` separates the provider adapter boundary from an
+actual process start. `executor_dispatch_started` means that the workflow has
+entered the provider adapter after its authorization gate. `executor_started`
+is emitted only after the provider subprocess was created successfully. Count
+`executor_started`, not the dispatch marker, when proving a Codex process start.
+
+Fresh Authority identifiers and admission hashes are never added to pre-binding
+events. After a durable execution binding exists, the private event record may
+carry the exact pair for local lineage verification. Normal run results,
+session status, reports, Web, MCP status, and event excerpts use one recursive
+public projection: they omit the pair and any aliased raw values, and expose
+`fresh_authority_bound=true` only after complete-lineage validation.
+
+Schema `1.1` marks a record as fresh-bound only when the Authority pair, actual
+run path, non-empty preview ID, and complete Work Item/Task/Attempt/artifact
+tuple validate together. Event directories are opened component-by-component
+without following links. JSONL records use per-run thread and process locking;
+special-file targets fail closed, and integrity-aware streaming readers treat a
+final torn tail, interior corruption, and oversized records as hard failures.
+Before provider dispatch, production verifies the durable binding, claim, and
+dispatch event. After report/session persistence it verifies binding, claim,
+event, report, and session together. The verifier returns only an outcome code
+and a non-reversible safe digest.
+
+Acceptance commands are single, shell-free argv commands. Shell operators,
+redirection, command substitution, and non-allowlisted executables are rejected
+during executor preflight and by bootstrap, import, insert, and update preview
+paths. Apply revalidates the same policy, including older pending previews. The
+accepted command grammar is deliberately limited to these exact bare-name
+forms:
+
+```text
+python --version
+python -V
+python3 --version
+python3 -V
+git --version
+git diff --check
+git status --short --branch
+git status -sb
+git status --porcelain=v1 --untracked-files=all
+```
+
+`python` and `python3` bind to an independently trusted current Runner
+interpreter. A canonical absolute interpreter path is accepted only when it is
+one of the current runtime interpreter candidates and uses the same version-only
+grammar. Bare `git` resolves only from the fixed trusted system path. Before
+launch, the resolved executable is opened without following links, its identity
+is rechecked, and execution is bound to its inherited `/proc/self/fd` descriptor;
+admission fails closed when those guarantees are unavailable. Git execution also
+disables hooks, fsmonitor, external diff, and text conversion as applicable.
+
+Python scripts and modules, including `scripts/check_clean_worktree.py` and
+`python -m compileall`, are not accepted governed commands. None of the accepted
+forms asserts that the whole worktree is clean: `git diff --check` checks diff
+whitespace, while the allowed `git status` forms only report status and do not
+turn dirty output into a failing exit code.
+
+Do not rewrite an already executed version merely to replace an old acceptance
+command. Preserve its report contract and create a new governed version.
+
 ## 9. Stage Parallel Plan Preview
 
 Use `get_stage_parallel_plan_preview(project_name=...)` to preview future

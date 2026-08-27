@@ -1,17 +1,148 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from runner._internal_utils import now_iso as _now_iso, run_git as _run_git_base
+from runner.executor_events import (
+    ExecutorEventStore,
+    public_executor_projection,
+    read_trusted_owned_regular_file,
+)
 from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 if TYPE_CHECKING:
     from runner.development_target import ResolvedDevelopmentTarget
+
+
+EXECUTOR_SESSION_SCHEMA_VERSION = "executor_session.v1"
+_SESSION_REQUIRED_FIELDS = frozenset({
+    "schema_version", "active", "provider", "project_root", "project_name",
+    "git_branch", "base_head", "current_head", "version", "execution_mode",
+    "attempt", "session_id", "session_file", "conversation_id",
+    "resume_supported", "resume_enabled", "log_path", "summary_path",
+    "created_at", "updated_at", "source",
+})
+_SESSION_OPTIONAL_FIELDS = frozenset({
+    "executor_authority_id", "admission_sha256", "run_id", "preview_id",
+    "work_item_id", "task_version", "attempt_id", "artifact_refs",
+    "reset_at", "reset_reason",
+})
+_SESSION_NULLABLE_STRING_FIELDS = frozenset({
+    "project_name", "git_branch", "base_head", "current_head", "session_id",
+    "session_file", "conversation_id", "log_path", "summary_path", "reset_reason",
+})
+_SESSION_STRING_FIELDS = frozenset({
+    "schema_version", "provider", "project_root", "version", "execution_mode",
+    "created_at", "updated_at", "source", "executor_authority_id",
+    "admission_sha256", "run_id", "preview_id", "work_item_id", "attempt_id",
+    "reset_at",
+})
+_SESSION_ALL_FIELDS = _SESSION_REQUIRED_FIELDS | _SESSION_OPTIONAL_FIELDS
+
+
+def _validate_session_contract(
+    value: Any,
+    *,
+    expected_project_root: str | None = None,
+    require_run_id: bool = False,
+) -> str | None:
+    if not isinstance(value, dict):
+        return "SESSION_CONTRACT_NOT_OBJECT"
+    keys = frozenset(value)
+    if "schema_version" not in keys:
+        return "SESSION_SCHEMA_MISSING"
+    if value.get("schema_version") != EXECUTOR_SESSION_SCHEMA_VERSION:
+        return "SESSION_SCHEMA_INVALID"
+    if not _SESSION_REQUIRED_FIELDS.issubset(keys):
+        return "SESSION_CONTRACT_INCOMPLETE"
+    if not keys.issubset(_SESSION_ALL_FIELDS):
+        return "SESSION_CONTRACT_FIELDS_INVALID"
+    for field in _SESSION_STRING_FIELDS & keys:
+        if not isinstance(value.get(field), str):
+            return "SESSION_CONTRACT_TYPES_INVALID"
+    for field in _SESSION_NULLABLE_STRING_FIELDS & keys:
+        if value.get(field) is not None and not isinstance(value.get(field), str):
+            return "SESSION_CONTRACT_TYPES_INVALID"
+    for field in ("active", "resume_supported", "resume_enabled"):
+        if type(value.get(field)) is not bool:
+            return "SESSION_CONTRACT_TYPES_INVALID"
+    if type(value.get("attempt")) is not int or value["attempt"] < 0:
+        return "SESSION_CONTRACT_TYPES_INVALID"
+    if expected_project_root is not None and value.get("project_root") != expected_project_root:
+        return "SESSION_PROJECT_ROOT_MISMATCH"
+    authority_fields = {"executor_authority_id", "admission_sha256"}
+    if bool(keys & authority_fields) != authority_fields.issubset(keys):
+        return "SESSION_AUTHORITY_CONTRACT_INCOMPLETE"
+    if authority_fields.issubset(keys) and (
+        re.fullmatch(r"[0-9a-f]{32}", value["executor_authority_id"]) is None
+        or re.fullmatch(r"[0-9a-f]{64}", value["admission_sha256"]) is None
+    ):
+        return "SESSION_AUTHORITY_CONTRACT_INVALID"
+    run_fields = {"run_id", "preview_id"}
+    if bool(keys & run_fields) != run_fields.issubset(keys):
+        return "SESSION_RUN_ID_MISSING"
+    if require_run_id and not run_fields.issubset(keys):
+        return "SESSION_RUN_ID_MISSING"
+    work_fields = {"work_item_id", "task_version", "attempt_id", "artifact_refs"}
+    if bool(keys & work_fields) != work_fields.issubset(keys):
+        return "SESSION_WORK_TARGET_INCOMPLETE"
+    if work_fields.issubset(keys):
+        target = {field: value[field] for field in work_fields}
+        if optional_work_item_reference_rejections(target):
+            return "SESSION_WORK_TARGET_INVALID"
+    reset_fields = {"reset_at", "reset_reason"}
+    if bool(keys & reset_fields) != reset_fields.issubset(keys):
+        return "SESSION_RESET_CONTRACT_INCOMPLETE"
+    return None
+
+_PUBLIC_SESSION_RECORD_FIELDS = frozenset({
+    "schema_version", "active", "provider", "project_root", "project_name",
+    "git_branch", "base_head", "current_head", "version", "execution_mode",
+    "attempt", "session_id", "session_file", "conversation_id", "resume_supported",
+    "resume_enabled", "log_path", "summary_path", "created_at", "updated_at",
+    "source", "run_id", "preview_id", "work_item_id", "task_version", "attempt_id",
+    "artifact_refs", "reset_at", "reset_reason",
+})
+_PUBLIC_SESSION_STATUS_FIELDS = frozenset({
+    "ok", "active", "manifest_file", "message", "error_code", "record",
+    "current_project_root", "current_git_branch", "current_head",
+    "matches_current_project", "matches_current_branch", "matches_current_head",
+    "eligibility", "head_mismatch_classification", "warnings",
+    "canonical_continuation_decision",
+})
+
+
+def public_executor_session_record_projection(value: Any) -> dict[str, Any]:
+    projected = public_executor_projection(value)
+    if not isinstance(projected, dict):
+        return {}
+    return {
+        key: projected[key]
+        for key in _PUBLIC_SESSION_RECORD_FIELDS
+        if key in projected
+    }
+
+
+def public_executor_session_projection(value: Any) -> dict[str, Any]:
+    """Project a session response through the exact public session shape."""
+    projected = public_executor_projection(value)
+    if not isinstance(projected, dict):
+        return {}
+    result = {
+        key: projected[key]
+        for key in _PUBLIC_SESSION_STATUS_FIELDS
+        if key in projected
+    }
+    if "record" in result:
+        result["record"] = public_executor_session_record_projection(result["record"])
+    return result
 
 
 COMPLETED_IDLE_STALE_SESSION_MESSAGE = (
@@ -872,7 +1003,7 @@ class ExecutorSessionStore:
             return None
         return None
 
-    def get_status(self) -> dict[str, Any]:
+    def get_status(self, *, include_private_lineage: bool = False) -> dict[str, Any]:
         git_branch, current_head, warnings = self._get_current_git_context()
         git_context_available = git_branch is not None and current_head is not None
         if not os.path.exists(self.manifest_file):
@@ -964,7 +1095,9 @@ class ExecutorSessionStore:
         }
         if warnings:
             result["warnings"] = warnings
-        return result
+        if include_private_lineage:
+            return result
+        return public_executor_session_projection(result)
 
     def evaluate_resume_eligibility(
         self,
@@ -1404,6 +1537,7 @@ class ExecutorSessionStore:
             source=source.strip() or "executor_result",
         )
         payload = asdict(record)
+        payload["schema_version"] = EXECUTOR_SESSION_SCHEMA_VERSION
         if isinstance(executor_authority_id, str) and executor_authority_id.strip():
             payload["executor_authority_id"] = executor_authority_id.strip()
         if isinstance(admission_sha256, str) and admission_sha256.strip():
@@ -1424,11 +1558,110 @@ class ExecutorSessionStore:
             "ok": True,
             "active": True,
             "manifest_file": self.manifest_file,
-            "record": payload,
+            "record": public_executor_session_record_projection(payload),
         }
         if warnings:
             result["warnings"] = warnings
         return result
+
+    def bind_private_lineage(self, expected_context: dict[str, Any]) -> dict[str, Any]:
+        """Attach run/preview lineage to an existing private session manifest.
+
+        Provider adapters persist the authority pair and T1 when a session is
+        created.  The workflow owns run/preview identity, so it completes that
+        durable record after provider return and validates the whole surface
+        before replacing the manifest.
+        """
+        record = self._load_manifest()
+        if not isinstance(record, dict):
+            return {"ok": False, "error_code": "SESSION_LINEAGE_MISSING", "safe_digest": ""}
+        expected_run_id = str(expected_context.get("run_id") or "")
+        expected = ExecutorEventStore._surface_private_lineage(
+            {
+                "schema_version": ExecutorEventStore.SCHEMA_VERSION,
+                **expected_context,
+            },
+            expected_run_id,
+        )
+        candidate = {
+            **{key: record[key] for key in _SESSION_ALL_FIELDS if key in record},
+            "run_id": expected_context.get("run_id"),
+            "preview_id": expected_context.get("preview_id"),
+        }
+        observed = ExecutorEventStore._surface_private_lineage(
+            candidate,
+            expected_run_id,
+        )
+        if expected is None or observed != expected:
+            return {"ok": False, "error_code": "SESSION_LINEAGE_MISMATCH", "safe_digest": ""}
+        self._write_manifest(candidate)
+        persisted = self.read_durable_contract(expected_run_id=expected_run_id)
+        if not persisted.get("ok") or persisted.get("record") != candidate:
+            return {
+                "ok": False,
+                "error_code": str(
+                    persisted.get("error_code") or "SESSION_PERSISTENCE_DRIFT"
+                ),
+                "safe_digest": "",
+            }
+        safe_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "schema": "executor-session-lineage-safe-digest.v1",
+                    "run_id": expected["run_id"],
+                    "preview_id": expected["preview_id"],
+                    "work_item_id": expected["work_item_id"],
+                    "task_version": expected["task_version"],
+                    "attempt_id": expected["attempt_id"],
+                    "artifact_refs": expected["artifact_refs"],
+                    "authority_pair_present": True,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {"ok": True, "error_code": None, "safe_digest": safe_digest}
+
+    def read_durable_contract(self, *, expected_run_id: str) -> dict[str, Any]:
+        """Read a strict complete session plus its durable file identity."""
+        loaded = self._load_manifest_snapshot()
+        record = loaded.get("data") if isinstance(loaded, dict) else None
+        if not isinstance(record, dict):
+            return {
+                "ok": False,
+                "error_code": str(
+                    (loaded or {}).get("error_code") or "SESSION_LINEAGE_MISSING"
+                ),
+            }
+        contract_error = _validate_session_contract(
+            record,
+            expected_project_root=self.project_root,
+            require_run_id=True,
+        )
+        if contract_error is not None:
+            return {"ok": False, "error_code": contract_error}
+        if "run_id" not in record:
+            return {"ok": False, "error_code": "SESSION_RUN_ID_MISSING"}
+        if record.get("run_id") != expected_run_id:
+            return {"ok": False, "error_code": "SESSION_RUN_ID_MISMATCH"}
+        if ExecutorEventStore._surface_private_lineage(record, expected_run_id) is None:
+            return {"ok": False, "error_code": "SESSION_LINEAGE_INVALID"}
+        snapshot = loaded.get("snapshot")
+        if not isinstance(snapshot, dict):
+            return {"ok": False, "error_code": "SESSION_DURABLE_IDENTITY_MISSING"}
+        contract = ExecutorEventStore.immutable_surface_contract(record)
+        return {
+            "ok": True,
+            "record": record,
+            "durable_contract": {
+                "identity": snapshot.get("identity"),
+                "metadata": snapshot.get("metadata"),
+                "size": snapshot.get("size"),
+                "raw_sha256": snapshot.get("raw_sha256"),
+                "content_sha256": ExecutorEventStore.contract_digest(record),
+                "contract_sha256": ExecutorEventStore.contract_digest(contract),
+            },
+        }
 
     def reset(self, reason: str | None = None) -> dict[str, Any]:
         if not os.path.exists(self.manifest_file):
@@ -1449,39 +1682,83 @@ class ExecutorSessionStore:
             }
 
         now = _now_iso()
+        payload = {key: payload[key] for key in _SESSION_ALL_FIELDS if key in payload}
         payload["active"] = False
         payload["updated_at"] = now
         payload["reset_at"] = now
         payload["reset_reason"] = (reason or "").strip() or None
         self._write_manifest(payload)
-        return {
+        result = {
             "ok": True,
             "active": False,
             "manifest_file": self.manifest_file,
             "record": payload,
             "message": "执行器会话记录已重置为非活动状态。",
         }
+        return public_executor_session_projection(result)
 
     def _load_manifest(self) -> dict[str, Any] | None:
+        loaded = self._load_manifest_snapshot()
+        payload = loaded.get("data") if isinstance(loaded, dict) else None
+        return payload if isinstance(payload, dict) else None
+
+    def _load_manifest_snapshot(self) -> dict[str, Any] | None:
         try:
-            with open(self.manifest_file, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            return payload if isinstance(payload, dict) else None
+            snapshot = read_trusted_owned_regular_file(
+                self.manifest_file,
+                trusted_root=self.runner_dir,
+            )
+            payload = json.loads(snapshot["raw"].decode("utf-8"))
+            if not isinstance(payload, dict):
+                return {"error_code": "SESSION_CONTRACT_NOT_OBJECT"}
+            contract_error = _validate_session_contract(
+                payload,
+                expected_project_root=self.project_root,
+            )
+            if contract_error is not None:
+                return {"error_code": contract_error}
+            return {"data": payload, "snapshot": snapshot}
         except Exception:
-            return None
+            return {"error_code": "SESSION_LOAD_ERROR"}
 
     def _write_manifest(self, payload: dict[str, Any]) -> None:
+        contract_error = _validate_session_contract(
+            payload,
+            expected_project_root=self.project_root,
+        )
+        if contract_error is not None:
+            raise ValueError(contract_error)
         os.makedirs(self.runtime_dir, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(prefix=".executor-session-", suffix=".json", dir=self.runtime_dir)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temp_path, self.manifest_file)
+            directory_fd = os.open(
+                self.runtime_dir,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            snapshot = read_trusted_owned_regular_file(
+                self.manifest_file,
+                trusted_root=self.runner_dir,
+            )
+            persisted = json.loads(snapshot["raw"].decode("utf-8"))
+            if persisted != payload or _validate_session_contract(
+                persisted,
+                expected_project_root=self.project_root,
+            ) is not None:
+                raise OSError("persisted session manifest failed readback verification")
         except Exception:
             try:
                 os.unlink(temp_path)
-            except Exception:
+            except FileNotFoundError:
                 pass
             raise
 

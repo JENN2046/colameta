@@ -12,6 +12,7 @@ from runner.project_context_binding import OPERATION_CONTEXT_BINDING_FIELDS
 def _make_git_checkout(tmp_path: Path) -> Path:
     project = tmp_path / "mcp-binding-project"
     project.mkdir()
+    project.chmod(0o755)
     subprocess.run(["git", "init", "-q", str(project)], check=True)
     subprocess.run(
         ["git", "-C", str(project), "config", "user.email", "mcp-binding@example.invalid"],

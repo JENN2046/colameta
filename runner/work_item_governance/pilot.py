@@ -68,15 +68,15 @@ PILOT_LEDGER_STATE_FIELDS = (
 PILOT_LEASE_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease.v4"
 PILOT_EVENT_SCHEMA = "wig_p3_bounded_single_project_pilot_activation_lease_event.v4"
 PILOT_FROZEN_CONTRACT_DIGESTS = {
-    "spec_manifest_digest": "ad2abc951d35c6891f4f12b8555f27c6c1722b900cdf380283e6b44e9cf70943",
+    "spec_manifest_digest": "59ddb791a1ae6762c076c06103ae2627afacf6fede84ada806912a5a28a28878",
     "storage_schema_contract_digest": "fbaac247078f8c89869968e8e9aadceb598f53ee1afb137fef36645140ea2ba8",
     "fact_reconciliation_contract_digest": "9b69f886377a2849524744c64f620822bf7459c9f660c80c64b4f72fe923a09f",
     "semantic_rules_digest": "80c628c020e78498f4d70964a820f963ca339b52bd84ecbb4c7d5b9e570f4857",
-    "tool_allowlist_digest": "fae456a0ed7aa3cbfa925ffc9de367d6d8cc103793ef973e69a6a7fea66fd985",
+    "tool_allowlist_digest": "276d12938ef44fa8320b6d2003dd5fdbbe1e92c414daf99cc26fbbbb619aa763",
     "write_matrix_digest": "e5a1a6e8c4d196c8600f2c436b93c4334355e885995907f8555af2922cc80bdd",
     "execution_attempt_slot_schema_sha256": "3e0fe0bb6995bc28c097cb10abc1cf9feb32c5aa796415fc1a1493567e1958b1",
     "execution_authorization_receipt_schema_sha256": "2c60d519c5294bde20675964288e15681025f16ce0cfaf01ae2d3af1d4f2a7d4",
-    "authentication_conformance_receipt_schema_sha256": "14217124dd175fd0738f400604c0391e2f43133b0bef65b31570adafb6e3de12",
+    "authentication_conformance_receipt_schema_sha256": "cc96af9f5f8c23bcfe38753501a68b53256d41f27d1ff763b781ddc323ff4261",
     "expiry_conformance_receipt_schema_sha256": "d0b7b801a4d79fbeb76960c7c13f84568ea0f62154218351a9767c2724bf0bd2",
 }
 PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
@@ -101,8 +101,8 @@ PILOT_AUTHORIZATION_FROZEN_BINDINGS = {
     "tool_allowlist_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["tool_allowlist_digest"],
     "write_matrix_sha256": PILOT_FROZEN_CONTRACT_DIGESTS["write_matrix_digest"],
     "write_path_inventory_sha256": "bcdc4d68fe580166750e32934d2a7c6ff86b48a5b3fc84b19ba1b126fc6ab30f",
-    "preflight_schema_sha256": "c8dc10dbc4df3aec36f094cd2b7425963e564988db80e2dbd2d1d63a57cda06a",
-    "closeout_schema_sha256": "6ac9888da62d60480419bf137e18679212ecf54fa90b0c6eaf5d89b97c992c4f",
+    "preflight_schema_sha256": "cdeb5ca6fd78461cb1b265d20618d548175b55e484e4a71fbb1300e56bae0bfb",
+    "closeout_schema_sha256": "95691d9f372677fd48735beb60b0819ccd4a1943035a1b73487143db57f42d5b",
     "negative_test_matrix_sha256": "c32f0c3d735139fb11881dc70d03fc713c8a6a0379550e3dfd11ed76d3a6a2fd",
 }
 
@@ -393,6 +393,8 @@ PILOT_TOOLS = (
     "get_execution_attempt_dispatch_authority",
     "preview_work_item_create",
     "preview_work_item_transition",
+    "preview_execution_attempt_create",
+    "apply_execution_attempt_create",
     "apply_work_item_create",
     "add_task_version",
     "create_execution_attempt",
@@ -1830,7 +1832,11 @@ class PilotActivationGuard:
         principal_context: PrincipalContext | None,
         request_context: AuthoritativeCanaryRequestContext | None,
     ) -> str | None:
-        if command_name not in {"apply_work_item_create", "apply_work_item_transition"}:
+        if command_name not in {
+            "apply_work_item_create",
+            "apply_work_item_transition",
+            "create_execution_attempt",
+        }:
             raise WorkItemGovernanceError("PILOT_COMMAND_DENIED", "Preview command is outside the Pilot allowlist.")
         with self.ledger.read_connection() as connection:
             row = self._active(connection)
@@ -1838,6 +1844,23 @@ class PilotActivationGuard:
             self._reconcile(connection, row)
             if command_name == "apply_work_item_create":
                 return str(_json(row, "scope_binding_json")["proposed_work_item_id"])
+            if command_name == "create_execution_attempt":
+                bound = row["authorized_work_item_id"]
+                if bound is None or normalized_command.get("work_item_id") != bound:
+                    raise WorkItemGovernanceError(
+                        "PILOT_WORK_ITEM_SCOPE_VIOLATION",
+                        "Attempt preview is outside the Pilot Work Item scope.",
+                    )
+                if normalized_command.get("external_refs"):
+                    raise WorkItemGovernanceError(
+                        "PILOT_EXTERNAL_ASSOCIATION_DENIED",
+                        "The bounded Pilot forbids external execution associations.",
+                    )
+                self._preview_attempt_slot(
+                    connection,
+                    normalized_command,
+                    _json(row, "usage_json"),
+                )
         return None
 
     def begin_write(
@@ -2060,9 +2083,17 @@ class PilotActivationGuard:
             )
 
     def _select_attempt_slot(self, session: ActivationWriteSession, usage: dict[str, Any]) -> None:
-        command = session.normalized_command
+        slot = self._preview_attempt_slot(session.connection, session.normalized_command, usage)
+        session.fixture_slot = {"pilot_execution_slot_id": slot["slot_id"]}
+
+    def _preview_attempt_slot(
+        self,
+        connection: sqlite3.Connection,
+        command: dict[str, Any],
+        usage: dict[str, Any],
+    ) -> dict[str, Any]:
         task_version = int(command["task_version"])
-        task = session.connection.execute(
+        task = connection.execute(
             "SELECT payload_digest FROM task_versions WHERE work_item_id=? AND task_version=?",
             (command["work_item_id"], task_version),
         ).fetchone()
@@ -2093,7 +2124,7 @@ class PilotActivationGuard:
                 raise WorkItemGovernanceError(
                     "PILOT_RETRY_SLOT_PREDECESSOR_INCOMPLETE", "Retry Slot predecessor is not completed."
                 )
-        session.fixture_slot = {"pilot_execution_slot_id": slot["slot_id"]}
+        return slot
 
     def _authorize_replay(self, session: ActivationWriteSession, *, work_item_id: str) -> None:
         if session.row["authorized_work_item_id"] != work_item_id:

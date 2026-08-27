@@ -24,10 +24,12 @@ def _git(project: Path, *args: str) -> None:
 def _bound_managed_project(tmp_path: Path, *, governance_enabled: bool) -> Path:
     project = tmp_path / "project"
     project.mkdir()
+    project.chmod(0o755)
     _git(project, "init", "-q", "-b", "main")
     (project / "README.md").write_text("bound execution\n", encoding="utf-8")
     runner_dir = project / ".colameta"
     runner_dir.mkdir()
+    runner_dir.chmod(0o700)
     binding = {
         "work_item_id": new_stable_id("work_item"),
         "task_version": 1,
@@ -181,6 +183,11 @@ def test_confirmed_execution_rejects_work_item_binding_drift(
 ) -> None:
     project, replacement = _dispatchable_bound_project(tmp_path)
     manager = MCPExecutorWorkflowManager(str(project))
+    for path in (
+        project / ".colameta" / "runtime",
+        Path(manager._previews_root),
+    ):
+        path.chmod(0o700)
     once_preview = manager.handle(
         "run_once_preview",
         {"provider": "codex", "execution_mode": "run"},

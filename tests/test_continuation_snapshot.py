@@ -116,16 +116,38 @@ def _write_running_claim(
         3,
         20,
     )
+    os.makedirs(store.claims_root, mode=0o700, exist_ok=True)
+    for path in (
+        project_root / resolve_project_runner_rel_dir(str(project_root)),
+        Path(store.previews_root).parent,
+        Path(store.previews_root),
+        Path(store.claims_root),
+    ):
+        path.chmod(0o700)
     store.write_claim(
         preview_id,
         {
+            "schema_version": "executor_run_claim.v1",
             "preview_id": preview_id,
             "run_id": run_id,
+            "artifact_kind": "run_once",
+            "project_root": str(project_root),
+            "provider": "codex",
+            "execution_mode": "run",
+            "current_version": "v1",
+            "current_head": HEAD,
             "status": "RUNNING",
             "claimed_at": claimed_at,
+            "model": None,
+            "model_source": None,
+            "worker_pid": os.getpid(),
+            "worker_started_at": claimed_at,
+            "thread_started_at": claimed_at,
             "last_heartbeat_at": claimed_at,
             "heartbeat_interval_seconds": 5,
             "heartbeat_timeout_seconds": 20,
+            "original_preview_created_at": claimed_at,
+            "original_preview_expires_at": "2099-01-02T00:00:00+00:00",
         },
     )
 

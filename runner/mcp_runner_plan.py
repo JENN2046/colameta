@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runner._internal_utils import write_json_atomic
+from runner.acceptance_command_policy import acceptance_command_rejection_code
 from runner.plan_loader import PlanLoader
 from runner.plan_standards_linter import PlanStandardsLinter
 from runner.source_review_bridge import SourceReviewBridge
@@ -308,7 +309,7 @@ class MCPRunnerPlanManager:
             },
             "default_acceptance_commands": [
                 {
-                    "command": "python3 -m compileall -q .",
+                    "command": "git diff --check",
                     "timeout_seconds": 600,
                     "continue_on_failure": False,
                 }
@@ -321,6 +322,7 @@ class MCPRunnerPlanManager:
         }
 
         validation = self._validate_plan_data(plan_data)
+        blockers.extend(validation.get("acceptance_policy_blockers", []))
         lint_result = validation.get("lint") if isinstance(validation.get("lint"), dict) else {}
         lint_blocking = int(lint_result.get("blocking_issue_count", 0)) if isinstance(lint_result, dict) else 0
         if lint_blocking > 0:
@@ -385,6 +387,7 @@ class MCPRunnerPlanManager:
         warnings: list[str] = []
 
         validation = self._validate_plan_data(data)
+        blockers.extend(validation.get("acceptance_policy_blockers", []))
         lint_result = validation.get("lint") if isinstance(validation.get("lint"), dict) else {}
         lint_blocking = int(lint_result.get("blocking_issue_count", 0)) if isinstance(lint_result, dict) else 0
         if not validation.get("loader_valid"):
@@ -544,6 +547,16 @@ class MCPRunnerPlanManager:
 
         self._sync_plan_data_paths(plan_data)
         validation = self._validate_plan_data(plan_data)
+        acceptance_policy_blockers = validation.get("acceptance_policy_blockers", [])
+        if acceptance_policy_blockers:
+            return {
+                "ok": False,
+                "action": "apply",
+                "error_code": "ACCEPTANCE_COMMAND_NOT_EXECUTABLE",
+                "message": "plan_data contains acceptance commands rejected by execution policy.",
+                "preview_id": normalized_preview_id,
+                "blockers": acceptance_policy_blockers,
+            }
         if not validation.get("loader_valid"):
             return {
                 "ok": False,
@@ -665,6 +678,7 @@ class MCPRunnerPlanManager:
 
     def _validate_plan_data(self, plan_data: dict[str, Any]) -> dict[str, Any]:
         lint = self.linter.lint_plan_data(plan_data, project_root=self.project_root)
+        acceptance_policy_blockers = self._plan_acceptance_policy_blockers(plan_data)
         loader_valid = False
         loader_error: str | None = None
         try:
@@ -678,8 +692,49 @@ class MCPRunnerPlanManager:
             "ok": True,
             "loader_valid": loader_valid,
             "loader_error": loader_error,
+            "acceptance_policy_valid": not acceptance_policy_blockers,
+            "acceptance_policy_blockers": acceptance_policy_blockers,
             "lint": lint,
         }
+
+    def _plan_acceptance_policy_blockers(
+        self,
+        plan_data: dict[str, Any],
+    ) -> list[str]:
+        blockers: list[str] = []
+        command_groups: list[tuple[str, Any]] = [
+            ("default", plan_data.get("default_acceptance_commands", [])),
+        ]
+        versions = plan_data.get("versions", [])
+        if isinstance(versions, list):
+            for version_index, version in enumerate(versions):
+                if isinstance(version, dict):
+                    command_groups.append(
+                        (
+                            f"version_{version_index}",
+                            version.get("acceptance_commands", []),
+                        )
+                    )
+        for group_name, commands in command_groups:
+            if not isinstance(commands, list):
+                continue
+            for command_index, item in enumerate(commands):
+                if isinstance(item, str):
+                    command = item.strip()
+                elif isinstance(item, dict):
+                    command = str(item.get("command") or "").strip()
+                else:
+                    continue
+                rejection_code = acceptance_command_rejection_code(
+                    command,
+                    project_root=self.project_root,
+                )
+                if rejection_code:
+                    blockers.append(
+                        "acceptance_command_not_executable_"
+                        f"{group_name}_{command_index}_{rejection_code.lower()}"
+                    )
+        return blockers
 
     def _load_plan_from_data(self, plan_data: dict[str, Any]):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
@@ -746,7 +801,12 @@ class MCPRunnerPlanManager:
             blockers.append(f"{field_name}_empty")
         return result
 
-    def _normalize_acceptance_commands(self, commands: list[Any], *, blockers: list[str]) -> list[dict[str, Any]]:
+    def _normalize_acceptance_commands(
+        self,
+        commands: list[Any],
+        *,
+        blockers: list[str],
+    ) -> list[dict[str, Any]]:
         if not isinstance(commands, list):
             blockers.append("acceptance_commands_not_list")
             return []
@@ -757,6 +817,15 @@ class MCPRunnerPlanManager:
                 command = item.strip()
                 if not command:
                     blockers.append(f"acceptance_command_empty_{idx}")
+                    continue
+                rejection_code = acceptance_command_rejection_code(
+                    command,
+                    project_root=self.project_root,
+                )
+                if rejection_code:
+                    blockers.append(
+                        f"acceptance_command_not_executable_{idx}_{rejection_code.lower()}"
+                    )
                     continue
                 normalized.append(
                     {
@@ -775,6 +844,16 @@ class MCPRunnerPlanManager:
             if not isinstance(command, str) or not command.strip():
                 blockers.append(f"acceptance_command_missing_command_{idx}")
                 continue
+            normalized_command = command.strip()
+            rejection_code = acceptance_command_rejection_code(
+                normalized_command,
+                project_root=self.project_root,
+            )
+            if rejection_code:
+                blockers.append(
+                    f"acceptance_command_not_executable_{idx}_{rejection_code.lower()}"
+                )
+                continue
 
             timeout_seconds = item.get("timeout_seconds", 600)
             if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
@@ -788,7 +867,7 @@ class MCPRunnerPlanManager:
 
             normalized.append(
                 {
-                    "command": command.strip(),
+                    "command": normalized_command,
                     "timeout_seconds": timeout_seconds,
                     "continue_on_failure": continue_on_failure,
                 }

@@ -3,7 +3,7 @@
   "stage_id": "WIG-P3-CANARY-A1-R2-S1-R3",
   "profile": "authoritative_canary",
   "default_policy": "deny",
-  "expected_tool_count": 14,
+  "expected_tool_count": 16,
   "enforcement": {
     "tool_definitions": "exact_match_required",
     "central_dispatch": "exact_match_required",
@@ -96,6 +96,25 @@
       "active_lease_required": true,
       "authenticated_request_context_required": true,
       "authorized_work_item_binding_required": true
+    },
+    {
+      "name": "preview_execution_attempt_create",
+      "class": "preview",
+      "mcp_scope": "mcp:preview",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "result_constraint": "returns only an opaque Stage-bound grant identity and performs zero domain writes"
+    },
+    {
+      "name": "apply_execution_attempt_create",
+      "class": "write",
+      "mcp_scope": "mcp:commit",
+      "active_lease_required": true,
+      "authenticated_request_context_required": true,
+      "authorized_work_item_binding_required": true,
+      "quota_facts": ["runtime_attempts"],
+      "constraint": "applies only the exact signed opaque grant target"
     },
     {
       "name": "apply_work_item_create",

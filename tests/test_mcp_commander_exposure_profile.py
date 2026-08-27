@@ -153,6 +153,84 @@ def test_normal_profile_preserves_complete_advanced_catalog(tmp_path) -> None:
     assert "manage_p1_release_evidence" not in COMMANDER_EXPOSED_TOOLS
 
 
+def test_every_ordinary_profile_denies_hidden_authority_primitives_before_handler(
+    tmp_path,
+) -> None:
+    primitives = (
+        "preview_execution_attempt_create",
+        "apply_execution_attempt_create",
+    )
+    for profile in ("normal", "maintainer", "legacy"):
+        server = MCPPlanningBridgeServer(str(tmp_path / profile), exposure_profile=profile)
+        visible = set(server._visible_tool_names())
+        assert visible == server._get_exposed_tool_names(profile)
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        for primitive in primitives:
+            assert primitive not in visible
+            server.tools[primitive] = (
+                lambda params, tool_name=primitive: calls.append((tool_name, params))
+                or {"sentinel": True}
+            )
+            direct = server._call_tool(
+                primitive,
+                {"project_name": "routed-escape", "grant_id": "opaque"},
+            )
+            assert direct["ok"] is False
+            assert direct["error_code"] == "TOOL_NOT_EXPOSED"
+
+            agent = server.call_tool_for_agent(primitive, {})
+            assert agent["ok"] is False
+            assert agent["error_code"] == "TOOL_NOT_EXPOSED"
+
+            rpc = server._handle_jsonrpc_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": primitive, "arguments": {}},
+                }
+            )
+            assert rpc is not None
+            assert rpc["result"]["structuredContent"]["error_code"] == "TOOL_NOT_EXPOSED"
+
+            named = server._handle_jsonrpc_request(
+                {"jsonrpc": "2.0", "id": 2, "method": primitive, "params": {}}
+            )
+            assert named is not None
+            assert named["result"]["error_code"] == "TOOL_NOT_EXPOSED"
+
+        assert calls == []
+
+
+def test_unknown_effective_profile_denies_every_dispatch_before_handler(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+    calls: list[dict[str, object]] = []
+    server.tools["manage_stage_parallel_executor_group"] = (
+        lambda params: calls.append(params) or {"sentinel": True}
+    )
+    server.mcp_exposure_profile = "corrupt-unknown-profile"
+
+    assert server._visible_tool_names() == []
+    denied = server._call_tool("manage_stage_parallel_executor_group", {})
+    assert denied["ok"] is False
+    assert denied["error_code"] == "TOOL_NOT_EXPOSED"
+    assert calls == []
+
+
+def test_normal_stage_tool_remains_visible_and_dispatchable(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+    calls: list[dict[str, object]] = []
+    server.tools["manage_stage_parallel_executor_group"] = (
+        lambda params: calls.append(params) or {"sentinel": True}
+    )
+
+    assert "manage_stage_parallel_executor_group" in server._visible_tool_names()
+    result = server._call_tool("manage_stage_parallel_executor_group", {"action": "status"})
+    assert result["ok"] is True
+    assert calls == [{"action": "status"}]
+
+
 def test_agent_contract_makes_chatgpt_and_local_codex_surfaces_explicit(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
 
@@ -624,7 +702,8 @@ def test_normal_legacy_agent_error_keeps_existing_diagnostics(tmp_path) -> None:
 
     result = server.call_tool_for_agent("manage_git", {"action": "status"})
 
-    assert result["details"] == {"message": diagnostic}
+    assert result["details"] == {}
+    assert diagnostic not in repr(result)
 
 
 def test_commander_file_uri_and_unc_redaction_applies_to_all_three_envelopes(

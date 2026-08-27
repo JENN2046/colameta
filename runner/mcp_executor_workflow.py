@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import threading
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from runner.executor_result_builder import (
     run_once_started_result,
 )
 from runner.executor_run_claims import ExecutorRunClaimStore, parse_iso_datetime
+from runner.executor_events import public_executor_projection
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.fresh_executor_authority import (
@@ -38,7 +40,11 @@ from runner.fresh_executor_authority import (
 from runner.executor_session import ExecutorSessionStore
 from runner.continuation_snapshot import collect_continuation_snapshot
 from runner.project_operation_lease import ProjectOperationLease
-from runner.executor_status import apply_claim_to_status, read_executor_events_for_status, status_base_result
+from runner.executor_status import (
+    apply_claim_to_status,
+    read_executor_events_for_status_result,
+    status_base_result,
+)
 from runner.executor_registry import is_supported_execution_provider
 from runner.final_version_closeout import (
     ARTIFACT_KIND as FINAL_VERSION_CLOSEOUT_ARTIFACT_KIND,
@@ -76,6 +82,7 @@ from runner.executor_validation_truth import (
     validation_truth_from_summary,
 )
 from runner.operator_artifact_binding import bound_artifact_error
+from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 
 PREVIEWS_DIR = os.path.join("runtime", "executor-workflow-previews")
@@ -107,6 +114,8 @@ _EXECUTION_ATTEMPT_BINDING_PREFLIGHT_CHECKS = (
     ("attempt_id", "ATTEMPT_ID_MISMATCH", "attempt_id 已变化。"),
     ("artifact_refs", "ARTIFACT_REFS_MISMATCH", "artifact_refs 已变化。"),
 )
+_FRESH_AUTHORITY_ID_RE = re.compile(r"[0-9a-f]{32}")
+_FRESH_ADMISSION_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class _OperationLeaseOwnership:
@@ -210,7 +219,65 @@ class MCPExecutorWorkflowManager:
                 "error_code": "UNKNOWN_ACTION",
                 "message": "不支持的操作。支持：preflight、run_once_preview、run_once、run_bounded_preview、run_bounded、get_audit_package、refresh_audit_package、recheck_report_preview、recheck_report_apply、manual_fix_prompt_preview、manual_fix_prompt_apply、manual_validation_preview、manual_validation_apply、scope_mismatch_preview、scope_mismatch_apply、state_lineage_reconciliation_preview、state_lineage_reconciliation_apply、final_version_closeout_preview、final_version_closeout_apply、reconcile_orphaned_claims_preview、reconcile_orphaned_claims_apply、status。",
             }
+        if action not in {"run_once_preview", "run_once"} and any(
+            key in params for key in ("executor_authority_id", "admission_sha256")
+        ):
+            return self._error(
+                action,
+                "FRESH_EXECUTOR_AUTHORITY_ACTION_MISMATCH",
+                "Fresh executor authority parameters are not accepted for this action.",
+            )
         return handler(params)
+
+    def _validated_fresh_authority_pair(
+        self,
+        *,
+        action: str,
+        params: dict[str, Any],
+        executor_session_mode: str,
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        authority_raw = params.get("executor_authority_id")
+        admission_raw = params.get("admission_sha256")
+        authority_present = authority_raw is not None
+        admission_present = admission_raw is not None
+        if authority_present != admission_present:
+            return None, None, self._error(
+                action,
+                "FRESH_EXECUTOR_AUTHORITY_PAIR_REQUIRED",
+                "Fresh executor authority parameters must be supplied as a pair.",
+            )
+        if not authority_present:
+            if executor_session_mode == "start_new":
+                return None, None, self._error(
+                    action,
+                    FRESH_EXECUTOR_AUTHORITY_REQUIRED,
+                    "start_new requires a fresh executor authority pair.",
+                )
+            return None, None, None
+        if action not in {"run_once_preview", "run_once"}:
+            return None, None, self._error(
+                action,
+                "FRESH_EXECUTOR_AUTHORITY_ACTION_MISMATCH",
+                "Fresh executor authority parameters are not accepted for this action.",
+            )
+        if (
+            not isinstance(authority_raw, str)
+            or _FRESH_AUTHORITY_ID_RE.fullmatch(authority_raw) is None
+            or not isinstance(admission_raw, str)
+            or _FRESH_ADMISSION_SHA256_RE.fullmatch(admission_raw) is None
+        ):
+            return None, None, self._error(
+                action,
+                "FRESH_EXECUTOR_AUTHORITY_FORMAT_INVALID",
+                "Fresh executor authority parameters have an invalid format.",
+            )
+        if executor_session_mode != "start_new":
+            return None, None, self._error(
+                action,
+                FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
+                "Fresh executor authority parameters require executor_session_mode=start_new.",
+            )
+        return authority_raw, admission_raw, None
 
     def _preflight(self, params: dict[str, Any]) -> dict[str, Any]:
         provider = self._str_param(params.get("provider"), default="codex", lower=True)
@@ -231,8 +298,15 @@ class MCPExecutorWorkflowManager:
                 f"executor_session_mode 必须是 auto、resume_existing 或 start_new，收到：{executor_session_mode}",
             )
         executor_session_mode = executor_session_mode or "auto"
-        executor_authority_id = _sanitize_optional_str(params.get("executor_authority_id"))
-        admission_sha256 = _sanitize_optional_str(params.get("admission_sha256"))
+        executor_authority_id, admission_sha256, pair_error = (
+            self._validated_fresh_authority_pair(
+                action="run_once_preview",
+                params=params,
+                executor_session_mode=executor_session_mode,
+            )
+        )
+        if pair_error is not None:
+            return pair_error
         selected_executor_profile = self._build_selected_executor_profile(
             provider=provider,
             params_provider=params_provider_raw,
@@ -254,6 +328,30 @@ class MCPExecutorWorkflowManager:
                 "warnings": preflight_result.get("warnings", []),
             }
 
+        stage_context = params.get("_stage_execution_context")
+        if stage_context is not None:
+            stage_error = self._validate_stage_execution_preview_context(
+                stage_context,
+                preflight_result=preflight_result,
+                provider=provider,
+                execution_mode=execution_mode,
+            )
+            if stage_error is not None:
+                return self._error(
+                    "run_once_preview",
+                    stage_error,
+                    "stage execution preview context is not exact",
+                )
+            assert isinstance(stage_context, dict)
+            governed = stage_context["work_target"]
+            preflight_result = {
+                **preflight_result,
+                "work_item_id": governed["work_item_id"],
+                "task_version": governed["task_version"],
+                "attempt_id": governed["attempt_id"],
+                "artifact_refs": list(governed["artifact_refs"]),
+            }
+
         preview_key = self._generate_preview_key(prefix="exec_preview")
         artifact = run_once_preview_artifact(
             preview_id=preview_key,
@@ -268,13 +366,18 @@ class MCPExecutorWorkflowManager:
         artifact["model_source"] = selected_executor_profile.get("model_source")
         artifact["reasoning_effort"] = selected_executor_profile.get("reasoning_effort")
         artifact["reasoning_effort_source"] = selected_executor_profile.get("reasoning_effort_source")
-        if executor_authority_id:
+        if executor_authority_id is not None:
             authority_gate_error = self._fresh_authority_preview_gate(
                 authority_id=executor_authority_id,
                 admission_sha256=admission_sha256,
                 provider=provider,
                 executor_session_mode=executor_session_mode,
                 current_head=str(preflight_result.get("current_head") or ""),
+                expected_git_branch=(
+                    str(stage_context.get("expected_execution_branch"))
+                    if isinstance(stage_context, dict)
+                    else "main"
+                ),
                 work_target={
                     "work_item_id": preflight_result.get("work_item_id"),
                     "task_version": preflight_result.get("task_version"),
@@ -301,7 +404,32 @@ class MCPExecutorWorkflowManager:
                 "attempt_id": preflight_result.get("attempt_id"),
                 "artifact_refs": list(preflight_result.get("artifact_refs") or []),
             }
-        self._write_preview_artifact(preview_key, artifact)
+        if isinstance(stage_context, dict):
+            artifact["expected_execution_branch"] = stage_context["expected_execution_branch"]
+            artifact["stage_executor_preview_request_sha256"] = stage_context[
+                "executor_preview_request_sha256"
+            ]
+            existing = self._resolve_stage_executor_preview(artifact)
+            if existing.get("error_code"):
+                return self._error(
+                    "run_once_preview",
+                    str(existing["error_code"]),
+                    "existing stage executor preview does not reconcile exactly",
+                )
+            if existing.get("artifact") is not None:
+                prior = existing["artifact"]
+                return {
+                    "ok": True,
+                    "action": "run_once_preview",
+                    "status": "preview_ready",
+                    "risk_level": "preview",
+                    "preview_id": prior.get("preview_id"),
+                    "provider": prior.get("provider"),
+                    "execution_mode": prior.get("execution_mode"),
+                    "idempotent_replay": True,
+                    "authority_consumed": False,
+                    "provider_started": False,
+                }
         pending_alignment = self._build_pending_alignment_summary(
             current_version=str(artifact.get("current_version") or "").strip()
         )
@@ -751,8 +879,17 @@ class MCPExecutorWorkflowManager:
                 f"executor_session_mode 必须是 auto、resume_existing 或 start_new，收到：{executor_session_mode}",
             )
         executor_session_mode = executor_session_mode or "auto"
-        executor_authority_id = _sanitize_optional_str(params.get("executor_authority_id"))
-        admission_sha256 = _sanitize_optional_str(params.get("admission_sha256"))
+        executor_authority_id, admission_sha256, pair_error = (
+            self._validated_fresh_authority_pair(
+                action="run_once",
+                params=params,
+                executor_session_mode=executor_session_mode,
+            )
+        )
+        if pair_error is not None:
+            return pair_error
+        executor_authority_id = executor_authority_id or ""
+        admission_sha256 = admission_sha256 or ""
 
         if not preview_id:
             return self._error("run_once", "PREVIEW_ID_REQUIRED", "run_once 需要 preview_id。请先调用 run_once_preview 获取。")
@@ -937,6 +1074,7 @@ class MCPExecutorWorkflowManager:
                 provider=provider,
                 executor_session_mode=executor_session_mode,
                 current_head=str(artifact.get("current_head") or ""),
+                expected_git_branch=str(artifact.get("expected_execution_branch") or "main"),
                 work_target={
                     "work_item_id": artifact.get("work_item_id"),
                     "task_version": artifact.get("task_version"),
@@ -1100,6 +1238,8 @@ class MCPExecutorWorkflowManager:
         heartbeat_state: dict[str, Any] = {"errors": 0, "last_error": ""}
         heartbeat_thread: threading.Thread | None = None
         heartbeat_started = False
+        heartbeat_closed = False
+        lifecycle_finalized = False
         final_status = "FAILED"
         report_id = ""
         error_code = ""
@@ -1107,6 +1247,76 @@ class MCPExecutorWorkflowManager:
         exception_type = ""
         blockers: list[str] = []
         warnings: list[str] = []
+
+        def finalize_lifecycle_for_proof(**outcome: Any) -> dict[str, Any]:
+            nonlocal heartbeat_closed, lifecycle_finalized
+            if lifecycle_finalized:
+                return {"ok": False, "error_code": "LIFECYCLE_ALREADY_FINALIZED"}
+            final_warnings = self._str_list(outcome.get("warnings", []))
+            try:
+                if not heartbeat_closed:
+                    heartbeat_stop_event.set()
+                    if heartbeat_started and heartbeat_thread is not None:
+                        heartbeat_thread.join(
+                            timeout=max(
+                                1.0, float(CLAIM_HEARTBEAT_INTERVAL_SECONDS)
+                            )
+                        )
+                        if heartbeat_thread.is_alive():
+                            return {
+                                "ok": False,
+                                "error_code": "CLAIM_HEARTBEAT_STOP_FAILED",
+                            }
+                    self._refresh_claim_heartbeat(
+                        preview_id=preview_id,
+                        run_id=run_id,
+                        error_state=heartbeat_state,
+                    )
+                    heartbeat_closed = True
+                if int(heartbeat_state.get("errors", 0) or 0) > 0:
+                    final_warnings.append("HEARTBEAT_UPDATE_FAILED")
+                self._delete_preview_artifact(preview_id)
+                self._finalize_preview_claim(
+                    preview_id=preview_id,
+                    run_id=run_id,
+                    final_status=str(outcome.get("final_status") or "FAILED"),
+                    report_id=str(outcome.get("report_id") or ""),
+                    error_code=str(outcome.get("error_code") or ""),
+                    message=str(outcome.get("message") or ""),
+                    exception_type=str(outcome.get("exception_type") or ""),
+                    blockers=self._str_list(outcome.get("blockers", [])),
+                    warnings=final_warnings,
+                )
+                if outcome.get("_verify_claim") is False:
+                    lifecycle_finalized = True
+                    return {"ok": True}
+                verification = self._claims._read_claim_verification(
+                    preview_id,
+                    expected_run_id=run_id,
+                )
+                record = verification.get("record") if verification.get("ok") else None
+                if not isinstance(record, dict):
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            verification.get("error_code")
+                            or "CLAIM_FINALIZATION_VERIFICATION_FAILED"
+                        ),
+                    }
+                if record.get("status") != str(outcome.get("final_status") or "FAILED"):
+                    return {"ok": False, "error_code": "CLAIM_FINAL_STATUS_MISMATCH"}
+                expected_report_id = str(outcome.get("report_id") or "")
+                if expected_report_id and record.get("report_id") != expected_report_id:
+                    return {"ok": False, "error_code": "CLAIM_FINAL_REPORT_MISMATCH"}
+                lifecycle_finalized = True
+                return {
+                    "ok": True,
+                    "_claim_verification": verification,
+                }
+            except BaseException:
+                logging.exception("failed canonical run_once lifecycle finalization")
+                return {"ok": False, "error_code": "LIFECYCLE_FINALIZATION_FAILED"}
+
         try:
             heartbeat_thread = threading.Thread(
                 target=self._run_once_heartbeat_worker,
@@ -1147,6 +1357,7 @@ class MCPExecutorWorkflowManager:
                 executor_authority_id=executor_authority_id,
                 admission_sha256=admission_sha256,
                 claimed_work_target=claimed_work_target,
+                _lifecycle_finalizer=finalize_lifecycle_for_proof,
             )
             final_status = "COMPLETED" if bool(result.get("ok")) else "FAILED"
             report_id = str(result.get("latest_report_id") or "")
@@ -1165,52 +1376,40 @@ class MCPExecutorWorkflowManager:
             blockers = []
             warnings = []
         finally:
-            heartbeat_stop_event.set()
-            if heartbeat_started and heartbeat_thread is not None:
-                try:
-                    heartbeat_thread.join(
-                        timeout=max(1.0, float(CLAIM_HEARTBEAT_INTERVAL_SECONDS))
-                    )
-                except BaseException:
-                    logging.exception("failed to join run_once heartbeat worker")
-            try:
-                self._refresh_claim_heartbeat(
-                    preview_id=preview_id,
-                    run_id=run_id,
-                    error_state=heartbeat_state,
-                )
-            except BaseException:
-                heartbeat_state["errors"] = int(heartbeat_state.get("errors", 0) or 0) + 1
-                logging.exception("failed to refresh final run_once heartbeat")
-            heartbeat_error_count = int(heartbeat_state.get("errors", 0) or 0)
-            if heartbeat_error_count > 0:
-                warnings = list(warnings)
-                warnings.append("HEARTBEAT_UPDATE_FAILED")
-                if not error_code and final_status == "FAILED":
-                    error_code = "CLAIM_HEARTBEAT_UPDATE_FAILED"
-                if not error_message and final_status == "FAILED":
-                    error_message = "执行器 heartbeat 写入失败，请检查服务日志。"
-            try:
-                self._delete_preview_artifact(preview_id)
-            except BaseException:
-                logging.exception("failed to delete completed run_once preview artifact")
-            try:
-                self._finalize_preview_claim(
-                    preview_id=preview_id,
-                    run_id=run_id,
+            if not lifecycle_finalized:
+                fallback = finalize_lifecycle_for_proof(
+                    _verify_claim=False,
                     final_status=final_status,
                     report_id=report_id,
-                    error_code=error_code,
-                    message=error_message,
+                    error_code=(
+                        error_code
+                        or (
+                            "CLAIM_HEARTBEAT_UPDATE_FAILED"
+                            if int(heartbeat_state.get("errors", 0) or 0) > 0
+                            and final_status == "FAILED"
+                            else ""
+                        )
+                    ),
+                    message=(
+                        error_message
+                        or (
+                            "执行器 heartbeat 写入失败，请检查服务日志。"
+                            if int(heartbeat_state.get("errors", 0) or 0) > 0
+                            and final_status == "FAILED"
+                            else ""
+                        )
+                    ),
                     exception_type=exception_type,
                     blockers=blockers,
                     warnings=warnings,
                 )
-            except BaseException:
-                logging.exception("failed to finalize completed run_once claim")
-            finally:
-                if operation_lease is not None:
-                    operation_lease.release()
+                if not fallback.get("ok"):
+                    logging.error(
+                        "failed to finalize completed run_once claim: %s",
+                        fallback.get("error_code"),
+                    )
+            if operation_lease is not None:
+                operation_lease.release()
 
     def _run_once_heartbeat_worker(
         self,
@@ -1892,7 +2091,9 @@ class MCPExecutorWorkflowManager:
             self.project_root,
             requested_provider=self._str_param(params.get("provider"), default="codex", lower=True),
         )
-        result["session_status"] = continuation_snapshot.session_status
+        result["session_status"] = public_executor_projection(
+            continuation_snapshot.session_status
+        )
         result["continuation_snapshot"] = continuation_snapshot.public_view(
             self._str_param(params.get("provider"), default="codex", lower=True)
         )
@@ -1932,8 +2133,21 @@ class MCPExecutorWorkflowManager:
         orphan_info = self._evaluate_orphaned_claim(claim)
         possible_report_id = self._resolve_possible_report_id(claim) if orphan_info.get("orphaned") else ""
         run_id = str(claim.get("run_id") or "")
-        events = read_executor_events_for_status(self.project_root, run_id, limit=50)
+        integrity = read_executor_events_for_status_result(
+            self.project_root, run_id, limit=50
+        )
+        events = integrity.get("events") if isinstance(integrity.get("events"), list) else []
         apply_claim_to_status(result, claim, orphan_info, possible_report_id=possible_report_id, events=events)
+        if not integrity.get("ok"):
+            result.update({
+                "ok": False,
+                "status": "integrity_failed",
+                "risk_level": "blocked",
+                "terminal": True,
+                "executor_run_status": "integrity_failed",
+                "error_code": str(integrity.get("error_code") or "EVENT_INTEGRITY_FAILED"),
+                "events": [],
+            })
 
     def _find_claim_by_run_id(self, run_id: str) -> dict[str, Any] | None:
         return self._claims.find_claim_by_run_id(run_id)
@@ -4701,6 +4915,92 @@ class MCPExecutorWorkflowManager:
             "message": message,
         }
 
+    def _validate_stage_execution_preview_context(
+        self,
+        value: Any,
+        *,
+        preflight_result: dict[str, Any],
+        provider: str,
+        execution_mode: str,
+    ) -> str | None:
+        required = {
+            "expected_execution_branch", "expected_head", "work_target",
+            "executor_preview_request_sha256",
+        }
+        if not isinstance(value, dict) or set(value) != required:
+            return "STAGE_EXECUTOR_PREVIEW_CONTEXT_INVALID"
+        branch = value.get("expected_execution_branch")
+        head = value.get("expected_head")
+        request_sha = value.get("executor_preview_request_sha256")
+        target = value.get("work_target")
+        if (
+            not isinstance(branch, str)
+            or not branch
+            or preflight_result.get("current_branch") != branch
+            or not isinstance(head, str)
+            or preflight_result.get("current_head") != head
+            or not isinstance(request_sha, str)
+            or _FRESH_ADMISSION_SHA256_RE.fullmatch(request_sha) is None
+            or optional_work_item_reference_rejections(target)
+            or target.get("artifact_refs") != sorted(set(target.get("artifact_refs", [])))
+            or provider != "codex"
+            or execution_mode != "run"
+        ):
+            return "STAGE_EXECUTOR_PREVIEW_CONTEXT_MISMATCH"
+        return None
+
+    def _resolve_stage_executor_preview(self, expected: dict[str, Any]) -> dict[str, Any]:
+        """Reconcile a lost Stage preview return from exact durable facts."""
+
+        request_sha = expected.get("stage_executor_preview_request_sha256")
+        matches: list[dict[str, Any]] = []
+        try:
+            names = sorted(os.listdir(self._previews_root))
+        except FileNotFoundError:
+            return {"artifact": None}
+        except OSError:
+            return {"error_code": "STAGE_EXECUTOR_PREVIEW_STORE_UNAVAILABLE"}
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            preview_id = name[:-5]
+            candidate = self._read_preview_artifact(preview_id)
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("stage_executor_preview_request_sha256") != request_sha:
+                continue
+            candidate_target = {
+                "work_item_id": candidate.get("work_item_id"),
+                "task_version": candidate.get("task_version"),
+                "attempt_id": candidate.get("attempt_id"),
+                "artifact_refs": candidate.get("artifact_refs"),
+            }
+            expected_target = {
+                "work_item_id": expected.get("work_item_id"),
+                "task_version": expected.get("task_version"),
+                "attempt_id": expected.get("attempt_id"),
+                "artifact_refs": expected.get("artifact_refs"),
+            }
+            exact = bool(
+                candidate.get("artifact_kind") == "run_once"
+                and candidate.get("project_root") == expected.get("project_root")
+                and candidate.get("current_head") == expected.get("current_head")
+                and candidate.get("current_branch") == expected.get("current_branch")
+                and candidate.get("expected_execution_branch")
+                == expected.get("expected_execution_branch")
+                and candidate.get("provider") == expected.get("provider")
+                and candidate.get("execution_mode") == expected.get("execution_mode")
+                and candidate.get("fresh_execution_authority")
+                == expected.get("fresh_execution_authority")
+                and candidate_target == expected_target
+            )
+            if not exact or self._read_preview_claim_record(preview_id) is not None:
+                return {"error_code": "STAGE_EXECUTOR_PREVIEW_RECONCILIATION_MISMATCH"}
+            matches.append(candidate)
+        if len(matches) > 1:
+            return {"error_code": "STAGE_EXECUTOR_PREVIEW_RECONCILIATION_CONFLICT"}
+        return {"artifact": matches[0] if matches else None}
+
     def _fresh_authority_preview_gate(
         self,
         *,
@@ -4710,6 +5010,7 @@ class MCPExecutorWorkflowManager:
         executor_session_mode: str,
         current_head: str,
         work_target: dict[str, Any],
+        expected_git_branch: str = "main",
     ) -> str | None:
         """Read-only fresh-authority gate used at preview and pre-claim time.
 
@@ -4731,7 +5032,7 @@ class MCPExecutorWorkflowManager:
             expected_head=current_head or None,
             expected_provider=provider,
             expected_repository="JENN2046/colameta",
-            expected_git_branch="main",
+            expected_git_branch=expected_git_branch,
         )
         if not inspect_result.get("ok"):
             return (

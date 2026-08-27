@@ -59,6 +59,15 @@ class WorkItemCommandGateway:
             "get_work_item_timeline": self._timeline,
             "preview_legacy_work_item_import": self._preview_import,
             "apply_legacy_work_item_import": self._apply_import,
+            "preview_execution_attempt_create": self._preview_attempt_create,
+            "inspect_execution_attempt_create_preview": self._inspect_attempt_create,
+            "inspect_execution_attempt_create_preview_transport": (
+                self._inspect_attempt_create_transport
+            ),
+            "apply_execution_attempt_create": self._apply_attempt_create,
+            "resolve_execution_attempt_artifact_refs": (
+                self._resolve_attempt_artifacts
+            ),
             "create_execution_attempt": lambda p: self.service.create_execution_attempt(self._command(p)),
             "bind_historical_execution_attempt": lambda p: self.service.bind_historical_execution_attempt(
                 self._command(p)
@@ -168,6 +177,52 @@ class WorkItemCommandGateway:
     def _apply_import(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.service.apply_legacy_work_item_import(self._preview(params))
 
+    def _preview_attempt_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.service.preview_execution_attempt_create(
+            self._command(params),
+            execution_context=self._execution_context(params),
+            principal_context=self.principal_context,
+            ttl_seconds=self._ttl(params),
+        )
+
+    def _inspect_attempt_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.service.inspect_execution_attempt_create_preview(
+            self._preview(params),
+            expected_execution_context=self._execution_context(params),
+            principal_context=self.principal_context,
+        )
+
+    def _inspect_attempt_create_transport(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self.service.inspect_execution_attempt_create_preview_transport(
+            self._preview(params),
+            expected_execution_context=self._execution_context(params),
+        )
+
+    def _resolve_attempt_artifacts(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.service.resolve_execution_attempt_artifact_refs(
+            work_item_id=str(params.get("work_item_id") or ""),
+            task_version=params.get("task_version"),
+            attempt_id=str(params.get("attempt_id") or ""),
+        )
+
+    def _apply_attempt_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        prepared = self.service.prepare_execution_attempt_create_apply(
+            self._preview(params),
+            expected_execution_context=self._execution_context(params),
+            principal_context=self.principal_context,
+        )
+        result = self.service.create_execution_attempt(
+            prepared["attempt_command"],
+            expected_mutable_reality=prepared["expected_mutable_reality"],
+        )
+        return {
+            **result,
+            "preview_id": prepared["preview_id"],
+            "execution_context": prepared["execution_context"],
+        }
+
     def _preview_transition(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.service.preview_work_item_transition(
             self._command(params),
@@ -192,6 +247,16 @@ class WorkItemCommandGateway:
         if not isinstance(preview, dict):
             raise WorkItemGovernanceError("PREVIEW_REQUIRED", "Apply command requires preview.")
         return preview
+
+    @staticmethod
+    def _execution_context(params: dict[str, Any]) -> dict[str, Any]:
+        value = params.get("execution_context")
+        if not isinstance(value, dict):
+            raise WorkItemGovernanceError(
+                "STAGE_ATTEMPT_EXECUTION_CONTEXT_INVALID",
+                "Stage Attempt admission requires an execution_context object.",
+            )
+        return value
 
 
 def execute_work_item_command(

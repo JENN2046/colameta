@@ -292,7 +292,7 @@
       ],
       "properties": {
         "profile": {"const": "authoritative_canary"},
-        "tool_count": {"const": 14},
+        "tool_count": {"const": 16},
         "listed_tools_sha256": {"$ref": "#/$defs/sha256"},
         "tool_allowlist_digest": {"$ref": "#/$defs/sha256"},
         "command_matrix_digest": {"$ref": "#/$defs/sha256"},

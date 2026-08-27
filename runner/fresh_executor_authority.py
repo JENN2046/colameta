@@ -18,10 +18,12 @@ The only persistent state it creates lives under
 from __future__ import annotations
 
 import errno
+import ctypes
 import hashlib
 import json
 import os
 import re
+import time
 import stat
 import uuid
 from datetime import datetime, timezone
@@ -34,12 +36,14 @@ from runner.project_operation_lease import (
     ProjectOperationLease,
 )
 from runner.runner_paths import resolve_project_runner_path
+from runner.work_item_governance.references import optional_work_item_reference_rejections
 
 FRESH_EXECUTOR_AUTHORITY_SCHEMA_VERSION = "fresh_executor_authority_admission.v1"
 FRESH_EXECUTOR_AUTHORITY_SOURCE = "fresh_executor_admission"
 FRESH_EXECUTOR_AUTHORITY_STATE = "admitted"
 FRESH_EXECUTOR_OPERATION_STATE = "idle"
 ADMISSION_FILENAME = "admission.json"
+STAGE_SHARD_RESERVATION_FILENAME = "stage-shard-admission-reservation.json"
 EXECUTOR_SESSIONS_PARTS = ("runtime", "executor-sessions")
 
 # Error codes.
@@ -64,13 +68,73 @@ FRESH_EXECUTOR_ADMISSION_LIVENESS_UNAVAILABLE = (
     "FRESH_EXECUTOR_ADMISSION_LIVENESS_UNAVAILABLE"
 )
 FRESH_EXECUTOR_ADMISSION_STATE_ROOT_ESCAPE = "FRESH_EXECUTOR_ADMISSION_STATE_ROOT_ESCAPE"
+STAGE_SHARD_RESERVATION_SCHEMA_VERSION = "stage_shard_fresh_authority_reservation.v1"
+STAGE_SHARD_RESERVATION_SOURCE = "stage_parallel_shard_fresh_authority"
+STAGE_SHARD_AUTHORITY_RESERVATION_CONFLICT = "STAGE_SHARD_AUTHORITY_RESERVATION_CONFLICT"
+STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED = "STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED"
+STAGE_SHARD_AUTHORITY_BINDING_MISMATCH = "STAGE_SHARD_AUTHORITY_BINDING_MISMATCH"
+STAGE_SHARD_AUTHORITY_ALREADY_CONSUMED = "STAGE_SHARD_AUTHORITY_ALREADY_CONSUMED"
+STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED = "STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED"
 
 # --- Fresh-executor execution binding (R0) ---------------------------------
 # The admission record is immutable; consumption is a separate create-exclusive
 # ``execution-binding.json`` anchored to the open authority directory FD.
-FRESH_EXECUTOR_BINDING_SCHEMA_VERSION = "fresh_executor_execution_binding.v1"
+FRESH_EXECUTOR_BINDING_SCHEMA_VERSION = "fresh_executor_execution_binding.v2"
 FRESH_EXECUTOR_BINDING_SOURCE = "fresh_executor_authority_execution_binding"
 EXECUTION_BINDING_FILENAME = "execution-binding.json"
+_MAX_AUTHORITY_RECORD_BYTES = 1024 * 1024
+_ADMISSION_FIELDS = frozenset(
+    {
+        "schema_version", "executor_authority_id", "project_root",
+        "repository", "git_branch", "admitted_head", "created_at",
+        "admission_state", "operation_state", "provider",
+        "provider_session_identity", "parent_authority_id",
+        "continuation_from", "historical_session_inherited",
+        "provider_invoked", "work_started", "source",
+    }
+)
+_BINDING_FIELDS = frozenset(
+    {
+        "schema_version", "executor_authority_id", "admission_sha256",
+        "project_root", "repository", "run_id", "preview_id", "admitted_head",
+        "provider", "executor_session_mode", "work_item_id", "task_version",
+        "attempt_id", "artifact_refs", "bound_at", "source",
+        "event_stream",
+    }
+)
+_STAGE_SHARD_RESERVATION_FIELDS = frozenset(
+    {
+        "schema_version", "source", "reserved_authority_id",
+        "stage_shard_admission_key", "project_identity", "project_root",
+        "repository", "stage_preview_sha256", "runner_plan_sha256",
+        "stage_id", "parallel_group_id", "task_id", "work_item_id",
+        "task_version", "attempt_id", "artifact_refs",
+        "artifact_refs_sha256", "git_branch", "git_head", "provider",
+        "created_at",
+    }
+)
+
+
+def _validate_event_stream_contract(contract: Any) -> str | None:
+    if not isinstance(contract, dict) or frozenset(contract) != {
+        "identity", "size", "raw_sha256", "record_count"
+    }:
+        return "BINDING_EVENT_STREAM_FIELDS_INVALID"
+    identity = contract.get("identity")
+    if not isinstance(identity, dict) or frozenset(identity) != {"device", "inode"}:
+        return "BINDING_EVENT_STREAM_IDENTITY_INVALID"
+    for field in ("device", "inode"):
+        value = identity.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return "BINDING_EVENT_STREAM_IDENTITY_INVALID"
+    for field in ("size", "record_count"):
+        value = contract.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return "BINDING_EVENT_STREAM_PREFIX_INVALID"
+    raw_sha256 = contract.get("raw_sha256")
+    if not isinstance(raw_sha256, str) or _SHA256_RE.fullmatch(raw_sha256) is None:
+        return "BINDING_EVENT_STREAM_DIGEST_INVALID"
+    return None
 
 # R0 binding/execution gate error codes (all hard blocks).
 FRESH_EXECUTOR_AUTHORITY_REQUIRED = "FRESH_EXECUTOR_AUTHORITY_REQUIRED"
@@ -93,6 +157,75 @@ FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT = "FRESH_EXECUTOR_AUTHORITY_INVALID_CON
 # Authority ids are ColaMeta-generated UUID4 hex (32 lowercase hex chars).
 _AUTHORITY_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40,64}$")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_PREVIEW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _durable_identity(metadata: os.stat_result) -> dict[str, int]:
+    return {"device": int(metadata.st_dev), "inode": int(metadata.st_ino)}
+
+
+def _durable_metadata(metadata: os.stat_result) -> dict[str, int]:
+    return {
+        "device": int(metadata.st_dev),
+        "inode": int(metadata.st_ino),
+        "mode": int(metadata.st_mode),
+        "uid": int(metadata.st_uid),
+        "gid": int(metadata.st_gid),
+        "link_count": int(metadata.st_nlink),
+        "size": int(metadata.st_size),
+        "mtime_ns": int(metadata.st_mtime_ns),
+        "ctime_ns": int(metadata.st_ctime_ns),
+    }
+
+
+def _content_sha256(record: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        record,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _trusted_authority_directory(metadata: os.stat_result) -> bool:
+    return bool(
+        stat.S_ISDIR(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and metadata.st_nlink >= 1
+        and stat.S_IMODE(metadata.st_mode) & 0o022 == 0
+    )
+
+
+def _trusted_authority_ancestor(metadata: os.stat_result) -> bool:
+    return bool(
+        stat.S_ISDIR(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and metadata.st_nlink >= 1
+        and stat.S_IMODE(metadata.st_mode) & 0o002 == 0
+    )
+
+
+def _trusted_authority_file(metadata: os.stat_result) -> bool:
+    return bool(
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and metadata.st_nlink == 1
+        and stat.S_IMODE(metadata.st_mode) & 0o077 == 0
+        and 0 <= metadata.st_size <= _MAX_AUTHORITY_RECORD_BYTES
+    )
+
+
+def _same_authority_file_snapshot(
+    first: os.stat_result, second: os.stat_result
+) -> bool:
+    fields = (
+        "st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size",
+        "st_mtime_ns", "st_ctime_ns",
+    )
+    return all(getattr(first, field) == getattr(second, field) for field in fields)
 
 # Positive liveness schema (P1-b): admission may only proceed when the
 # canonical activity evidence is explicitly interpretable.  Unknown schemas or
@@ -466,7 +599,7 @@ def _verify_authority_state_root(project_root: str) -> dict[str, Any]:
     must not be a symlink.  The final write still uses ``O_CREAT|O_EXCL`` for
     the admission file; this check closes the parent-chain escape.
     """
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    root = os.path.abspath(os.path.expanduser(project_root))
     runner_dir = os.path.join(root, _RUNNER_DIRNAME)
     runtime_dir = os.path.join(runner_dir, *_EXECUTOR_RUNTIME_PARTS[:-1])
     sessions_dir = os.path.join(runner_dir, *_EXECUTOR_RUNTIME_PARTS)
@@ -537,7 +670,7 @@ def _open_authority_state_fds(project_root: str) -> dict[str, Any]:
     after this point cannot redirect the write.  Callers must close the
     returned fds.
     """
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    root = os.path.abspath(os.path.expanduser(project_root))
     fds: list[int] = []
     try:
         project_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -599,6 +732,82 @@ def _write_all_fd(fd: int, data: bytes) -> None:
     while view:
         written = os.write(fd, view)
         view = view[written:]
+
+
+def _rename_noreplace(src: str, dst: str, directory_fd: int) -> None:
+    """Atomically publish one name without replacing an existing object."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        directory_fd,
+        os.fsencode(src),
+        directory_fd,
+        os.fsencode(dst),
+        1,  # RENAME_NOREPLACE
+    )
+    if result != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), dst)
+
+
+def _publish_json_create_exclusive(
+    directory_fd: int,
+    filename: str,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Durably publish bounded JSON without exposing partially written bytes."""
+
+    payload = (
+        json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    if len(payload) > _MAX_AUTHORITY_RECORD_BYTES:
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED}
+    temporary = f".{filename}.{uuid.uuid4().hex}.tmp"
+    file_fd = -1
+    try:
+        file_fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        _write_all_fd(file_fd, payload)
+        os.fsync(file_fd)
+        os.close(file_fd)
+        file_fd = -1
+        _rename_noreplace(temporary, filename, directory_fd)
+        os.fsync(directory_fd)
+        metadata = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        if not _trusted_authority_file(metadata):
+            return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED}
+        return {
+            "ok": True,
+            "raw_sha256": hashlib.sha256(payload).hexdigest(),
+            "raw": payload,
+        }
+    except FileExistsError:
+        return {"ok": False, "error_code": FRESH_EXECUTOR_ADMISSION_AUTHORITY_EXISTS}
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error_code": STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED,
+            "reason": f"{type(exc).__name__}:{exc.errno}",
+        }
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except OSError:
+            pass
 
 
 def collect_fresh_admission_facts(project_root: str) -> dict[str, Any]:
@@ -740,17 +949,11 @@ def _now_iso() -> str:
 def read_fresh_executor_authority(
     project_root: str, authority_id: str
 ) -> dict[str, Any] | None:
-    """Read an existing admission record, or return None (or error)."""
+    """Read an exact verified admission record, or fail closed with ``None``."""
 
-    if _validate_authority_id(authority_id) is False:
-        return None
-    record_path = executor_authority_path(project_root, authority_id)
-    try:
-        with open(record_path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        return payload if isinstance(payload, dict) else None
-    except (OSError, ValueError):
-        return None
+    verification = _read_admission_verification(project_root, authority_id)
+    record = verification.get("record") if verification.get("ok") else None
+    return record if isinstance(record, dict) else None
 
 
 def create_fresh_executor_authority(
@@ -952,6 +1155,352 @@ def create_fresh_executor_authority(
         lease.release()
 
 
+def _stage_shard_reservation_binding(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: record[key]
+        for key in (
+            "project_identity", "project_root", "repository",
+            "stage_preview_sha256", "runner_plan_sha256", "stage_id",
+            "parallel_group_id", "task_id", "work_item_id", "task_version",
+            "attempt_id", "artifact_refs", "artifact_refs_sha256",
+            "git_branch", "git_head", "provider",
+        )
+    }
+
+
+def _validate_stage_shard_reservation(
+    record: Any,
+    *,
+    authority_id: str,
+) -> bool:
+    if not isinstance(record, dict) or frozenset(record) != _STAGE_SHARD_RESERVATION_FIELDS:
+        return False
+    if (
+        record.get("schema_version") != STAGE_SHARD_RESERVATION_SCHEMA_VERSION
+        or record.get("source") != STAGE_SHARD_RESERVATION_SOURCE
+        or record.get("reserved_authority_id") != authority_id
+        or _validate_authority_id(authority_id) is False
+    ):
+        return False
+    for field in (
+        "stage_shard_admission_key", "project_identity", "stage_preview_sha256",
+        "runner_plan_sha256", "artifact_refs_sha256",
+    ):
+        if not isinstance(record.get(field), str) or _SHA256_RE.fullmatch(record[field]) is None:
+            return False
+    if not isinstance(record.get("git_head"), str) or _FULL_HEAD_RE.fullmatch(record["git_head"]) is None:
+        return False
+    for field in (
+        "project_root", "repository", "stage_id", "parallel_group_id", "task_id",
+        "work_item_id", "attempt_id", "git_branch", "provider", "created_at",
+    ):
+        if not isinstance(record.get(field), str) or not record[field] or len(record[field]) > 4096:
+            return False
+    if isinstance(record.get("task_version"), bool) or not isinstance(record.get("task_version"), int) or record["task_version"] < 1:
+        return False
+    artifact_refs = record.get("artifact_refs")
+    if not isinstance(artifact_refs, list) or artifact_refs != sorted(set(artifact_refs)):
+        return False
+    target = {
+        "work_item_id": record["work_item_id"],
+        "task_version": record["task_version"],
+        "attempt_id": record["attempt_id"],
+        "artifact_refs": artifact_refs,
+    }
+    if optional_work_item_reference_rejections(target):
+        return False
+    if record["artifact_refs_sha256"] != _content_sha256({"artifact_refs": artifact_refs}):
+        return False
+    binding = _stage_shard_reservation_binding(record)
+    if record["stage_shard_admission_key"] != _content_sha256(binding):
+        return False
+    expected_project_identity = _content_sha256(
+        {"project_root": record["project_root"], "repository": record["repository"]}
+    )
+    return record["project_identity"] == expected_project_identity
+
+
+def _read_stage_shard_reservation(
+    state: dict[str, Any], authority_fd: int, authority_id: str
+) -> dict[str, Any]:
+    evidence = _read_verified_authority_file(
+        authority_fd,
+        STAGE_SHARD_RESERVATION_FILENAME,
+        state=state,
+        authority_id=authority_id,
+        authority_fd=authority_fd,
+    )
+    if not evidence.get("ok"):
+        return evidence
+    try:
+        record = json.loads(evidence["raw"].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED}
+    if not _validate_stage_shard_reservation(record, authority_id=authority_id):
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED}
+    return {"ok": True, "record": record, "raw_sha256": evidence["raw_sha256"]}
+
+
+def create_or_resolve_stage_shard_fresh_executor_authority(
+    project_root: str,
+    *,
+    expected_repository: str,
+    stage_preview_sha256: str,
+    runner_plan_sha256: str,
+    stage_id: str,
+    parallel_group_id: str,
+    task_id: str,
+    work_item_id: str,
+    task_version: int,
+    attempt_id: str,
+    artifact_refs: list[str],
+    expected_git_branch: str,
+    expected_head: str,
+    provider: str = "codex",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Create or recover one exact, unconsumed Stage-shard authority.
+
+    The ordinary one-shot Fresh Authority API is intentionally not involved.
+    Recovery is keyed by an immutable private reservation while authority IDs
+    remain random UUID4-style values.
+    """
+
+    root = os.path.abspath(os.path.expanduser(project_root))
+    if not isinstance(expected_repository, str) or not expected_repository:
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+    for digest in (stage_preview_sha256, runner_plan_sha256):
+        if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+            return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+    if not isinstance(expected_head, str) or _FULL_HEAD_RE.fullmatch(expected_head) is None:
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+    for value in (stage_id, parallel_group_id, task_id, expected_git_branch):
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 256:
+            return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+    target = {
+        "work_item_id": work_item_id,
+        "task_version": task_version,
+        "attempt_id": attempt_id,
+        "artifact_refs": artifact_refs,
+    }
+    if optional_work_item_reference_rejections(target):
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+    if artifact_refs != sorted(set(artifact_refs)) or provider != "codex":
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+
+    project_identity = _content_sha256(
+        {"project_root": root, "repository": expected_repository}
+    )
+    binding = {
+        "project_identity": project_identity,
+        "project_root": root,
+        "repository": expected_repository,
+        "stage_preview_sha256": stage_preview_sha256,
+        "runner_plan_sha256": runner_plan_sha256,
+        "stage_id": stage_id.strip(),
+        "parallel_group_id": parallel_group_id.strip(),
+        "task_id": task_id.strip(),
+        "work_item_id": work_item_id,
+        "task_version": task_version,
+        "attempt_id": attempt_id,
+        "artifact_refs": list(artifact_refs),
+        "artifact_refs_sha256": _content_sha256({"artifact_refs": artifact_refs}),
+        "git_branch": expected_git_branch.strip(),
+        "git_head": expected_head,
+        "provider": provider,
+    }
+    reservation_key = _content_sha256(binding)
+
+    lease = ProjectOperationLease(
+        root,
+        operation_kind="stage_shard_fresh_authority",
+        surface="stage_parallel_admission",
+    ).acquire()
+    for _ in range(200):
+        if lease.held or lease.error_code != PROJECT_OPERATION_BUSY:
+            break
+        time.sleep(0.005)
+        lease = ProjectOperationLease(
+            root,
+            operation_kind="stage_shard_fresh_authority",
+            surface="stage_parallel_admission",
+        ).acquire()
+    if not lease.held:
+        return {
+            "ok": False,
+            "error_code": (
+                FRESH_EXECUTOR_ADMISSION_PROJECT_BUSY
+                if lease.error_code == PROJECT_OPERATION_BUSY
+                else FRESH_EXECUTOR_ADMISSION_LEASE_UNAVAILABLE
+            ),
+        }
+    try:
+        facts = collect_fresh_admission_facts(root)
+        decision = build_fresh_admission_decision(facts)
+        if not decision.get("allowed"):
+            return {
+                "ok": False,
+                "error_code": decision.get("error_code"),
+                "hard_blockers": decision.get("hard_blockers"),
+            }
+        if (
+            facts.get("repository") != expected_repository
+            or facts.get("git_branch") != expected_git_branch
+            or facts.get("project_head") != expected_head
+        ):
+            return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+
+        writable = _open_authority_state_fds(root)
+        if not writable.get("ok"):
+            return writable
+        _close_fds(
+            [writable["project_fd"], writable["colameta_fd"], writable["runtime_fd"], writable["sessions_fd"]]
+        )
+        state = _open_authority_state_read_fds(root)
+        if not state.get("ok"):
+            return state
+        matching: list[tuple[str, int, dict[str, Any]]] = []
+        opened: list[int] = []
+        try:
+            for candidate in sorted(os.listdir(state["sessions_fd"])):
+                if _validate_authority_id(candidate) is False:
+                    continue
+                authority_fd, authority_error = _open_existing_authority_dir(
+                    state["sessions_fd"], candidate
+                )
+                if authority_fd < 0:
+                    if authority_error == FRESH_EXECUTOR_AUTHORITY_NOT_FOUND:
+                        continue
+                    return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED}
+                reservation = _read_stage_shard_reservation(state, authority_fd, candidate)
+                if reservation.get("error_code") == "NOT_FOUND":
+                    os.close(authority_fd)
+                    continue
+                if not reservation.get("ok"):
+                    os.close(authority_fd)
+                    return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED}
+                record = reservation["record"]
+                if record["stage_shard_admission_key"] == reservation_key:
+                    matching.append((candidate, authority_fd, record))
+                    opened.append(authority_fd)
+                else:
+                    os.close(authority_fd)
+
+            if len(matching) > 1:
+                return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_CONFLICT}
+            if matching:
+                authority_id, authority_fd, reservation_record = matching[0]
+                if _stage_shard_reservation_binding(reservation_record) != binding:
+                    return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+                recovered = True
+            else:
+                recovered = False
+                authority_id = ""
+                authority_fd = -1
+                for _ in range(16):
+                    candidate = uuid.uuid4().hex
+                    try:
+                        os.mkdir(candidate, dir_fd=state["sessions_fd"], mode=0o700)
+                        os.fsync(state["sessions_fd"])
+                    except FileExistsError:
+                        continue
+                    authority_fd, authority_error = _open_existing_authority_dir(
+                        state["sessions_fd"], candidate
+                    )
+                    if authority_fd < 0:
+                        return {"ok": False, "error_code": authority_error}
+                    authority_id = candidate
+                    opened.append(authority_fd)
+                    break
+                if not authority_id:
+                    return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_CONFLICT}
+                reservation_record = {
+                    "schema_version": STAGE_SHARD_RESERVATION_SCHEMA_VERSION,
+                    "source": STAGE_SHARD_RESERVATION_SOURCE,
+                    "reserved_authority_id": authority_id,
+                    "stage_shard_admission_key": reservation_key,
+                    **binding,
+                    "created_at": now or _now_iso(),
+                }
+                published = _publish_json_create_exclusive(
+                    authority_fd,
+                    STAGE_SHARD_RESERVATION_FILENAME,
+                    reservation_record,
+                )
+                if not published.get("ok") or not _verify_authority_ancestor_chain(
+                    state, authority_id=authority_id, authority_fd=authority_fd
+                ):
+                    return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED}
+
+            admission = _read_admission_verification_from_fd(
+                state,
+                authority_fd,
+                authority_id=authority_id,
+                expected_head=expected_head,
+                expected_provider=provider,
+                expected_repository=expected_repository,
+                expected_git_branch=expected_git_branch,
+            )
+            if admission.get("error_code") == FRESH_EXECUTOR_AUTHORITY_NOT_FOUND:
+                admission_record = _build_admission_record(
+                    authority_id=authority_id,
+                    facts=facts,
+                    created_at=now or _now_iso(),
+                )
+                published = _publish_json_create_exclusive(
+                    authority_fd, ADMISSION_FILENAME, admission_record
+                )
+                if not published.get("ok") or not _verify_authority_ancestor_chain(
+                    state, authority_id=authority_id, authority_fd=authority_fd
+                ):
+                    return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_PUBLICATION_FAILED}
+                admission = _read_admission_verification_from_fd(
+                    state,
+                    authority_fd,
+                    authority_id=authority_id,
+                    expected_head=expected_head,
+                    expected_provider=provider,
+                    expected_repository=expected_repository,
+                    expected_git_branch=expected_git_branch,
+                )
+            if not admission.get("ok"):
+                return {**admission, "executor_authority_id": authority_id}
+            binding_evidence = _read_verified_authority_file(
+                authority_fd,
+                EXECUTION_BINDING_FILENAME,
+                state=state,
+                authority_id=authority_id,
+                authority_fd=authority_fd,
+            )
+            if binding_evidence.get("error_code") != "NOT_FOUND":
+                return {
+                    "ok": False,
+                    "error_code": STAGE_SHARD_AUTHORITY_ALREADY_CONSUMED,
+                    "executor_authority_id": authority_id,
+                }
+            return {
+                "ok": True,
+                "status": "authority_recovered" if recovered else "authority_created",
+                "executor_authority_id": authority_id,
+                "admission_sha256": admission["admission_sha256"],
+                "stage_shard_admission_key": reservation_key,
+                "record": admission["record"],
+                "reservation": reservation_record,
+                "unconsumed": True,
+                "idempotent_replay": recovered,
+                "provider_started": False,
+            }
+        finally:
+            for fd in set(opened):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            _close_fds(state["fds"])
+    finally:
+        lease.release()
+
+
 def _best_effort_remove_empty_dir(path: str) -> None:
     try:
         os.rmdir(path)
@@ -970,29 +1519,42 @@ def _open_authority_state_read_fds(project_root: str) -> dict[str, Any]:
     ``O_NOFOLLOW``, so a symlink at any level fails closed and a missing
     component means the authority cannot exist (``AUTHORITY_NOT_FOUND``).
     """
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    root = os.path.abspath(os.path.expanduser(project_root))
     fds: list[int] = []
+    links: list[tuple[int | None, str, int, int]] = []
     try:
-        project_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        root_before = os.stat(root, follow_symlinks=False)
+        project_fd = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
         fds.append(project_fd)
-        colameta_fd = os.open(
-            _RUNNER_DIRNAME,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=project_fd,
-        )
-        fds.append(colameta_fd)
-        runtime_fd = os.open(
-            "runtime",
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=colameta_fd,
-        )
-        fds.append(runtime_fd)
-        sessions_fd = os.open(
-            "executor-sessions",
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=runtime_fd,
-        )
-        fds.append(sessions_fd)
+        project_stat = os.fstat(project_fd)
+        if (
+            not _trusted_authority_ancestor(project_stat)
+            or (root_before.st_dev, root_before.st_ino)
+            != (project_stat.st_dev, project_stat.st_ino)
+        ):
+            raise OSError(errno.EPERM, "unsafe project root")
+        links.append((None, root, project_stat.st_dev, project_stat.st_ino))
+        parent_fd = project_fd
+        opened_children: list[int] = []
+        for component in (_RUNNER_DIRNAME, "runtime", "executor-sessions"):
+            child_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            fds.append(child_fd)
+            opened_children.append(child_fd)
+            child_stat = os.fstat(child_fd)
+            if not _trusted_authority_ancestor(child_stat):
+                raise OSError(errno.EPERM, "unsafe authority ancestor")
+            links.append(
+                (parent_fd, component, child_stat.st_dev, child_stat.st_ino)
+            )
+            parent_fd = child_fd
+        colameta_fd, runtime_fd, sessions_fd = opened_children
     except OSError as exc:
         _close_fds(fds)
         return {
@@ -1006,6 +1568,8 @@ def _open_authority_state_read_fds(project_root: str) -> dict[str, Any]:
         "colameta_fd": colameta_fd,
         "runtime_fd": runtime_fd,
         "sessions_fd": sessions_fd,
+        "fds": fds,
+        "links": links,
         "canonical_project_root": root,
         "authority_root_path": os.path.join(
             root, _RUNNER_DIRNAME, "runtime", "executor-sessions"
@@ -1021,14 +1585,15 @@ def _open_existing_authority_dir(
     Returns ``(authority_fd, None)`` or ``(-1, error_code)``.  Never creates.
     """
     try:
-        return (
-            os.open(
-                authority_id,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=sessions_fd,
-            ),
-            None,
+        authority_fd = os.open(
+            authority_id,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=sessions_fd,
         )
+        if not _trusted_authority_directory(os.fstat(authority_fd)):
+            os.close(authority_fd)
+            return -1, FRESH_EXECUTOR_AUTHORITY_MALFORMED
+        return authority_fd, None
     except FileNotFoundError:
         return -1, FRESH_EXECUTOR_AUTHORITY_NOT_FOUND
     except OSError as exc:
@@ -1037,14 +1602,116 @@ def _open_existing_authority_dir(
         return -1, FRESH_EXECUTOR_AUTHORITY_NOT_FOUND
 
 
-def _read_fd_all(fd: int) -> bytes:
-    chunks: list[bytes] = []
-    while True:
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    return b"".join(chunks)
+def _verify_authority_ancestor_chain(
+    state: dict[str, Any], *, authority_id: str | None = None, authority_fd: int = -1
+) -> bool:
+    try:
+        for parent_fd, name, device, inode in state["links"]:
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                not _trusted_authority_ancestor(current)
+                or (current.st_dev, current.st_ino) != (device, inode)
+            ):
+                return False
+        if authority_id is not None:
+            current = os.stat(
+                authority_id,
+                dir_fd=state["sessions_fd"],
+                follow_symlinks=False,
+            )
+            opened = os.fstat(authority_fd)
+            if (
+                not _trusted_authority_directory(current)
+                or not _trusted_authority_directory(opened)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+            ):
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def _read_verified_authority_file(
+    parent_fd: int,
+    filename: str,
+    *,
+    state: dict[str, Any],
+    authority_id: str,
+    authority_fd: int,
+) -> dict[str, Any]:
+    """Read one authority record with stable bytes, metadata, and path proof.
+
+    Missing files are also path-revalidated so an ancestor/name replacement
+    cannot turn an existing-binding absence probe into authority to create.
+    """
+    file_fd = -1
+    try:
+        if not _verify_authority_ancestor_chain(
+            state, authority_id=authority_id, authority_fd=authority_fd
+        ):
+            return {"ok": False, "error_code": "ANCESTOR_UNSTABLE"}
+        try:
+            file_fd = os.open(
+                filename,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            if not _verify_authority_ancestor_chain(
+                state, authority_id=authority_id, authority_fd=authority_fd
+            ):
+                return {"ok": False, "error_code": "ANCESTOR_UNSTABLE"}
+            return {"ok": False, "error_code": "NOT_FOUND"}
+        except OSError:
+            return {"ok": False, "error_code": "FILE_UNSAFE"}
+        before = os.fstat(file_fd)
+        if not _trusted_authority_file(before):
+            return {"ok": False, "error_code": "FILE_UNSAFE"}
+
+        def read_complete() -> bytes:
+            remaining = before.st_size
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(file_fd, min(65536, remaining))
+                if not chunk:
+                    raise OSError("authority record truncated")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(file_fd, 1):
+                raise OSError("authority record grew")
+            return b"".join(chunks)
+
+        raw = read_complete()
+        os.lseek(file_fd, 0, os.SEEK_SET)
+        repeated = read_complete()
+        after = os.fstat(file_fd)
+        current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            raw != repeated
+            or not _same_authority_file_snapshot(before, after)
+            or not _same_authority_file_snapshot(before, current)
+            or not _trusted_authority_file(after)
+            or not _trusted_authority_file(current)
+            or not _verify_authority_ancestor_chain(
+                state, authority_id=authority_id, authority_fd=authority_fd
+            )
+        ):
+            return {"ok": False, "error_code": "FILE_UNSTABLE"}
+        return {
+            "ok": True,
+            "raw": raw,
+            "identity": _durable_identity(before),
+            "metadata": _durable_metadata(before),
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    except OSError:
+        return {"ok": False, "error_code": "FILE_UNSTABLE"}
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
 
 
 def _validate_admission_for_execution(
@@ -1064,28 +1731,51 @@ def _validate_admission_for_execution(
     """
     if not isinstance(record, dict):
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if frozenset(record) != _ADMISSION_FIELDS:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
     if record.get("schema_version") != FRESH_EXECUTOR_AUTHORITY_SCHEMA_VERSION:
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
-    if record.get("executor_authority_id") != authority_id:
+    if (
+        not isinstance(record.get("executor_authority_id"), str)
+        or record["executor_authority_id"] != authority_id
+    ):
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
-    if record.get("project_root") != canonical_project_root:
+    if (
+        not isinstance(record.get("project_root"), str)
+        or record["project_root"] != canonical_project_root
+    ):
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
-    if record.get("source") != FRESH_EXECUTOR_AUTHORITY_SOURCE:
+    repository = record.get("repository")
+    if not isinstance(repository, str) or not repository.strip():
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
-    if expected_repository is not None and record.get("repository") != expected_repository:
+    git_branch = record.get("git_branch")
+    if not isinstance(git_branch, str) or not git_branch.strip():
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
-    if expected_git_branch is not None and record.get("git_branch") != expected_git_branch:
+    if (
+        not isinstance(record.get("source"), str)
+        or record["source"] != FRESH_EXECUTOR_AUTHORITY_SOURCE
+    ):
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if expected_repository is not None and repository != expected_repository:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if expected_git_branch is not None and git_branch != expected_git_branch:
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
     admitted_head = record.get("admitted_head")
     if not isinstance(admitted_head, str) or _FULL_HEAD_RE.fullmatch(admitted_head) is None:
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
     if expected_head is not None and admitted_head.lower() != str(expected_head).lower():
         return FRESH_EXECUTOR_AUTHORITY_HEAD_MISMATCH
-    if record.get("provider") != expected_provider:
+    if not isinstance(record.get("provider"), str):
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record["provider"] != expected_provider:
         return FRESH_EXECUTOR_AUTHORITY_PROVIDER_MISMATCH
-    if record.get("admission_state") != FRESH_EXECUTOR_AUTHORITY_STATE:
+    if not isinstance(record.get("admission_state"), str):
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record["admission_state"] != FRESH_EXECUTOR_AUTHORITY_STATE:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
-    if record.get("operation_state") != FRESH_EXECUTOR_OPERATION_STATE:
+    if not isinstance(record.get("operation_state"), str):
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record["operation_state"] != FRESH_EXECUTOR_OPERATION_STATE:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
     if record.get("provider_session_identity") is not None:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
@@ -1093,15 +1783,142 @@ def _validate_admission_for_execution(
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
     if record.get("continuation_from") is not None:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
-    if record.get("historical_session_inherited") is not False:
+    if type(record.get("historical_session_inherited")) is not bool:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record["historical_session_inherited"] is not False:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
-    if record.get("provider_invoked") is not False:
+    if type(record.get("provider_invoked")) is not bool:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record["provider_invoked"] is not False:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
-    if record.get("work_started") is not False:
+    if type(record.get("work_started")) is not bool:
+        return FRESH_EXECUTOR_AUTHORITY_MALFORMED
+    if record["work_started"] is not False:
         return FRESH_EXECUTOR_AUTHORITY_STATE_INVALID
-    if not isinstance(record.get("created_at"), str):
+    if not isinstance(record.get("created_at"), str) or not record["created_at"].strip():
         return FRESH_EXECUTOR_AUTHORITY_MALFORMED
     return None
+
+
+def _read_admission_verification_from_fd(
+    state: dict[str, Any],
+    authority_fd: int,
+    *,
+    authority_id: str,
+    expected_admission_sha256: str | None = None,
+    expected_head: str | None = None,
+    expected_provider: str = "codex",
+    expected_repository: str | None = None,
+    expected_git_branch: str | None = None,
+) -> dict[str, Any]:
+    evidence = _read_verified_authority_file(
+        authority_fd,
+        ADMISSION_FILENAME,
+        state=state,
+        authority_id=authority_id,
+        authority_fd=authority_fd,
+    )
+    if not evidence.get("ok"):
+        missing = evidence.get("error_code") == "NOT_FOUND"
+        return {
+            "ok": False,
+            "error_code": (
+                FRESH_EXECUTOR_AUTHORITY_NOT_FOUND
+                if missing
+                else FRESH_EXECUTOR_AUTHORITY_MALFORMED
+            ),
+            "reason": "admission record missing" if missing else "admission record unsafe",
+        }
+    admission_sha256 = evidence["raw_sha256"]
+    if expected_admission_sha256 is not None:
+        normalized_expected = str(expected_admission_sha256).lower()
+        if _SHA256_RE.fullmatch(normalized_expected) is None:
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+                "reason": "malformed expected admission hash",
+            }
+        if admission_sha256 != normalized_expected:
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH,
+                "observed_sha256": admission_sha256,
+                "expected_sha256": normalized_expected,
+                "reason": "admission bytes do not match the expected hash",
+            }
+    try:
+        record = json.loads(evidence["raw"].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+            "reason": "admission record is not valid JSON",
+        }
+    validation_error = _validate_admission_for_execution(
+        record,
+        authority_id=authority_id,
+        canonical_project_root=state["canonical_project_root"],
+        expected_head=expected_head,
+        expected_provider=expected_provider,
+        expected_repository=expected_repository,
+        expected_git_branch=expected_git_branch,
+    )
+    if validation_error is not None:
+        return {
+            "ok": False,
+            "error_code": validation_error,
+            "reason": f"admission validation failed: {validation_error}",
+        }
+    assert isinstance(record, dict)
+    return {
+        "ok": True,
+        "record": record,
+        "admission_sha256": admission_sha256,
+        "durable_contract": {
+            "identity": evidence["identity"],
+            "metadata": evidence["metadata"],
+            "raw_sha256": admission_sha256,
+            "content_sha256": _content_sha256(record),
+        },
+    }
+
+
+def _read_admission_verification(
+    project_root: str,
+    authority_id: str,
+    **expected: Any,
+) -> dict[str, Any]:
+    """Private exact admission read carrying non-public durable evidence."""
+
+    if _validate_authority_id(authority_id) is False:
+        return {"ok": False, "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT}
+    state = _open_authority_state_read_fds(project_root)
+    if not state.get("ok"):
+        return {
+            "ok": False,
+            "error_code": state.get("error_code"),
+            "reason": state.get("reason"),
+        }
+    authority_fd = -1
+    try:
+        authority_fd, authority_error = _open_existing_authority_dir(
+            state["sessions_fd"], authority_id
+        )
+        if authority_fd < 0:
+            return {"ok": False, "error_code": authority_error}
+        return _read_admission_verification_from_fd(
+            state,
+            authority_fd,
+            authority_id=authority_id,
+            **expected,
+        )
+    finally:
+        if authority_fd >= 0:
+            try:
+                os.close(authority_fd)
+            except OSError:
+                pass
+        _close_fds(state["fds"])
 
 
 def inspect_fresh_executor_authority_for_execution(
@@ -1116,8 +1933,7 @@ def inspect_fresh_executor_authority_for_execution(
 ) -> dict[str, Any]:
     """Authoritative, FD-anchored admission read for execution decisions.
 
-    Unlike the inspection-only ``read_fresh_executor_authority`` (a plain
-    pathname reader), this read walks ``project -> .colameta -> runtime ->
+    This read walks ``project -> .colameta -> runtime ->
     executor-sessions -> <authority_id>`` one ``O_NOFOLLOW`` component at a
     time relative to already-open parent FDs, hashes the raw admission bytes
     and compares against ``expected_admission_sha256`` when supplied, then
@@ -1131,7 +1947,7 @@ def inspect_fresh_executor_authority_for_execution(
             "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
             "reason": "malformed authority id",
         }
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    root = os.path.abspath(os.path.expanduser(project_root))
     state = _open_authority_state_read_fds(root)
     if not state.get("ok"):
         return {
@@ -1140,7 +1956,6 @@ def inspect_fresh_executor_authority_for_execution(
             "reason": state.get("reason"),
         }
     authority_fd = -1
-    admission_fd = -1
     try:
         authority_fd, authority_error = _open_existing_authority_dir(
             state["sessions_fd"], authority_id
@@ -1152,134 +1967,70 @@ def inspect_fresh_executor_authority_for_execution(
                 "executor_authority_id": authority_id,
                 "reason": "authority directory unavailable",
             }
-        try:
-            try:
-                admission_fd = os.open(
-                    ADMISSION_FILENAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=authority_fd,
-                )
-            except FileNotFoundError:
-                return {
-                    "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
-                    "executor_authority_id": authority_id,
-                    "reason": "admission record missing",
-                }
-            except OSError as exc:
-                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "admission record symlink or escape",
-                    }
-                return {
-                    "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
-                    "executor_authority_id": authority_id,
-                    "reason": f"{type(exc).__name__}:{exc.errno}",
-                }
-            try:
-                admission_stat = os.fstat(admission_fd)
-                if not stat.S_ISREG(admission_stat.st_mode):
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "admission record is not a regular file",
-                    }
-                if stat.S_IMODE(admission_stat.st_mode) & 0o077:
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "admission record permissions unsafe",
-                    }
-                raw = _read_fd_all(admission_fd)
-            finally:
-                os.close(admission_fd)
-                admission_fd = -1
-        finally:
-            if admission_fd >= 0:
-                try:
-                    os.close(admission_fd)
-                except OSError:
-                    pass
-
-        admission_sha256 = hashlib.sha256(raw).hexdigest()
-        if expected_admission_sha256 is not None:
-            normalized_expected = str(expected_admission_sha256).lower()
-            if re.fullmatch(r"[0-9a-f]{64}", normalized_expected) is None:
-                return {
-                    "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
-                    "reason": "malformed expected admission hash",
-                }
-            if admission_sha256 != normalized_expected:
-                return {
-                    "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH,
-                    "executor_authority_id": authority_id,
-                    "observed_sha256": admission_sha256,
-                    "expected_sha256": normalized_expected,
-                    "reason": "admission bytes do not match the expected hash",
-                }
-        try:
-            record = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
-            return {
-                "ok": False,
-                "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                "executor_authority_id": authority_id,
-                "reason": "admission record is not valid JSON",
-            }
-        validation_error = _validate_admission_for_execution(
-            record,
+        admission = _read_admission_verification_from_fd(
+            state,
+            authority_fd,
             authority_id=authority_id,
-            canonical_project_root=root,
+            expected_admission_sha256=expected_admission_sha256,
             expected_head=expected_head,
             expected_provider=expected_provider,
             expected_repository=expected_repository,
             expected_git_branch=expected_git_branch,
         )
-        if validation_error is not None:
-            return {
-                "ok": False,
-                "error_code": validation_error,
-                "executor_authority_id": authority_id,
-                "reason": f"admission validation failed: {validation_error}",
-            }
+        if not admission.get("ok"):
+            return {**admission, "executor_authority_id": authority_id}
+        record = admission["record"]
+        admission_sha256 = admission["admission_sha256"]
 
         binding_present = False
         binding_record: dict[str, Any] | None = None
-        binding_fd = -1
-        try:
+        binding_evidence = _read_verified_authority_file(
+            authority_fd,
+            EXECUTION_BINDING_FILENAME,
+            state=state,
+            authority_id=authority_id,
+            authority_fd=authority_fd,
+        )
+        if binding_evidence.get("error_code") == "NOT_FOUND":
+            binding_present = False
+        else:
+            binding_present = True
+            if not binding_evidence.get("ok"):
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                    "executor_authority_id": authority_id,
+                    "reason": "execution binding unsafe",
+                }
             try:
-                binding_fd = os.open(
-                    EXECUTION_BINDING_FILENAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=authority_fd,
+                parsed = json.loads(binding_evidence["raw"].decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                parsed = None
+            if (
+                _validate_execution_binding_contract(
+                    parsed,
+                    authority_id=authority_id,
+                    canonical_project_root=root,
                 )
-            except FileNotFoundError:
-                binding_present = False
-            except OSError:
-                binding_present = True
-            else:
-                binding_present = True
-                try:
-                    binding_raw = _read_fd_all(binding_fd)
-                    parsed = json.loads(binding_raw.decode("utf-8"))
-                    if isinstance(parsed, dict):
-                        binding_record = parsed
-                except (OSError, UnicodeDecodeError, ValueError):
-                    binding_record = None
-        finally:
-            if binding_fd >= 0:
-                try:
-                    os.close(binding_fd)
-                except OSError:
-                    pass
+                is not None
+            ):
+                return {
+                    "ok": False,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                    "executor_authority_id": authority_id,
+                    "reason": "execution binding malformed",
+                }
+            binding_record = parsed
+
+        if not _verify_authority_ancestor_chain(
+            state, authority_id=authority_id, authority_fd=authority_fd
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
+                "executor_authority_id": authority_id,
+                "reason": "authority ancestor chain changed during inspection",
+            }
 
         return {
             "ok": True,
@@ -1309,45 +2060,47 @@ def inspect_fresh_executor_authority_for_execution(
         )
 
 
-def read_execution_binding(
-    project_root: str, authority_id: str
-) -> dict[str, Any] | None:
-    """FD-anchored read of the execution-binding record, or None if absent."""
+def inspect_stage_shard_fresh_executor_authority(
+    project_root: str,
+    authority_id: str,
+    *,
+    expected_stage_shard_admission_key: str,
+    expected_admission_sha256: str,
+    expected_binding: dict[str, Any],
+) -> dict[str, Any]:
+    """Read-only verification of an exact Stage reservation/admission pair."""
 
-    if _validate_authority_id(authority_id) is False:
-        return None
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    if (
+        _validate_authority_id(authority_id) is False
+        or not isinstance(expected_stage_shard_admission_key, str)
+        or _SHA256_RE.fullmatch(expected_stage_shard_admission_key) is None
+        or not isinstance(expected_binding, dict)
+    ):
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
+    root = os.path.abspath(os.path.expanduser(project_root))
     state = _open_authority_state_read_fds(root)
     if not state.get("ok"):
-        return None
+        return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED}
     authority_fd = -1
     try:
         authority_fd, authority_error = _open_existing_authority_dir(
             state["sessions_fd"], authority_id
         )
         if authority_fd < 0:
-            return None
-        try:
-            try:
-                binding_fd = os.open(
-                    EXECUTION_BINDING_FILENAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=authority_fd,
-                )
-            except FileNotFoundError:
-                return None
-            except OSError:
-                return None
-            try:
-                raw = _read_fd_all(binding_fd)
-                parsed = json.loads(raw.decode("utf-8"))
-                return parsed if isinstance(parsed, dict) else None
-            except (OSError, UnicodeDecodeError, ValueError):
-                return None
-            finally:
-                os.close(binding_fd)
-        finally:
-            pass
+            return {"ok": False, "error_code": authority_error}
+        reservation = _read_stage_shard_reservation(state, authority_fd, authority_id)
+        if not reservation.get("ok"):
+            return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_RESERVATION_MALFORMED}
+        record = reservation["record"]
+        if (
+            record.get("stage_shard_admission_key")
+            != expected_stage_shard_admission_key
+            or _stage_shard_reservation_binding(record) != expected_binding
+            or not _verify_authority_ancestor_chain(
+                state, authority_id=authority_id, authority_fd=authority_fd
+            )
+        ):
+            return {"ok": False, "error_code": STAGE_SHARD_AUTHORITY_BINDING_MISMATCH}
     finally:
         if authority_fd >= 0:
             try:
@@ -1356,12 +2109,169 @@ def read_execution_binding(
                 pass
         _close_fds(
             [
-                state["project_fd"],
-                state["colameta_fd"],
-                state["runtime_fd"],
-                state["sessions_fd"],
+                state["project_fd"], state["colameta_fd"],
+                state["runtime_fd"], state["sessions_fd"],
             ]
         )
+    admission = inspect_fresh_executor_authority_for_execution(
+        root,
+        authority_id,
+        expected_admission_sha256=expected_admission_sha256,
+        expected_head=expected_binding.get("git_head"),
+        expected_provider=str(expected_binding.get("provider") or ""),
+        expected_repository=str(expected_binding.get("repository") or ""),
+        expected_git_branch=str(expected_binding.get("git_branch") or ""),
+    )
+    if not admission.get("ok") or admission.get("unconsumed") is not True:
+        return admission
+    return {
+        **admission,
+        "stage_shard_admission_key": expected_stage_shard_admission_key,
+        "stage_reservation_verified": True,
+    }
+
+
+def _validate_execution_binding_contract(
+    record: Any,
+    *,
+    authority_id: str,
+    canonical_project_root: str,
+    expected_run_id: str | None = None,
+) -> str | None:
+    if not isinstance(record, dict):
+        return "BINDING_CONTRACT_NOT_OBJECT"
+    if frozenset(record) != _BINDING_FIELDS:
+        return "BINDING_CONTRACT_FIELDS_INVALID"
+    if record.get("schema_version") != FRESH_EXECUTOR_BINDING_SCHEMA_VERSION:
+        return "BINDING_SCHEMA_VERSION_INVALID"
+    if record.get("executor_authority_id") != authority_id:
+        return "BINDING_AUTHORITY_ID_MISMATCH"
+    admission_sha256 = record.get("admission_sha256")
+    if not isinstance(admission_sha256, str) or _SHA256_RE.fullmatch(admission_sha256) is None:
+        return "BINDING_ADMISSION_DIGEST_INVALID"
+    if record.get("project_root") != canonical_project_root:
+        return "BINDING_PROJECT_ROOT_MISMATCH"
+    repository = record.get("repository")
+    if repository is not None and (not isinstance(repository, str) or not repository.strip()):
+        return "BINDING_REPOSITORY_INVALID"
+    run_id = record.get("run_id")
+    if not isinstance(run_id, str) or _RUN_ID_RE.fullmatch(run_id) is None:
+        return "BINDING_RUN_ID_INVALID"
+    if expected_run_id is not None and run_id != expected_run_id:
+        return "BINDING_RUN_ID_MISMATCH"
+    preview_id = record.get("preview_id")
+    if not isinstance(preview_id, str) or _PREVIEW_ID_RE.fullmatch(preview_id) is None:
+        return "BINDING_PREVIEW_ID_INVALID"
+    admitted_head = record.get("admitted_head")
+    if not isinstance(admitted_head, str) or _FULL_HEAD_RE.fullmatch(admitted_head) is None:
+        return "BINDING_HEAD_INVALID"
+    if record.get("provider") != "codex":
+        return "BINDING_PROVIDER_INVALID"
+    if record.get("executor_session_mode") != "start_new":
+        return "BINDING_SESSION_MODE_INVALID"
+    if record.get("source") != FRESH_EXECUTOR_BINDING_SOURCE:
+        return "BINDING_SOURCE_INVALID"
+    event_stream_error = _validate_event_stream_contract(record.get("event_stream"))
+    if event_stream_error is not None:
+        return event_stream_error
+    if not isinstance(record.get("bound_at"), str) or not record["bound_at"].strip():
+        return "BINDING_BOUND_AT_INVALID"
+    work_target = {
+        field: record[field]
+        for field in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
+    }
+    if optional_work_item_reference_rejections(work_target):
+        return "BINDING_WORK_TARGET_INVALID"
+    return None
+
+
+def _read_execution_binding_verification(
+    project_root: str,
+    authority_id: str,
+    *,
+    expected_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Internal exact binding read with safe durable evidence."""
+
+    if _validate_authority_id(authority_id) is False:
+        return {"ok": False, "error_code": "BINDING_AUTHORITY_ID_INVALID"}
+    root = os.path.abspath(os.path.expanduser(project_root))
+    state = _open_authority_state_read_fds(root)
+    if not state.get("ok"):
+        return {"ok": False, "error_code": "BINDING_ANCESTOR_UNSAFE"}
+    authority_fd = -1
+    try:
+        authority_fd, authority_error = _open_existing_authority_dir(
+            state["sessions_fd"], authority_id
+        )
+        if authority_fd < 0:
+            return {
+                "ok": False,
+                "error_code": authority_error or "BINDING_AUTHORITY_UNSAFE",
+            }
+        evidence = _read_verified_authority_file(
+            authority_fd,
+            EXECUTION_BINDING_FILENAME,
+            state=state,
+            authority_id=authority_id,
+            authority_fd=authority_fd,
+        )
+        if not evidence.get("ok"):
+            return {
+                "ok": False,
+                "error_code": f"BINDING_{evidence.get('error_code') or 'READ_FAILED'}",
+            }
+        if not _verify_authority_ancestor_chain(
+            state, authority_id=authority_id, authority_fd=authority_fd
+        ):
+            return {"ok": False, "error_code": "BINDING_ANCESTOR_UNSTABLE"}
+        raw = evidence["raw"]
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return {"ok": False, "error_code": "BINDING_JSON_INVALID"}
+        contract_error = _validate_execution_binding_contract(
+            parsed,
+            authority_id=authority_id,
+            canonical_project_root=root,
+            expected_run_id=expected_run_id,
+        )
+        if contract_error is not None:
+            return {"ok": False, "error_code": contract_error}
+        assert isinstance(parsed, dict)
+        durable_contract = {
+            "identity": evidence["identity"],
+            "metadata": evidence["metadata"],
+            "raw_sha256": evidence["raw_sha256"],
+            "content_sha256": _content_sha256(parsed),
+        }
+        return {
+            "ok": True,
+            "record": parsed,
+            "durable_contract": durable_contract,
+        }
+    finally:
+        if authority_fd >= 0:
+            try:
+                os.close(authority_fd)
+            except OSError:
+                pass
+        _close_fds(
+            [
+                state["project_fd"], state["colameta_fd"],
+                state["runtime_fd"], state["sessions_fd"],
+            ]
+        )
+
+
+def read_execution_binding(
+    project_root: str, authority_id: str
+) -> dict[str, Any] | None:
+    """Read an exact durable execution binding, or fail closed with ``None``."""
+
+    verification = _read_execution_binding_verification(project_root, authority_id)
+    record = verification.get("record") if verification.get("ok") else None
+    return record if isinstance(record, dict) else None
 
 
 def _build_execution_binding_payload(
@@ -1379,6 +2289,7 @@ def _build_execution_binding_payload(
     task_version: Any,
     attempt_id: Any,
     artifact_refs: list[str],
+    event_stream: dict[str, Any],
     now: str | None = None,
 ) -> dict[str, Any]:
     """Shared execution-binding payload (immutable fields)."""
@@ -1398,6 +2309,7 @@ def _build_execution_binding_payload(
         "task_version": task_version,
         "attempt_id": attempt_id,
         "artifact_refs": artifact_refs,
+        "event_stream": event_stream,
         "bound_at": now or _now_iso(),
         "source": FRESH_EXECUTOR_BINDING_SOURCE,
     }
@@ -1415,6 +2327,7 @@ def create_execution_binding(
     work_target: dict[str, Any] | None = None,
     admission_sha256: str | None = None,
     repository: str | None = None,
+    event_stream: dict[str, Any] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Atomically consume an authority by creating ``execution-binding.json``.
@@ -1455,6 +2368,13 @@ def create_execution_binding(
             "ok": False,
             "error_code": FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
             "reason": "fresh authority binding requires executor_session_mode=start_new",
+        }
+    event_stream_error = _validate_event_stream_contract(event_stream)
+    if event_stream_error is not None:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": event_stream_error,
         }
     if not isinstance(admitted_head, str) or _FULL_HEAD_RE.fullmatch(admitted_head) is None:
         return {
@@ -1498,7 +2418,7 @@ def create_execution_binding(
             "reason": "governed work target required for fresh authority binding",
         }
 
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    root = os.path.abspath(os.path.expanduser(project_root))
     state = _open_authority_state_read_fds(root)
     if not state.get("ok"):
         return {
@@ -1520,58 +2440,55 @@ def create_execution_binding(
                 "reason": "authority directory unavailable",
             }
 
-        probe_fd = -1
-        probe_error: str | None = None
-        try:
-            try:
-                probe_fd = os.open(
-                    EXECUTION_BINDING_FILENAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=authority_fd,
-                )
-            except FileNotFoundError:
-                probe_fd = -1
-            except OSError:
-                probe_fd = -1
-                probe_error = FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT
-            if probe_fd >= 0:
+        existing = _read_verified_authority_file(
+            authority_fd,
+            EXECUTION_BINDING_FILENAME,
+            state=state,
+            authority_id=authority_id,
+            authority_fd=authority_fd,
+        )
+        if existing.get("error_code") != "NOT_FOUND":
+            parsed: Any = None
+            if existing.get("ok"):
                 try:
-                    binding_raw = _read_fd_all(probe_fd)
-                    try:
-                        parsed = json.loads(binding_raw.decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError):
-                        parsed = None
-                finally:
-                    os.close(probe_fd)
-                    probe_fd = -1
-                if isinstance(parsed, dict) and parsed.get("run_id") == run_id and parsed.get("preview_id") == preview_id:
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "authority already consumed by this run",
-                        "execution_binding": parsed,
-                    }
+                    parsed = json.loads(existing["raw"].decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    parsed = None
+            contract_error = _validate_execution_binding_contract(
+                parsed,
+                authority_id=authority_id,
+                canonical_project_root=root,
+            )
+            if (
+                existing.get("ok")
+                and contract_error is None
+                and parsed.get("run_id") == run_id
+                and parsed.get("preview_id") == preview_id
+            ):
                 return {
                     "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
                     "executor_authority_id": authority_id,
-                    "reason": "authority consumed by a different binding",
+                    "reason": "authority already consumed by this run",
                     "execution_binding": parsed,
                 }
-            if probe_error is not None:
-                return {
-                    "ok": False,
-                    "error_code": probe_error,
-                    "executor_authority_id": authority_id,
-                    "reason": "existing execution binding is unreadable",
-                }
-        finally:
-            if probe_fd >= 0:
-                try:
-                    os.close(probe_fd)
-                except OSError:
-                    pass
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                "executor_authority_id": authority_id,
+                "reason": "existing execution binding is unsafe or conflicts",
+                "execution_binding": parsed if contract_error is None else None,
+            }
+
+        if not _verify_authority_ancestor_chain(
+            state, authority_id=authority_id, authority_fd=authority_fd
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                "executor_authority_id": authority_id,
+                "reason": "authority ancestor chain changed before binding create",
+            }
 
         binding = _build_execution_binding_payload(
             authority_id=authority_id,
@@ -1587,6 +2504,7 @@ def create_execution_binding(
             task_version=task_version,
             attempt_id=attempt_id,
             artifact_refs=artifact_refs,
+            event_stream=dict(event_stream or {}),
             now=now,
         )
         payload = (
@@ -1648,7 +2566,47 @@ def create_execution_binding(
         try:
             os.fsync(authority_fd)
         except OSError:
-            pass  # best-effort directory fsync; the binding file is already fsync'd
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                "executor_authority_id": authority_id,
+                "reason": "failed to persist the execution binding directory entry",
+            }
+
+        binding_evidence = _read_verified_authority_file(
+            authority_fd,
+            EXECUTION_BINDING_FILENAME,
+            state=state,
+            authority_id=authority_id,
+            authority_fd=authority_fd,
+        )
+        if not binding_evidence.get("ok"):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                "executor_authority_id": authority_id,
+                "reason": "persisted execution binding could not be verified",
+            }
+        try:
+            verified_binding = json.loads(binding_evidence["raw"].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            verified_binding = None
+        if (
+            verified_binding != binding
+            or _validate_execution_binding_contract(
+                verified_binding,
+                authority_id=authority_id,
+                canonical_project_root=root,
+                expected_run_id=run_id,
+            )
+            is not None
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                "executor_authority_id": authority_id,
+                "reason": "persisted execution binding contract mismatch",
+            }
 
         return {
             "ok": True,
@@ -1688,6 +2646,66 @@ def validate_and_create_execution_binding(
     executor_session_mode: str = "start_new",
     work_target: dict[str, Any] | None = None,
     repository: str | None = None,
+    event_stream: dict[str, Any] | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Public validate-and-bind result with private evidence removed."""
+
+    result = _validate_and_create_execution_binding_verification(
+        project_root,
+        authority_id,
+        expected_admission_sha256=expected_admission_sha256,
+        expected_head=expected_head,
+        expected_provider=expected_provider,
+        expected_repository=expected_repository,
+        expected_git_branch=expected_git_branch,
+        run_id=run_id,
+        preview_id=preview_id,
+        executor_session_mode=executor_session_mode,
+        work_target=work_target,
+        repository=repository,
+        event_stream=event_stream,
+        now=now,
+    )
+    private_fields = {
+        "_internal_verification",
+        "executor_authority_id",
+        "admission_sha256",
+        "event_stream",
+        "execution_binding_path",
+        "project_root",
+    }
+
+    def project(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: project(item)
+                for key, item in value.items()
+                if key not in private_fields
+            }
+        if isinstance(value, list):
+            return [project(item) for item in value]
+        return value
+
+    projected = project(result)
+    return projected if isinstance(projected, dict) else {"ok": False}
+
+
+def _validate_and_create_execution_binding_verification(
+    project_root: str,
+    authority_id: str,
+    *,
+    expected_admission_sha256: str,
+    expected_head: str,
+    expected_provider: str = "codex",
+    expected_repository: str | None = None,
+    expected_git_branch: str | None = None,
+    run_id: str,
+    preview_id: str,
+    executor_session_mode: str = "start_new",
+    work_target: dict[str, Any] | None = None,
+    repository: str | None = None,
+    event_stream: dict[str, Any] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Atomic authoritative validate-and-bind (P1-1 repair).
@@ -1704,10 +2722,10 @@ def validate_and_create_execution_binding(
         -> fsync(file) + fsync(authority_fd)
         -> close
 
-    The authority directory pathname is resolved exactly once; a later rename
-    or symlink swap of ``<authority_id>`` cannot redirect the binding write to
-    a different directory object, so "validated object == consumed object" is
-    guaranteed.  The admission record is never modified.
+    The authority path and every ancestor are revalidated around each read and
+    again before creation.  A rename, replacement, or symlink swap therefore
+    blocks instead of consuming a detached directory object.  The admission
+    record is never modified.
     """
     if _validate_authority_id(authority_id) is False:
         return {
@@ -1737,6 +2755,13 @@ def validate_and_create_execution_binding(
             "ok": False,
             "error_code": FRESH_EXECUTOR_AUTHORITY_SESSION_MODE_MISMATCH,
             "reason": "fresh authority binding requires executor_session_mode=start_new",
+        }
+    event_stream_error = _validate_event_stream_contract(event_stream)
+    if event_stream_error is not None:
+        return {
+            "ok": False,
+            "error_code": FRESH_EXECUTOR_AUTHORITY_INVALID_CONTEXT,
+            "reason": event_stream_error,
         }
     if not isinstance(expected_head, str) or _FULL_HEAD_RE.fullmatch(expected_head) is None:
         return {
@@ -1789,7 +2814,7 @@ def validate_and_create_execution_binding(
             "reason": "governed work target required for fresh authority binding",
         }
 
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(project_root)))
+    root = os.path.abspath(os.path.expanduser(project_root))
     state = _open_authority_state_read_fds(root)
     if not state.get("ok"):
         return {
@@ -1798,7 +2823,6 @@ def validate_and_create_execution_binding(
             "reason": state.get("reason"),
         }
     authority_fd = -1
-    admission_fd = -1
     binding_fd = -1
     try:
         authority_fd, authority_error = _open_existing_authority_dir(
@@ -1813,154 +2837,70 @@ def validate_and_create_execution_binding(
             }
 
         # --- authoritative admission read on the SAME authority_fd ---
-        try:
-            try:
-                admission_fd = os.open(
-                    ADMISSION_FILENAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=authority_fd,
-                )
-            except FileNotFoundError:
-                return {
-                    "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
-                    "executor_authority_id": authority_id,
-                    "reason": "admission record missing",
-                }
-            except OSError as exc:
-                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "admission record symlink or escape",
-                    }
-                return {
-                    "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_NOT_FOUND,
-                    "executor_authority_id": authority_id,
-                    "reason": f"{type(exc).__name__}:{exc.errno}",
-                }
-            try:
-                admission_stat = os.fstat(admission_fd)
-                if not stat.S_ISREG(admission_stat.st_mode):
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "admission record is not a regular file",
-                    }
-                if stat.S_IMODE(admission_stat.st_mode) & 0o077:
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "admission record permissions unsafe",
-                    }
-                raw = _read_fd_all(admission_fd)
-            finally:
-                os.close(admission_fd)
-                admission_fd = -1
-        finally:
-            if admission_fd >= 0:
-                try:
-                    os.close(admission_fd)
-                except OSError:
-                    pass
-
-        admission_sha256 = hashlib.sha256(raw).hexdigest()
-        if admission_sha256 != expected_admission_sha256.lower():
-            return {
-                "ok": False,
-                "error_code": FRESH_EXECUTOR_AUTHORITY_HASH_MISMATCH,
-                "executor_authority_id": authority_id,
-                "observed_sha256": admission_sha256,
-                "expected_sha256": expected_admission_sha256.lower(),
-                "reason": "admission bytes do not match the expected hash",
-            }
-        try:
-            record = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
-            return {
-                "ok": False,
-                "error_code": FRESH_EXECUTOR_AUTHORITY_MALFORMED,
-                "executor_authority_id": authority_id,
-                "reason": "admission record is not valid JSON",
-            }
-        validation_error = _validate_admission_for_execution(
-            record,
+        admission = _read_admission_verification_from_fd(
+            state,
+            authority_fd,
             authority_id=authority_id,
-            canonical_project_root=root,
+            expected_admission_sha256=expected_admission_sha256,
             expected_head=expected_head,
             expected_provider=expected_provider,
             expected_repository=expected_repository,
             expected_git_branch=expected_git_branch,
         )
-        if validation_error is not None:
-            return {
-                "ok": False,
-                "error_code": validation_error,
-                "executor_authority_id": authority_id,
-                "reason": f"admission validation failed: {validation_error}",
-            }
+        if not admission.get("ok"):
+            return {**admission, "executor_authority_id": authority_id}
+        admission_sha256 = admission["admission_sha256"]
 
         # --- existing binding classification on the SAME authority_fd ---
-        probe_fd = -1
-        probe_error: str | None = None
-        try:
-            try:
-                probe_fd = os.open(
-                    EXECUTION_BINDING_FILENAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=authority_fd,
-                )
-            except FileNotFoundError:
-                probe_fd = -1
-            except OSError:
-                probe_fd = -1
-                probe_error = FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT
-            if probe_fd >= 0:
+        existing = _read_verified_authority_file(
+            authority_fd,
+            EXECUTION_BINDING_FILENAME,
+            state=state,
+            authority_id=authority_id,
+            authority_fd=authority_fd,
+        )
+        if existing.get("error_code") != "NOT_FOUND":
+            parsed: Any = None
+            if existing.get("ok"):
                 try:
-                    binding_raw = _read_fd_all(probe_fd)
-                    try:
-                        parsed = json.loads(binding_raw.decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError):
-                        parsed = None
-                finally:
-                    os.close(probe_fd)
-                    probe_fd = -1
-                if (
-                    isinstance(parsed, dict)
-                    and parsed.get("run_id") == run_id
-                    and parsed.get("preview_id") == preview_id
-                ):
-                    return {
-                        "ok": False,
-                        "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
-                        "executor_authority_id": authority_id,
-                        "reason": "authority already consumed by this run",
-                        "execution_binding": parsed,
-                    }
+                    parsed = json.loads(existing["raw"].decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    parsed = None
+            contract_error = _validate_execution_binding_contract(
+                parsed,
+                authority_id=authority_id,
+                canonical_project_root=root,
+            )
+            if (
+                existing.get("ok")
+                and contract_error is None
+                and parsed.get("run_id") == run_id
+                and parsed.get("preview_id") == preview_id
+            ):
                 return {
                     "ok": False,
-                    "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                    "error_code": FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
                     "executor_authority_id": authority_id,
-                    "reason": "authority consumed by a different binding",
+                    "reason": "authority already consumed by this run",
                     "execution_binding": parsed,
                 }
-            if probe_error is not None:
-                return {
-                    "ok": False,
-                    "error_code": probe_error,
-                    "executor_authority_id": authority_id,
-                    "reason": "existing execution binding is unreadable",
-                }
-        finally:
-            if probe_fd >= 0:
-                try:
-                    os.close(probe_fd)
-                except OSError:
-                    pass
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                "executor_authority_id": authority_id,
+                "reason": "existing execution binding is unsafe or conflicts",
+                "execution_binding": parsed if contract_error is None else None,
+            }
+
+        if not _verify_authority_ancestor_chain(
+            state, authority_id=authority_id, authority_fd=authority_fd
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_CONFLICT,
+                "executor_authority_id": authority_id,
+                "reason": "authority ancestor chain changed before binding create",
+            }
 
         # --- create execution-binding.json on the SAME authority_fd ---
         binding = _build_execution_binding_payload(
@@ -1977,6 +2917,7 @@ def validate_and_create_execution_binding(
             task_version=task_version,
             attempt_id=attempt_id,
             artifact_refs=artifact_refs,
+            event_stream=dict(event_stream or {}),
             now=now,
         )
         payload = (
@@ -2038,7 +2979,47 @@ def validate_and_create_execution_binding(
         try:
             os.fsync(authority_fd)
         except OSError:
-            pass  # best-effort directory fsync; the binding file is already fsync'd
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                "executor_authority_id": authority_id,
+                "reason": "failed to persist the execution binding directory entry",
+            }
+
+        binding_evidence = _read_verified_authority_file(
+            authority_fd,
+            EXECUTION_BINDING_FILENAME,
+            state=state,
+            authority_id=authority_id,
+            authority_fd=authority_fd,
+        )
+        if not binding_evidence.get("ok"):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                "executor_authority_id": authority_id,
+                "reason": "persisted execution binding could not be verified",
+            }
+        try:
+            verified_binding = json.loads(binding_evidence["raw"].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            verified_binding = None
+        if (
+            verified_binding != binding
+            or _validate_execution_binding_contract(
+                verified_binding,
+                authority_id=authority_id,
+                canonical_project_root=root,
+                expected_run_id=run_id,
+            )
+            is not None
+        ):
+            return {
+                "ok": False,
+                "error_code": FRESH_EXECUTOR_AUTHORITY_BINDING_WRITE_FAILED,
+                "executor_authority_id": authority_id,
+                "reason": "persisted execution binding contract mismatch",
+            }
 
         return {
             "ok": True,
@@ -2048,6 +3029,15 @@ def validate_and_create_execution_binding(
                 state["authority_root_path"], authority_id, EXECUTION_BINDING_FILENAME
             ),
             "binding": binding,
+            "_internal_verification": {
+                "admission": admission["durable_contract"],
+                "binding": {
+                    "identity": binding_evidence["identity"],
+                    "metadata": binding_evidence["metadata"],
+                    "raw_sha256": binding_evidence["raw_sha256"],
+                    "content_sha256": _content_sha256(verified_binding),
+                },
+            },
         }
     finally:
         if authority_fd >= 0:

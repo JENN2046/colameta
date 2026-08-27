@@ -21,6 +21,7 @@ from runner.mcp_commander_public import (
 from runner.mcp_server import MCPPlanningBridgeServer, THIN_LOOP_PRODUCT_SESSIONS
 from runner.project_context_binding import collect_project_context_binding
 from runner.project_registry import ProjectRegistry
+from runner.workflow_engine import record_tool_call
 
 
 def _percent_encode_layers(value: str, layers: int) -> str:
@@ -2310,42 +2311,110 @@ def test_real_validation_preview_and_poll_use_the_public_contract(tmp_path) -> N
         str(project),
         exposure_profile="commander",
     )
+    recorded_calls: list[dict[str, object]] = []
 
-    preview = server.call_tool_for_agent(
-        "manage_validation_run",
-        {"action": "preview", "scope": "changed_files"},
-    )
-
-    assert preview["ok"] is True
-    preview_contract = preview["data"]
-    validate_commander_response(preview_contract)
-    assert preview_contract["outcome"] == "confirmation_required"
-    assert len(preview_contract["confirmation"]["preview_id"]) == 12
-
-    started = server.call_tool_for_agent(
-        "manage_validation_run",
-        preview_contract["next_action"]["arguments"],
-    )
-    assert started["ok"] is True
-    current = started["data"]
-    validate_commander_response(current)
-    assert current["outcome"] == "in_progress"
-
-    for _ in range(200):
-        action = current["next_action"]
-        assert action["tool"] == "manage_validation_run"
-        assert action["arguments"]["action"] == "status"
-        time.sleep(0.01)
-        status = server.call_tool_for_agent(
-            "manage_validation_run",
-            action["arguments"],
+    def _recording_spy(
+        project_root: str,
+        tool_name: str,
+        action: str,
+        params: dict[str, object],
+        result: dict[str, object],
+        error: str | None = None,
+    ) -> dict[str, object]:
+        recorded_calls.append({
+            "tool_name": tool_name,
+            "action": action,
+            "params": copy.deepcopy(params),
+            "result": copy.deepcopy(result),
+        })
+        return record_tool_call(
+            project_root,
+            tool_name,
+            action,
+            params,
+            result,
+            error,
         )
-        assert status["ok"] is True
-        current = status["data"]
-        validate_commander_response(current)
-        if current["outcome"] != "in_progress":
-            break
 
+    with patch("runner.mcp_server.record_tool_call", side_effect=_recording_spy):
+        preview = server.call_tool_for_agent(
+            "manage_validation_run",
+            {"action": "preview", "scope": "changed_files"},
+        )
+
+        assert preview["ok"] is True
+        preview_contract = preview["data"]
+        validate_commander_response(preview_contract)
+        assert preview_contract["outcome"] == "confirmation_required"
+        assert len(preview_contract["confirmation"]["preview_id"]) == 12
+
+        started = server.call_tool_for_agent(
+            "manage_validation_run",
+            preview_contract["next_action"]["arguments"],
+        )
+        assert started["ok"] is True
+        current = started["data"]
+        validate_commander_response(current)
+        assert current["outcome"] == "in_progress"
+        started_action = current["next_action"]
+        assert started_action["tool"] == "manage_validation_run"
+        assert started_action["arguments"]["action"] == "status"
+
+        run_record = next(
+            call
+            for call in reversed(recorded_calls)
+            if call["tool_name"] == "manage_validation_run"
+            and call["action"] == "run"
+        )
+        assert run_record["result"] == {
+            "ok": True,
+            "action": "run",
+            "run_id": started_action["arguments"]["run_id"],
+            "preview_id": preview_contract["confirmation"]["preview_id"],
+            "status": "running",
+            "passed": None,
+        }
+        assert run_record["params"]["action"] == "run"
+        assert set(run_record["params"]) == {
+            "action",
+            "preview_id",
+            "context_binding",
+        }
+        assert "run_file" not in json.dumps(started, ensure_ascii=False)
+        assert "candidate_identity" not in json.dumps(started, ensure_ascii=False)
+
+        saw_recorded_running_status = False
+        for _ in range(200):
+            action = current["next_action"]
+            assert action["tool"] == "manage_validation_run"
+            assert action["arguments"]["action"] == "status"
+            time.sleep(0.01)
+            status = server.call_tool_for_agent(
+                "manage_validation_run",
+                action["arguments"],
+            )
+            assert status["ok"] is True
+            current = status["data"]
+            validate_commander_response(current)
+            if current["outcome"] == "in_progress":
+                status_record = recorded_calls[-1]
+                assert status_record["tool_name"] == "manage_validation_run"
+                assert status_record["action"] == "status"
+                assert status_record["params"] == action["arguments"]
+                assert status_record["result"] == {
+                    "ok": True,
+                    "action": "status",
+                    "run_id": action["arguments"]["run_id"],
+                    "preview_id": preview_contract["confirmation"]["preview_id"],
+                    "status": "running",
+                    "passed": None,
+                }
+                assert current["next_action"] == action
+                saw_recorded_running_status = True
+            if current["outcome"] != "in_progress":
+                break
+
+    assert saw_recorded_running_status is True
     assert current["outcome"] == "completed"
     assert current["facts"]["status"] == "passed"
     assert current["facts"]["passed"] is True

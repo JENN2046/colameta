@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from pathlib import Path
 
 from runner.executor_result_builder import already_claimed_error, run_once_started_result
 from runner.executor_status import polling_guidance_for_profile, status_base_result
@@ -64,9 +65,21 @@ class ExecutorPollingGuidanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MCPExecutorWorkflowManager(tmpdir)
             preview_id = "preview_claimed"
+            for path in (
+                Path(tmpdir) / ".colameta",
+                Path(manager._claims.previews_root).parent,
+                Path(manager._claims.previews_root),
+            ):
+                path.chmod(0o700)
             manager._claims.acquire_claim(
                 preview_id=preview_id,
-                artifact={"artifact_kind": "run_bounded"},
+                artifact={
+                    "artifact_kind": "run_bounded",
+                    "current_version": "v1",
+                    "current_head": "a" * 40,
+                    "created_at": "2099-01-01T00:00:00+00:00",
+                    "expires_at": "2099-01-02T00:00:00+00:00",
+                },
                 provider="codex",
                 execution_mode="run",
             )

@@ -11,7 +11,12 @@ from runner.core_confirmation import confirmation_apply_guard, confirmation_fact
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.runner_paths import resolve_project_runner_rel_dir
 from runner.stage_parallel_plan import build_stage_parallel_run_preview
+from runner.stage_parallel_admission_lifecycle import (
+    StageAdmissionLifecycleError,
+    StageParallelAdmissionLifecycle,
+)
 from runner.tool_result import apply_result, error_result, ok_result, preview_result, status_result
+from runner.work_item_governance.canonical import canonical_sha256
 
 
 PREVIEW_TTL_SECONDS = 1800
@@ -19,10 +24,19 @@ PREVIEWS_RELATIVE_DIR = os.path.join("runtime", "stage-parallel-executor-group-p
 
 
 class MCPStageParallelExecutorGroupManager:
-    def __init__(self, project_root: str):
+    def __init__(self, project_root: str, *, attempt_bridge: Any | None = None):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         preview_dir = os.path.join(resolve_project_runner_rel_dir(self.project_root), PREVIEWS_RELATIVE_DIR)
         self._store = ConfirmationStore(self.project_root, preview_dir, PREVIEW_TTL_SECONDS)
+        self._lifecycle = (
+            StageParallelAdmissionLifecycle(
+                self.project_root,
+                attempt_bridge=attempt_bridge,
+                repository="JENN2046/colameta",
+            )
+            if attempt_bridge is not None
+            else None
+        )
 
     def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "preview":
@@ -41,6 +55,16 @@ class MCPStageParallelExecutorGroupManager:
         operations = self._planned_operations(plan, validations)
         blockers = self._preview_blockers(plan, validations, operations)
         can_apply = bool(operations) and not blockers
+
+        task_authorizations = params.get("task_authorizations")
+        if self._lifecycle is None:
+            blockers.append(
+                {
+                    "code": "STAGE_ATTEMPT_GOVERNANCE_COMPOSITION_REQUIRED",
+                    "message": "Stage lifecycle requires the authenticated narrow governance bridge.",
+                }
+            )
+            can_apply = False
 
         if not can_apply:
             return ok_result(
@@ -79,11 +103,24 @@ class MCPStageParallelExecutorGroupManager:
             "run_preview": plan,
             "validations": validations,
             "planned_operations": operations,
+            "lifecycle_spec": self._lifecycle_spec(plan, operations),
             "created_at": created_at,
             "expires_at": expires_at,
             "reason": reason.strip() if isinstance(reason, str) and reason.strip() else "",
             "requires_confirmation": True,
         }
+        try:
+            lifecycle = self._lifecycle.initialize(
+                spec=preview_record["lifecycle_spec"],
+                task_authorizations=task_authorizations,
+            )
+        except StageAdmissionLifecycleError as exc:
+            return error_result(
+                exc.code,
+                str(exc),
+                parallel_group_id=plan.get("parallel_group_id"),
+                provider_started_count=0,
+            )
         self._store.write(preview_id, preview_record)
 
         return preview_result(
@@ -104,6 +141,7 @@ class MCPStageParallelExecutorGroupManager:
             created_at=created_at,
             expires_at=expires_at,
             authority_boundary=self._authority_boundary(preview_only=True),
+            lifecycle=lifecycle,
             recommended_next_action={
                 "tool": "manage_stage_parallel_executor_group",
                 "action": "apply",
@@ -148,73 +186,41 @@ class MCPStageParallelExecutorGroupManager:
                 authority_boundary=self._authority_boundary(preview_only=False),
             )
 
-        created: list[dict[str, Any]] = []
-        for operation in self._stored_operations(preview):
-            worktree_path = str(operation.get("worktree_path") or "")
-            request = operation.get("executor_preview_request")
-            request_args = request.get("arguments") if isinstance(request, dict) else {}
-            if not isinstance(request_args, dict):
-                request_args = {}
-            result = MCPExecutorWorkflowManager(worktree_path).handle(
-                "run_once_preview",
-                {
-                    "provider": str(operation.get("provider") or preview.get("provider") or "codex"),
-                    "execution_mode": str(request_args.get("execution_mode") or "run"),
-                    "executor_session_mode": str(request_args.get("executor_session_mode") or "start_new"),
-                },
+        if self._lifecycle is None:
+            return error_result(
+                "STAGE_ATTEMPT_GOVERNANCE_COMPOSITION_REQUIRED",
+                "Stage lifecycle requires the authenticated narrow governance bridge.",
+                preview_id=preview_id,
             )
-            if not result.get("ok"):
-                return error_result(
-                    "EXECUTOR_PREVIEW_CREATE_FAILED",
-                    "创建 executor preview artifact 失败。",
-                    preview_id=preview_id,
-                    failed_operation=operation,
-                    failed_result=result,
-                    created_executor_previews=created,
-                    authority_boundary=self._authority_boundary(preview_only=False),
-                )
-            created.append(
-                {
-                    "task_id": operation.get("task_id"),
-                    "worktree_path": worktree_path,
-                    "branch_name": operation.get("branch_name"),
-                    "executor_preview_id": result.get("preview_id"),
-                    "provider": result.get("provider"),
-                    "execution_mode": result.get("execution_mode"),
-                    "status": result.get("status"),
-                }
+        try:
+            lifecycle = self._lifecycle.advance(
+                spec=preview["lifecycle_spec"],
+                task_authorizations=params.get("task_authorizations"),
             )
-
-        self._store.delete(preview_id)
+        except StageAdmissionLifecycleError as exc:
+            return error_result(
+                exc.code,
+                str(exc),
+                preview_id=preview_id,
+                provider_started_count=0,
+                authority_boundary=self._authority_boundary(preview_only=False),
+            )
         return apply_result(
             "apply",
             preview_id,
-            status="succeeded",
-            risk_level="commit",
+            status=lifecycle["status"],
+            risk_level="preview",
             read_only=False,
             side_effects=True,
-            side_effect_scope="executor_preview_artifacts_only",
+            side_effect_scope="stage_execution_preparation_only",
             project_root=self.project_root,
             stage_id=preview.get("stage_id"),
             parallel_group_id=preview.get("parallel_group_id"),
-            created_count=len(created),
-            created_executor_previews=created,
-            message=f"已创建 {len(created)} 个 executor preview artifact；未启动 executor。",
+            lifecycle=lifecycle,
+            provider_started_count=0,
+            provider_start_authorized=False,
+            message="Stage admission lifecycle advanced without starting an executor.",
             authority_boundary=self._authority_boundary(preview_only=False),
-            next_actions=[
-                {
-                    "tool": "manage_stage_parallel_executor_runs",
-                    "arguments": {"action": "preview", "parallel_group_id": preview.get("parallel_group_id")},
-                    "reason": "下一阶段预览并行 executor run group；当前步骤未启动 executor。",
-                    "requires_confirmation": True,
-                },
-                {
-                    "tool": "get_stage_parallel_group_status",
-                    "arguments": {"stage_id": preview.get("stage_id")},
-                    "reason": "读取并行 group 状态。",
-                    "requires_confirmation": False,
-                },
-            ],
         )
 
     def _status(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +236,12 @@ class MCPStageParallelExecutorGroupManager:
             blockers.append({"code": "PREVIEW_EXPIRED", "message": "preview 已过期，请重新生成。"})
         else:
             blockers = self._validate_apply_state(preview)
+        lifecycle = None
+        if not blockers and self._lifecycle is not None and isinstance(preview.get("lifecycle_spec"), dict):
+            try:
+                lifecycle = self._lifecycle.status(spec=preview["lifecycle_spec"])
+            except StageAdmissionLifecycleError as exc:
+                blockers.append({"code": exc.code, "message": str(exc)})
         result = status_result(
             "status",
             preview_id,
@@ -245,6 +257,8 @@ class MCPStageParallelExecutorGroupManager:
             planned_operations=preview.get("planned_operations", []),
             authority_boundary=self._authority_boundary(preview_only=True),
         )
+        if lifecycle is not None:
+            result["lifecycle"] = lifecycle
         fact = confirmation_fact_from_store(self._store, preview_id)
         if fact is not None:
             result["confirmation"] = fact.to_dict()
@@ -265,7 +279,10 @@ class MCPStageParallelExecutorGroupManager:
             "discard",
             preview_id=preview_id,
             status="succeeded",
-            message=f"已废弃 executor group preview_id={preview_id}；未创建 executor preview artifact。",
+            message=(
+                f"已废弃 executor group preview_id={preview_id}；"
+                "已持久化的 lifecycle recovery evidence、authority 与 executor preview 保留且未消费。"
+            ),
         )
 
     def _build_plan(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -505,6 +522,49 @@ class MCPStageParallelExecutorGroupManager:
                 )
             )
         return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()
+
+    def _lifecycle_spec(
+        self, plan: dict[str, Any], operations: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        task_order = [str(item.get("task_id") or "") for item in plan.get("run_shards", []) if isinstance(item, dict)]
+        stage_preview_sha256 = canonical_sha256(plan.get("plan_preview", {}))
+        runner_plan_sha256 = canonical_sha256(plan)
+        base_head = self._base_head(str(plan.get("base_branch") or "main")) or ""
+        tasks: dict[str, Any] = {}
+        for operation in operations:
+            task_id = str(operation.get("task_id") or "")
+            tasks[task_id] = {
+                "execution_context": {
+                    "kind": "stage_parallel_task",
+                    "stage_id": str(plan.get("stage_id") or ""),
+                    "parallel_group_id": str(plan.get("parallel_group_id") or ""),
+                    "task_id": task_id,
+                    "stage_preview_sha256": stage_preview_sha256,
+                    "base_head": canonical_sha256({"git_head": base_head}),
+                    "runner_plan_sha256": runner_plan_sha256,
+                },
+                "shard": {
+                    "project_root": operation.get("worktree_path"),
+                    "branch": operation.get("branch_name"),
+                    "head": operation.get("head"),
+                    "provider": operation.get("provider") or "codex",
+                },
+            }
+        return {
+            "schema_version": "stage_parallel_admission_spec.v1",
+            "project_root": self.project_root,
+            "project_identity": canonical_sha256(
+                {"project_root": self.project_root, "repository": "JENN2046/colameta"}
+            ),
+            "repository": "JENN2046/colameta",
+            "stage_id": str(plan.get("stage_id") or ""),
+            "parallel_group_id": str(plan.get("parallel_group_id") or ""),
+            "stage_planning_preview_sha256": stage_preview_sha256,
+            "runner_plan_sha256": runner_plan_sha256,
+            "base_head": base_head,
+            "task_order": task_order,
+            "tasks": tasks,
+        }
 
     def _status_hash(self, lines: list[str]) -> str:
         return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()

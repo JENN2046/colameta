@@ -1598,6 +1598,59 @@ receipt
 [ColaMeta 安装与部署说明书](INSTALLATION_AND_DEPLOYMENT.zh-CN.md)。replacement receipt 只记录
 一个精确 target 的事实，不能复用成下一次 lifecycle 授权。
 
+### Executor event lineage 与 shell-free acceptance
+
+Executor event schema `1.1` 把 provider adapter 边界与真实进程启动分开记录。
+`executor_dispatch_started` 表示 workflow 已在授权门之后进入 provider adapter；
+`executor_started` 只在 provider subprocess 成功创建后产生。证明 Codex process start 时，
+应统计 `executor_started`，不能把 dispatch marker 当成真实启动。
+
+Fresh Authority ID 与 admission hash 不会进入 pre-binding events。durable execution binding
+成功后，private event record 可以保存 exact pair 供本地 lineage 审计；常规 run result、
+session status、report、Web、MCP status 和 event excerpt 共用递归 public projection，
+既不返回 pair，也不返回其别名原始值；只有完整 lineage 校验成功才暴露
+`fresh_authority_bound=true`。
+
+schema `1.1` 只有在 Authority pair、实际 run path、非空 preview ID 与完整的
+Work Item/Task/Attempt/artifact 四元组一起通过校验时，才会标记 fresh-bound。event directory
+从 project root 起逐层以 no-follow 方式打开；JSONL record 使用 per-run 线程锁和进程锁，
+special-file target fail closed；integrity-aware streaming reader 会把最终 torn tail、中部损坏
+和超大 record 都作为 hard failure。provider dispatch 前，production 必须同时校验 durable
+binding、claim 与 dispatch event；report/session 持久化后，再联合校验 binding、claim、event、
+report 与 session。verifier 只返回结果码和不可逆 safe digest。
+
+Acceptance command 必须是单条 shell-free argv command。executor preflight 与新 plan version
+bootstrap、import、insert、update preview 会拒绝 shell operator、重定向、命令替换以及
+未列入 allowlist 的 executable；apply 也会用同一 policy 重新校验，包括旧的 pending preview。
+接受的 command grammar 被刻意限制为以下精确的裸 executable name 形式：
+
+```text
+python --version
+python -V
+python3 --version
+python3 -V
+git --version
+git diff --check
+git status --short --branch
+git status -sb
+git status --porcelain=v1 --untracked-files=all
+```
+
+`python` 与 `python3` 绑定当前 Runner 中 independently trusted 的 interpreter。只有 canonical
+absolute interpreter path 属于当前 runtime interpreter candidates，且仍使用上述仅查询 version
+的 grammar 时，才会被接受。裸 `git` 只从固定 trusted system path 解析。启动前，resolved
+executable 会以 no-follow 方式打开、重新核对 identity，并通过继承的 `/proc/self/fd`
+descriptor 绑定执行；无法满足这些保证时 admission fail closed。Git execution 还会按适用
+情况禁用 hooks、fsmonitor、external diff 与 text conversion。
+
+Python script 与 module 均不是 accepted governed command，包括
+`scripts/check_clean_worktree.py` 与 `python -m compileall`。已接受的形式中，没有任何一条会断言
+整个 worktree clean：`git diff --check` 只检查 diff whitespace；允许的 `git status` 形式只报告
+status，不会把 dirty output 转换为失败 exit code。
+
+不要为了替换旧 acceptance command 原地改写已经真实执行过的 version；应保留历史 report
+合同，并创建新的 governed version。
+
 ## 9. Stage parallel plan preview
 
 使用 `get_stage_parallel_plan_preview(project_name=...)` 预览未来的阶段级并行自动化。
