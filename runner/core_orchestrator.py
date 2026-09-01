@@ -21,6 +21,7 @@ from runner.continuation_snapshot import (
     snapshot_from_fact_bundle,
 )
 from runner.executor_run_reports import ExecutorRunReportStore
+from runner.functional_mvp_contract import FUNCTIONAL_MVP_SECURITY_PROFILE
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.project_identity import build_project_identity
 from runner.canonical_project_state import build_canonical_project_state
@@ -1464,13 +1465,14 @@ class WorkflowOrchestrator:
         execution_mode = str(params.get("execution_mode", "run")).strip().lower() or "run"
         if execution_mode != "run":
             return self._error_result("agent_dispatch", "EXECUTION_MODE_NOT_SUPPORTED", "run_preview 仅支持 execution_mode=run。")
+        development_mvp = params.get("security_profile") == FUNCTIONAL_MVP_SECURITY_PROFILE
         precheck = self._agent_dispatch_precheck(
             params,
             require_runner_managed=True,
             require_git_clean=True,
             require_lint_clean=True,
             require_provider=True,
-            require_executor_session_clear=True,
+            require_executor_session_clear=not development_mvp,
         )
         if not precheck.get("ok"):
             return precheck["error"]
@@ -1501,7 +1503,14 @@ class WorkflowOrchestrator:
                     f"requested version={requested_version.strip()} 与当前可运行版本={current_version} 不一致。",
                 )
 
-        preview = manager.handle("run_once_preview", {"provider": provider, "execution_mode": "run"})
+        preview_params: dict[str, Any] = {
+            "provider": provider,
+            "execution_mode": "run",
+        }
+        for key in ("model", "executor_session_mode", "security_profile"):
+            if params.get(key) is not None:
+                preview_params[key] = params[key]
+        preview = manager.handle("run_once_preview", preview_params)
         steps.append(self._step("agent_dispatch", "manage_executor_workflow", "run_once_preview", preview, STEP_RISK_PREVIEW))
         preview_id_value = preview.get("preview_id")
         if isinstance(preview_id_value, str) and preview_id_value.strip():
@@ -1534,13 +1543,14 @@ class WorkflowOrchestrator:
         preview_id = params.get("preview_id")
         if not isinstance(preview_id, str) or not preview_id.strip():
             return self._error_result("agent_dispatch", "PREVIEW_ID_REQUIRED", "run 需要 preview_id。")
+        development_mvp = params.get("security_profile") == FUNCTIONAL_MVP_SECURITY_PROFILE
         precheck = self._agent_dispatch_precheck(
             params,
             require_runner_managed=True,
             require_git_clean=True,
             require_lint_clean=True,
             require_provider=True,
-            require_executor_session_clear=True,
+            require_executor_session_clear=not development_mvp,
         )
         if not precheck.get("ok"):
             return precheck["error"]
@@ -1548,20 +1558,49 @@ class WorkflowOrchestrator:
         source_error = self._validate_agent_dispatch_executor_preview_source(preview_id.strip(), provider)
         if source_error is not None:
             return source_error
-        run_result = {
-            "ok": False,
-            "error_code": "EXECUTOR_ASYNC_START_UNAVAILABLE",
-            "message": "当前 executor workflow 缺少启动后立即返回入口，agent_dispatch run 保持 fail-closed。",
-            "recommended_next_action": "请在 Web Console 或受控 workflow 中手动确认运行。",
+        run_params: dict[str, Any] = {
+            "preview_id": preview_id.strip(),
+            "provider": provider,
+            "execution_mode": "run",
+            "profile_id": params.get("profile_id", "web_gpt_commander"),
         }
+        for key in ("model", "executor_session_mode", "security_profile"):
+            if params.get(key) is not None:
+                run_params[key] = params[key]
+        manager = self._executor_workflow_factory(self.project_root)
+        run_result = manager.handle("run_once", run_params)
         steps = list(precheck["steps"])
-        steps.append(self._step("agent_dispatch", "manage_executor_workflow", "run", run_result, STEP_RISK_BLOCKED))
+        run_started = bool(run_result.get("ok")) and bool(run_result.get("run_id"))
+        steps.append(
+            self._step(
+                "agent_dispatch",
+                "manage_executor_workflow",
+                "run",
+                run_result,
+                STEP_RISK_COMMIT if run_started else STEP_RISK_BLOCKED,
+            )
+        )
+        next_actions: list[dict[str, Any]] = []
+        if run_started:
+            next_actions.append({
+                "action": "agent_dispatch.status",
+                "label": "查询执行器状态",
+                "tool": "run_mcp_workflow",
+                "params": {
+                    "workflow": "agent_dispatch",
+                    "phase": "status",
+                    "run_id": run_result["run_id"],
+                },
+                "risk_level": "info",
+                "requires_confirmation": False,
+            })
         return self._build_core_result(
             workflow="agent_dispatch",
             steps=steps,
-            risk_level=STEP_RISK_BLOCKED,
-            status="failed",
+            risk_level=STEP_RISK_COMMIT if run_started else STEP_RISK_BLOCKED,
+            status="started" if run_started else "failed",
             requires_confirmation=False,
+            next_actions=next_actions,
             blockers=self._extract_blockers(run_result),
             warnings=self._extract_warnings(run_result),
             result=run_result,

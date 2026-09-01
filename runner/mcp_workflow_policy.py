@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from runner.mcp_gate_review_workflow import GATE_REVIEW_WORKFLOW
+from runner.functional_mvp_contract import FUNCTIONAL_MVP_WORKFLOW
 from runner.mcp_current_facts import CURRENT_FACTS_WORKFLOW
 from runner.mcp_stage_7_9_preview import STAGE_7_9_PREVIEW_WORKFLOW
 from runner.mcp_workflow_migration import OPERATOR_BATCH_WORKFLOW, RESULT_ARTIFACT_WORKFLOW
@@ -57,6 +58,12 @@ def run_mcp_workflow_policy_scope(params: dict[str, Any]) -> str | None:
     workflow = policy_string_param(params, "workflow")
     phase = policy_string_param(params, "phase")
     docs_action = policy_string_param(params, "docs_action")
+    if workflow == FUNCTIONAL_MVP_WORKFLOW:
+        if phase in {"inspect", "status", "read"}:
+            return "mcp:read"
+        if phase == "run":
+            return "mcp:commit"
+        return None
     if workflow == RESULT_ARTIFACT_WORKFLOW:
         return "mcp:read" if phase == "read" else None
     if workflow == CURRENT_FACTS_WORKFLOW:

@@ -15,6 +15,7 @@ from typing import Literal
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS
 from runner.mcp_current_facts import CURRENT_FACTS_WORKFLOW
 from runner.mcp_gate_review_workflow import GATE_REVIEW_WORKFLOW
+from runner.functional_mvp_contract import FUNCTIONAL_MVP_WORKFLOW
 from runner.mcp_stage_7_9_preview import STAGE_7_9_PREVIEW_WORKFLOW
 from runner.review_manifest import REVIEW_MANIFEST_WORKFLOW
 
@@ -103,6 +104,28 @@ def _entry(
 
 
 WORKFLOW_MIGRATION_MAP: dict[str, WorkflowMigrationEntry] = {
+    FUNCTIONAL_MVP_WORKFLOW: _entry(
+        FUNCTIONAL_MVP_WORKFLOW,
+        "public_compatibility",
+        current_owner_module="runner.mcp_functional_mvp",
+        current_owner_symbol="MCPFunctionalMVPWorkflow",
+        target_owner_module="runner.mcp_functional_mvp",
+        target_owner_symbol="MCPFunctionalMVPWorkflow",
+        target_owner_status="existing",
+        public_typed_entrypoint=None,
+        local_handoff_entrypoint=None,
+        supported_phases=("inspect", "run", "status", "read"),
+        required_fields=("workflow", "phase"),
+        scope_contract=(
+            "inspect:mcp:read",
+            "run:mcp:commit",
+            "status:mcp:read",
+            "read:mcp:read",
+        ),
+        output_contract_id="functional_mvp_public.v1",
+        compatibility_status="compatibility_only",
+        regression_tests=("tests/test_functional_mvp_workflow.py",),
+    ),
     "auto_preview": _entry(
         "auto_preview",
         "public_compatibility",
@@ -493,6 +516,7 @@ def declared_run_mcp_workflows() -> frozenset[str]:
             PROJECT_DELIVERY_PREVIEW_WORKFLOW,
             GITHUB_DELIVERY_WORKFLOW,
             MANAGED_RUNTIME_CLOSEOUT_WORKFLOW,
+            FUNCTIONAL_MVP_WORKFLOW,
         }
     )
 

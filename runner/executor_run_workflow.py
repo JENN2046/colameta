@@ -22,6 +22,7 @@ from runner.fresh_executor_authority import (
     FRESH_EXECUTOR_AUTHORITY_WORK_TARGET_REQUIRED,
     validate_and_create_execution_binding,
 )
+from runner.functional_mvp_contract import FUNCTIONAL_MVP_SECURITY_PROFILE
 from runner.executor_session import ExecutorSessionStore
 from runner.git_diff_helper import collect_git_diff_name_paths
 from runner.path_glob import match_any as glob_match_any
@@ -485,6 +486,7 @@ class ExecutorRunOnceService:
         executor_authority_id: str = "",
         admission_sha256: str = "",
         claimed_work_target: dict[str, Any] | None = None,
+        security_profile: str = "",
     ) -> dict[str, Any]:
         from runner.project_operation_lease import ProjectOperationLease
 
@@ -564,6 +566,7 @@ class ExecutorRunOnceService:
                 executor_session_mode=executor_session_mode,
                 executor_authority_id=executor_authority_id,
                 admission_sha256=admission_sha256,
+                security_profile=security_profile,
             )
             if fresh_gate_error is not None:
                 return {
@@ -600,6 +603,7 @@ class ExecutorRunOnceService:
                     admission_sha256=admission_sha256,
                     continuation_recommended_action=recommended_action,
                     claimed_work_target=claimed_work_target,
+                    security_profile=security_profile,
                 )
         finally:
             if owns_lease:
@@ -612,6 +616,7 @@ class ExecutorRunOnceService:
         executor_session_mode: str,
         executor_authority_id: str,
         admission_sha256: str,
+        security_profile: str = "",
     ) -> str | None:
         """Early service-level fresh-authority gate (validate, never consume).
 
@@ -619,6 +624,8 @@ class ExecutorRunOnceService:
         paired with any non-``start_new`` mode is a hard block (a fresh
         authority must never authorize resume).
         """
+        if security_profile == FUNCTIONAL_MVP_SECURITY_PROFILE:
+            return None
         authority_present = bool(
             isinstance(executor_authority_id, str) and executor_authority_id.strip()
         )
@@ -647,6 +654,7 @@ class ExecutorRunOnceService:
         current_head: str,
         work_target: dict[str, Any],
         claimed_work_target: dict[str, Any] | None = None,
+        security_profile: str = "",
     ) -> dict[str, Any]:
         """Security choke point: authoritative revalidation + consumption.
 
@@ -657,6 +665,13 @@ class ExecutorRunOnceService:
         through the SAME authority directory object.  The admission record is
         never modified.
         """
+        if security_profile == FUNCTIONAL_MVP_SECURITY_PROFILE:
+            return {
+                "ok": True,
+                "security_profile": FUNCTIONAL_MVP_SECURITY_PROFILE,
+                "cryptographic_execution_proof": False,
+                "runtime_attestation": False,
+            }
         authority_present = bool(
             isinstance(executor_authority_id, str) and executor_authority_id.strip()
         )
@@ -762,6 +777,7 @@ class ExecutorRunOnceService:
         admission_sha256: str = "",
         continuation_recommended_action: str = "",
         claimed_work_target: dict[str, Any] | None = None,
+        security_profile: str = "",
     ) -> dict[str, Any]:
         provider_norm = self._normalize_provider(provider) or DEFAULT_EXECUTION_PROVIDER
         mode = self._normalize_execution_mode(execution_mode)
@@ -836,6 +852,8 @@ class ExecutorRunOnceService:
             "provider": provider_norm,
             "execution_mode": mode,
         }
+        if security_profile == FUNCTIONAL_MVP_SECURITY_PROFILE:
+            base_ctx["security_profile"] = security_profile
         base_ctx.update(resolve_execution_attempt_binding(plan, current_version_str))
         if isinstance(executor_authority_id, str) and executor_authority_id.strip():
             base_ctx["executor_authority_id"] = executor_authority_id.strip()
@@ -894,6 +912,7 @@ class ExecutorRunOnceService:
                 for key in ("work_item_id", "task_version", "attempt_id", "artifact_refs")
             },
             claimed_work_target=claimed_work_target,
+            security_profile=security_profile,
         )
         if not fresh_binding.get("ok"):
             gate_error = str(

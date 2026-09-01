@@ -28,6 +28,7 @@ _TOOL_JOURNEY_STAGES = {
     "manage_git": "close",
 }
 _WORKFLOW_JOURNEY_STAGES = {
+    "functional_mvp": "execute",
     "project_status": "observe",
     "current_facts": "observe",
     "source_onboarding": "plan",
