@@ -52,6 +52,25 @@
 consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint；不要把它们当成
 私人 App 默认公开工具。
 
+### Functional MVP 执行器流程
+
+ChatGPT Commander 可以直接启动并追踪现有异步执行器，不需要理解仅 Local Codex 可见的工具名、
+preview ID 或 report ID：
+
+```text
+1. analyze_project_state(project_name="<project_name>")
+2. run_mcp_workflow workflow=functional_mvp phase=run
+   project_name="<project_name>" user_request="<有界任务>"
+3. run_mcp_workflow workflow=functional_mvp phase=status
+   project_name="<project_name>" run_id="<run 返回的 run_id>"
+4. terminal=true 后，run_mcp_workflow workflow=functional_mvp phase=read
+   project_name="<project_name>" run_id="<同一个 run_id>"
+```
+
+`run` 在既有后台 worker 启动后立即返回；请求结束后，已落盘的 claim/report 仍可读取。
+R0 明确属于 `DEVELOPMENT_MVP` profile：不提供 cryptographic execution proof 或 runtime
+attestation，也不会自动 push、开 PR、merge、publish、deploy 或替换 Stable。
+
 ### P1 ChatGPT 合同演练
 
 在要求一次新的真实 ChatGPT development-connector 验收前，先运行可重复的本地合同演练：

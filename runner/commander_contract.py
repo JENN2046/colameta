@@ -104,6 +104,7 @@ COMMANDER_PUBLIC_ERROR_CODES = frozenset(
         "PUBLIC_PROJECTION_FAILED",
         "INTERNAL_RESULT_INVALID",
         "INTERNAL_ERROR",
+        "FUNCTIONAL_MVP_PREVIEW_FAILED",
     }
 )
 
@@ -112,6 +113,7 @@ _FAILED_PUBLIC_ERROR_CODES = frozenset(
         "PUBLIC_PROJECTION_FAILED",
         "INTERNAL_RESULT_INVALID",
         "INTERNAL_ERROR",
+        "FUNCTIONAL_MVP_PREVIEW_FAILED",
     }
 )
 _IN_PROGRESS_PUBLIC_ERROR_CODES = frozenset({"EXECUTOR_RUNNING"})
@@ -405,6 +407,9 @@ _ALLOWED_PUBLIC_OPAQUE_ID_KEYS = frozenset(
         "gate_preview_id",
         "preview_id",
         "review_manifest_id",
+        # Retained in facts only by the functional_mvp-specific extraction
+        # gate below. Other workflow run IDs remain private.
+        "run_id",
     }
 )
 _SENSITIVE_PUBLIC_KEY_RE = re.compile(
@@ -2196,7 +2201,11 @@ def _result_requires_context_binding(
         return True
     if tool_name == "run_mcp_workflow":
         workflow = _normalized_string(params.get("workflow"))
-        return workflow not in {"result_artifact"}
+        # functional_mvp/run is the explicit one-call DEVELOPMENT_MVP facade.
+        # It starts only the existing executor and never authorizes delivery;
+        # requiring a separately-issued preview context here would defeat its
+        # public start -> status -> read contract.
+        return workflow not in {"result_artifact", "functional_mvp"}
     return False
 
 
@@ -2327,6 +2336,11 @@ def _extract_facts(
         payload = raw_result
     payload_workflow = _normalized_string(payload.get("workflow"))
     payload_phase = _normalized_string(payload.get("phase"))
+    functional_mvp_run_id = ""
+    if payload_workflow == "functional_mvp":
+        candidate_run_id = payload.get("run_id")
+        if isinstance(candidate_run_id, str) and _OPAQUE_ID_RE.fullmatch(candidate_run_id):
+            functional_mvp_run_id = candidate_run_id
     is_result_artifact_read = tool_name == "read_result_artifact" or (
         tool_name == "run_mcp_workflow"
         and payload_workflow == "result_artifact"
@@ -2394,15 +2408,17 @@ def _extract_facts(
     source_summary = payload.get("summary")
     for key, value in payload.items():
         normalized_key = str(key)
+        if normalized_key == "run_id":
+            continue
         if normalized_key == "artifact_page" and artifact_page is not None:
             continue
         if normalized_key == "subject_page" and subject_page is not None:
             continue
         if normalized_key in _FACT_EXCLUDED_KEYS:
             continue
-        facts_source[normalized_key] = value
+        facts_source[normalized_key] = _strip_private_run_id_fields(value)
     if isinstance(source_summary, dict):
-        facts_source["source_summary"] = source_summary
+        facts_source["source_summary"] = _strip_private_run_id_fields(source_summary)
     public = _public_value(
         facts_source,
         depth=0,
@@ -2410,11 +2426,27 @@ def _extract_facts(
         facts=True,
     )
     facts = public if isinstance(public, dict) else {}
+    if functional_mvp_run_id:
+        facts["run_id"] = functional_mvp_run_id
     if artifact_page is not None:
         facts["artifact_page"] = artifact_page
     if subject_page is not None:
         facts["subject_page"] = subject_page
     return facts
+
+
+def _strip_private_run_id_fields(value: Any) -> Any:
+    """Keep generic/nested run IDs private before typed fact projection."""
+
+    if isinstance(value, dict):
+        return {
+            key: _strip_private_run_id_fields(nested)
+            for key, nested in value.items()
+            if _normalize_public_key_for_match(key) != "run_id"
+        }
+    if isinstance(value, list):
+        return [_strip_private_run_id_fields(item) for item in value]
+    return value
 
 
 def _normalize_artifact_page_fact(
@@ -3001,6 +3033,9 @@ def _normalize_error(
             "PUBLIC_PROJECTION_FAILED": "Commander 公共响应构建失败，内部诊断未公开。",
             "INTERNAL_RESULT_INVALID": "内部结果格式无效，无法安全建立公共响应。",
             "INTERNAL_ERROR": "工具执行失败，内部诊断未公开。",
+            "FUNCTIONAL_MVP_PREVIEW_FAILED": (
+                "Functional MVP preview failed before executor start."
+            ),
         }[public_code]
     elif explicit_message is not None:
         message = _public_text(explicit_message, max_chars=COMMANDER_SUMMARY_MAX_CHARS)

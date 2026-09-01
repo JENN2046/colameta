@@ -21,6 +21,8 @@ from runner.mcp_gate_review_workflow import (
     GateReviewWorkflowError,
     MCPGateReviewWorkflow,
 )
+from runner.functional_mvp_contract import FUNCTIONAL_MVP_WORKFLOW
+from runner.mcp_functional_mvp import FunctionalMVPWorkflowError, MCPFunctionalMVPWorkflow
 from runner.mcp_current_facts import (
     CURRENT_FACTS_WORKFLOW,
     CurrentFactsWorkflowError,
@@ -432,6 +434,28 @@ class MCPWorkflowCompatibilityService:
             return self.handle_current_facts(params)
         if workflow == STAGE_7_9_PREVIEW_WORKFLOW:
             return self.handle_stage_7_9_preview(params)
+        if workflow == FUNCTIONAL_MVP_WORKFLOW:
+            if params.get("project_name") is not None:
+                return self._host._route_project_name_tool(
+                    "run_mcp_workflow",
+                    params,
+                    require_managed=True,
+                )
+            clean = self._host._strip_operation_context_binding_params(params)
+            try:
+                result = MCPFunctionalMVPWorkflow(
+                    self._host.project_root,
+                    workflow_router_factory=self._host._create_mcp_workflow_router,
+                ).handle(clean)
+            except FunctionalMVPWorkflowError as exc:
+                raise WorkflowCompatibilityError(exc.error_code, exc.message) from exc
+            self._host._record_workflow_if_needed(
+                "run_mcp_workflow",
+                FUNCTIONAL_MVP_WORKFLOW,
+                params,
+                result,
+            )
+            return result
         if (
             workflow not in {OPERATOR_BATCH_WORKFLOW, GATE_REVIEW_WORKFLOW}
             and workflow not in SUPPORTED_CORE_WORKFLOWS

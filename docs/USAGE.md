@@ -50,6 +50,27 @@ deployment can legitimately still expose seven. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
 
+### Functional MVP executor flow
+
+ChatGPT Commander can start and follow the existing asynchronous executor
+without learning any Local Codex-only tool names or preview/report IDs:
+
+```text
+1. analyze_project_state(project_name="<project_name>")
+2. run_mcp_workflow workflow=functional_mvp phase=run
+   project_name="<project_name>" user_request="<bounded task>"
+3. run_mcp_workflow workflow=functional_mvp phase=status
+   project_name="<project_name>" run_id="<returned run_id>"
+4. When terminal=true, run_mcp_workflow workflow=functional_mvp phase=read
+   project_name="<project_name>" run_id="<same run_id>"
+```
+
+`run` returns after the existing background worker starts. Completed claim and
+report state remains readable after the request ends. R0 is explicitly a
+`DEVELOPMENT_MVP` profile: it provides no cryptographic execution proof or
+runtime attestation, and it never pushes, opens a PR, merges, publishes,
+deploys, or replaces Stable.
+
 ### P1 ChatGPT contract rehearsal
 
 Before requesting a new live ChatGPT development-connector acceptance, run the

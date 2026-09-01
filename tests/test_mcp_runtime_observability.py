@@ -100,6 +100,10 @@ class MCPRuntimeObservabilityTests(unittest.TestCase):
         project = self.make_git_checkout()
         server = MCPPlanningBridgeServer(str(project), service_mode=False)
         expected_scopes = {
+            ("functional_mvp", "inspect"): "mcp:read",
+            ("functional_mvp", "run"): "mcp:commit",
+            ("functional_mvp", "status"): "mcp:read",
+            ("functional_mvp", "read"): "mcp:read",
             ("auto_preview", "preview"): "mcp:preview",
             ("project_status", "inspect"): "mcp:read",
             ("source_onboarding", "preview"): "mcp:preview",

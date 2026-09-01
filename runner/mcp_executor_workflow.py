@@ -24,6 +24,7 @@ from runner.executor_result_builder import (
 from runner.executor_run_claims import ExecutorRunClaimStore, parse_iso_datetime
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.executor_run_workflow import ExecutorRunOnceService
+from runner.functional_mvp_contract import FUNCTIONAL_MVP_SECURITY_PROFILE
 from runner.fresh_executor_authority import (
     FRESH_EXECUTOR_AUTHORITY_ALREADY_CONSUMED,
     FRESH_EXECUTOR_AUTHORITY_BOUNDED_UNSUPPORTED_R0,
@@ -178,6 +179,16 @@ class MCPExecutorWorkflowManager:
         )
         self._state_mutations = RunnerStateMutationService()
 
+    def latest_active_run_id(self) -> str:
+        """Return the newest live opaque run handle without exposing claim data."""
+
+        claim = self._claims.find_active_claim()
+        if not isinstance(claim, dict):
+            return ""
+        if self._claims.evaluate_orphaned_claim(claim).get("orphaned"):
+            return ""
+        return str(claim.get("run_id") or "")
+
     def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         action_map: dict[str, Any] = {
             "preflight": self._preflight,
@@ -233,6 +244,13 @@ class MCPExecutorWorkflowManager:
         executor_session_mode = executor_session_mode or "auto"
         executor_authority_id = _sanitize_optional_str(params.get("executor_authority_id"))
         admission_sha256 = _sanitize_optional_str(params.get("admission_sha256"))
+        security_profile = _sanitize_optional_str(params.get("security_profile"))
+        if security_profile not in (None, FUNCTIONAL_MVP_SECURITY_PROFILE):
+            return self._error(
+                "run_once_preview",
+                "INVALID_SECURITY_PROFILE",
+                "Unsupported executor security_profile.",
+            )
         selected_executor_profile = self._build_selected_executor_profile(
             provider=provider,
             params_provider=params_provider_raw,
@@ -268,6 +286,8 @@ class MCPExecutorWorkflowManager:
         artifact["model_source"] = selected_executor_profile.get("model_source")
         artifact["reasoning_effort"] = selected_executor_profile.get("reasoning_effort")
         artifact["reasoning_effort_source"] = selected_executor_profile.get("reasoning_effort_source")
+        if security_profile:
+            artifact["security_profile"] = security_profile
         if executor_authority_id:
             authority_gate_error = self._fresh_authority_preview_gate(
                 authority_id=executor_authority_id,
@@ -753,6 +773,9 @@ class MCPExecutorWorkflowManager:
         executor_session_mode = executor_session_mode or "auto"
         executor_authority_id = _sanitize_optional_str(params.get("executor_authority_id"))
         admission_sha256 = _sanitize_optional_str(params.get("admission_sha256"))
+        security_profile = _sanitize_optional_str(params.get("security_profile"))
+        if security_profile not in (None, FUNCTIONAL_MVP_SECURITY_PROFILE):
+            return self._error("run_once", "INVALID_SECURITY_PROFILE", "Unsupported executor security_profile.")
 
         if not preview_id:
             return self._error("run_once", "PREVIEW_ID_REQUIRED", "run_once 需要 preview_id。请先调用 run_once_preview 获取。")
@@ -782,6 +805,13 @@ class MCPExecutorWorkflowManager:
         artifact_model_source = _sanitize_optional_str(artifact.get("model_source"))
         artifact_reasoning_effort = _sanitize_optional_str(artifact.get("reasoning_effort"))
         artifact_reasoning_effort_source = _sanitize_optional_str(artifact.get("reasoning_effort_source"))
+        artifact_security_profile = _sanitize_optional_str(artifact.get("security_profile"))
+        if security_profile != artifact_security_profile:
+            return self._error(
+                "run_once",
+                "SECURITY_PROFILE_MISMATCH",
+                "security_profile no longer matches the authorized preview.",
+            )
         if model is not None and model != artifact_model:
             return self._error(
                 "run_once",
@@ -904,7 +934,7 @@ class MCPExecutorWorkflowManager:
             }
 
         selected_action = str(action_gate.get("selected_action") or "")
-        if selected_action == "start_new":
+        if selected_action == "start_new" and security_profile != FUNCTIONAL_MVP_SECURITY_PROFILE:
             if not executor_authority_id or not admission_sha256:
                 operation_lease.release()
                 return self._error(
@@ -998,6 +1028,7 @@ class MCPExecutorWorkflowManager:
                 executor_authority_id=executor_authority_id,
                 admission_sha256=admission_sha256,
                 claimed_work_target=claimed_work_target,
+                security_profile=security_profile or "",
             )
             lease_ownership.transferred = True
         except Exception:
@@ -1026,6 +1057,7 @@ class MCPExecutorWorkflowManager:
         executor_authority_id: str = "",
         admission_sha256: str = "",
         claimed_work_target: dict[str, Any] | None = None,
+        security_profile: str = "",
     ) -> None:
         try:
             started_at = self._now_iso()
@@ -1050,6 +1082,7 @@ class MCPExecutorWorkflowManager:
                     run_once_callable, operation_lease,
                     executor_authority_id, admission_sha256,
                     claimed_work_target,
+                    security_profile,
                 ),
                 daemon=True,
             )
@@ -1095,6 +1128,7 @@ class MCPExecutorWorkflowManager:
         executor_authority_id: str = "",
         admission_sha256: str = "",
         claimed_work_target: dict[str, Any] | None = None,
+        security_profile: str = "",
     ) -> None:
         heartbeat_stop_event = threading.Event()
         heartbeat_state: dict[str, Any] = {"errors": 0, "last_error": ""}
@@ -1147,6 +1181,7 @@ class MCPExecutorWorkflowManager:
                 executor_authority_id=executor_authority_id,
                 admission_sha256=admission_sha256,
                 claimed_work_target=claimed_work_target,
+                security_profile=security_profile,
             )
             final_status = "COMPLETED" if bool(result.get("ok")) else "FAILED"
             report_id = str(result.get("latest_report_id") or "")

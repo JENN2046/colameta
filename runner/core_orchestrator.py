@@ -21,6 +21,10 @@ from runner.continuation_snapshot import (
     snapshot_from_fact_bundle,
 )
 from runner.executor_run_reports import ExecutorRunReportStore
+from runner.functional_mvp_contract import (
+    FUNCTIONAL_MVP_PLAN_CHANGED_FILES_PARAM,
+    FUNCTIONAL_MVP_SECURITY_PROFILE,
+)
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.project_identity import build_project_identity
 from runner.canonical_project_state import build_canonical_project_state
@@ -1116,6 +1120,10 @@ class WorkflowOrchestrator:
             git_clean = bool(git_info.get("blocking_working_tree_clean", git_info.get("working_tree_clean")))
         else:
             git_clean = False
+        functional_mvp_plan_dirty_allowed = self._functional_mvp_plan_dirty_matches(
+            params,
+            git_info,
+        )
 
         continuation_snapshot = self._continuation_snapshot or get_or_collect_continuation_snapshot(
             self.project_root,
@@ -1150,7 +1158,7 @@ class WorkflowOrchestrator:
             blockers.append("项目处于 source-only 模式，先完成 Runner 纳管。")
         if lint_blockers > 0:
             blockers.append("plan lint 存在 blocker，先修复后再派发执行。")
-        if not git_clean:
+        if not git_clean and not functional_mvp_plan_dirty_allowed:
             blockers.append("Git 工作区存在改动，先清理后再派发执行。")
 
         hard_blockers: list[str] = []
@@ -1173,7 +1181,7 @@ class WorkflowOrchestrator:
 
         if require_runner_managed and source_only:
             return {"ok": False, "error": self._error_result("agent_dispatch", "RUNNER_MANAGED_REQUIRED", "agent_dispatch 仅支持 Runner-managed 项目。")}
-        if require_git_clean and (not git_clean):
+        if require_git_clean and not git_clean and not functional_mvp_plan_dirty_allowed:
             return {"ok": False, "error": self._error_result("agent_dispatch", "DIRTY_GIT_STATUS", "当前工作区存在改动，agent_dispatch 需要干净工作区。")}
         if require_lint_clean and lint_blockers > 0:
             return {"ok": False, "error": self._error_result("agent_dispatch", "PLAN_LINT_BLOCKED", "plan lint 存在 blocker，无法继续。")}
@@ -1220,6 +1228,66 @@ class WorkflowOrchestrator:
             "warnings": warnings,
             "inspect_result": inspect_result,
         }
+
+    def _functional_mvp_plan_dirty_matches(
+        self,
+        params: dict[str, Any],
+        git_info: Any,
+    ) -> bool:
+        if params.get("security_profile") != FUNCTIONAL_MVP_SECURITY_PROFILE:
+            return False
+        expected_raw = params.get(FUNCTIONAL_MVP_PLAN_CHANGED_FILES_PARAM)
+        if not isinstance(expected_raw, list) or not isinstance(git_info, dict):
+            return False
+
+        def normalized_paths(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            paths: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    continue
+                path = item.strip().replace("\\", "/")
+                if (
+                    not path
+                    or os.path.isabs(path)
+                    or path == ".."
+                    or path.startswith("../")
+                    or "/../" in path
+                ):
+                    return []
+                if path not in paths:
+                    paths.append(path)
+            return paths
+
+        expected = normalized_paths(expected_raw)
+        actual_raw = normalized_paths(
+            [
+                *(git_info.get("blocking_changed_files") or []),
+                *(git_info.get("blocking_untracked_files") or []),
+            ]
+        )
+        actual: list[str] = []
+        for path in actual_raw:
+            candidate = os.path.join(self.project_root, path)
+            if path.endswith("/") and os.path.isdir(candidate) and not os.path.islink(candidate):
+                for root, dirs, files in os.walk(candidate, followlinks=False):
+                    dirs[:] = sorted(dirs)
+                    for filename in sorted(files):
+                        relative = os.path.relpath(
+                            os.path.join(root, filename),
+                            self.project_root,
+                        ).replace(os.sep, "/")
+                        if relative not in actual:
+                            actual.append(relative)
+                continue
+            normalized = path.rstrip("/")
+            if normalized and normalized not in actual:
+                actual.append(normalized)
+        return bool(actual) and set(actual) == set(expected) and all(
+            classify_runner_path(path).get("category") == "project_tracked"
+            for path in expected
+        )
 
     def _agent_dispatch_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
         precheck = self._agent_dispatch_precheck(
@@ -1433,6 +1501,24 @@ class WorkflowOrchestrator:
         steps = list(precheck["steps"])
         steps.append(self._step("agent_dispatch", "manage_plan_version", "apply", result, STEP_RISK_WRITE))
         recommended_version = result.get("inserted_version") or result.get("updated_version")
+        if (
+            result.get("ok")
+            and params.get("security_profile") == FUNCTIONAL_MVP_SECURITY_PROFILE
+            and isinstance(recommended_version, str)
+            and recommended_version.strip()
+        ):
+            state_sync = self._planning_bridge.sync_state_after_plan_change(
+                self.project_root,
+                prefer_version=recommended_version.strip(),
+                force_prefer_version=True,
+            )
+            if not state_sync.get("ok"):
+                return self._error_result(
+                    "agent_dispatch",
+                    "FUNCTIONAL_MVP_STATE_SYNC_FAILED",
+                    "Functional MVP could not select the inserted version.",
+                )
+            result["state_sync"] = state_sync
         next_actions = []
         if result.get("ok"):
             action_params: dict[str, Any] = {"workflow": "agent_dispatch", "phase": "run_preview"}
@@ -1464,13 +1550,14 @@ class WorkflowOrchestrator:
         execution_mode = str(params.get("execution_mode", "run")).strip().lower() or "run"
         if execution_mode != "run":
             return self._error_result("agent_dispatch", "EXECUTION_MODE_NOT_SUPPORTED", "run_preview 仅支持 execution_mode=run。")
+        development_mvp = params.get("security_profile") == FUNCTIONAL_MVP_SECURITY_PROFILE
         precheck = self._agent_dispatch_precheck(
             params,
             require_runner_managed=True,
             require_git_clean=True,
             require_lint_clean=True,
             require_provider=True,
-            require_executor_session_clear=True,
+            require_executor_session_clear=not development_mvp,
         )
         if not precheck.get("ok"):
             return precheck["error"]
@@ -1501,7 +1588,14 @@ class WorkflowOrchestrator:
                     f"requested version={requested_version.strip()} 与当前可运行版本={current_version} 不一致。",
                 )
 
-        preview = manager.handle("run_once_preview", {"provider": provider, "execution_mode": "run"})
+        preview_params: dict[str, Any] = {
+            "provider": provider,
+            "execution_mode": "run",
+        }
+        for key in ("model", "executor_session_mode", "security_profile"):
+            if params.get(key) is not None:
+                preview_params[key] = params[key]
+        preview = manager.handle("run_once_preview", preview_params)
         steps.append(self._step("agent_dispatch", "manage_executor_workflow", "run_once_preview", preview, STEP_RISK_PREVIEW))
         preview_id_value = preview.get("preview_id")
         if isinstance(preview_id_value, str) and preview_id_value.strip():
@@ -1534,13 +1628,14 @@ class WorkflowOrchestrator:
         preview_id = params.get("preview_id")
         if not isinstance(preview_id, str) or not preview_id.strip():
             return self._error_result("agent_dispatch", "PREVIEW_ID_REQUIRED", "run 需要 preview_id。")
+        development_mvp = params.get("security_profile") == FUNCTIONAL_MVP_SECURITY_PROFILE
         precheck = self._agent_dispatch_precheck(
             params,
             require_runner_managed=True,
             require_git_clean=True,
             require_lint_clean=True,
             require_provider=True,
-            require_executor_session_clear=True,
+            require_executor_session_clear=not development_mvp,
         )
         if not precheck.get("ok"):
             return precheck["error"]
@@ -1548,20 +1643,49 @@ class WorkflowOrchestrator:
         source_error = self._validate_agent_dispatch_executor_preview_source(preview_id.strip(), provider)
         if source_error is not None:
             return source_error
-        run_result = {
-            "ok": False,
-            "error_code": "EXECUTOR_ASYNC_START_UNAVAILABLE",
-            "message": "当前 executor workflow 缺少启动后立即返回入口，agent_dispatch run 保持 fail-closed。",
-            "recommended_next_action": "请在 Web Console 或受控 workflow 中手动确认运行。",
+        run_params: dict[str, Any] = {
+            "preview_id": preview_id.strip(),
+            "provider": provider,
+            "execution_mode": "run",
+            "profile_id": params.get("profile_id", "web_gpt_commander"),
         }
+        for key in ("model", "executor_session_mode", "security_profile"):
+            if params.get(key) is not None:
+                run_params[key] = params[key]
+        manager = self._executor_workflow_factory(self.project_root)
+        run_result = manager.handle("run_once", run_params)
         steps = list(precheck["steps"])
-        steps.append(self._step("agent_dispatch", "manage_executor_workflow", "run", run_result, STEP_RISK_BLOCKED))
+        run_started = bool(run_result.get("ok")) and bool(run_result.get("run_id"))
+        steps.append(
+            self._step(
+                "agent_dispatch",
+                "manage_executor_workflow",
+                "run",
+                run_result,
+                STEP_RISK_COMMIT if run_started else STEP_RISK_BLOCKED,
+            )
+        )
+        next_actions: list[dict[str, Any]] = []
+        if run_started:
+            next_actions.append({
+                "action": "agent_dispatch.status",
+                "label": "查询执行器状态",
+                "tool": "run_mcp_workflow",
+                "params": {
+                    "workflow": "agent_dispatch",
+                    "phase": "status",
+                    "run_id": run_result["run_id"],
+                },
+                "risk_level": "info",
+                "requires_confirmation": False,
+            })
         return self._build_core_result(
             workflow="agent_dispatch",
             steps=steps,
-            risk_level=STEP_RISK_BLOCKED,
-            status="failed",
+            risk_level=STEP_RISK_COMMIT if run_started else STEP_RISK_BLOCKED,
+            status="started" if run_started else "failed",
             requires_confirmation=False,
+            next_actions=next_actions,
             blockers=self._extract_blockers(run_result),
             warnings=self._extract_warnings(run_result),
             result=run_result,

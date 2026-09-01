@@ -3042,6 +3042,8 @@ def build_mcp_tool_definitions(
                 "没有匹配的 stored preview_id 不能创建 commit。"
                 "git_revert 不自动 commit。"
                 "scope 按 workflow/phase 动态映射。"
+                "functional_mvp 提供 Commander 可直接使用的异步 start → status → read 路径，"
+                "内部复用 agent_dispatch 与 executor claim/report；无需调用隐藏 executor 工具。"
             ),
             input_schema={
                 "type": "object",
@@ -3049,7 +3051,7 @@ def build_mcp_tool_definitions(
                     "workflow": {
                         "type": "string",
                         "enum": [
-                            "auto_preview", "project_status", "source_onboarding",
+                            "functional_mvp", "auto_preview", "project_status", "source_onboarding",
                             "plan_update", "small_project_patch", "docs_update",
                             "git_commit", "git_restore_file", "git_revert", "git_undo_version",
                             "agent_dispatch", "prompt_to_plan", "thin_governed_loop_preview", "project_delivery_preview", "github_delivery", "managed_runtime_closeout", "stage_7_9_preview", "current_facts",
@@ -3211,6 +3213,24 @@ def build_mcp_tool_definitions(
                         "type": "string",
                         "enum": ["pi", "codex", "opencode"],
                         "description": "auto_preview 可选。执行器 provider，用于 executor preflight 和 continuation 决策。",
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "functional_mvp status/read 必填；由 functional_mvp run 返回的 opaque executor run handle。",
+                    },
+                    "poll_attempt": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "functional_mvp status 可选轮询次数；使用 web_gpt_commander profile。",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "functional_mvp run 可选执行器模型；必须与内部 run preview 保持一致。",
+                    },
+                    "executor_session_mode": {
+                        "type": "string",
+                        "enum": ["auto", "resume_existing", "start_new"],
+                        "description": "functional_mvp run 可选执行器会话模式，默认 auto。",
                     },
                     "first_version": {
                         "type": "string",
