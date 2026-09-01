@@ -3938,11 +3938,6 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         owner_principal_allowed = self._owner_profile_principal_is_allowed(
             auth_context
         )
-        if (
-            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_OWNER
-            and not owner_principal_allowed
-        ):
-            return []
         exposed_tool_defs = self._filter_tools_by_exposure_profile(self.tool_defs)
         payload: list[dict[str, Any]] = []
         for tool in exposed_tool_defs:

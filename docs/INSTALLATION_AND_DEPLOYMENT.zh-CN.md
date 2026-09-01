@@ -160,8 +160,9 @@ MCP_EXPOSURE_PROFILE=owner
 同时让 resource-server allowlist 包含
 `mcp:read,mcp:preview,mcp:plan,mcp:commit`。`owner` 会暴露包括
 maintainer、legacy、内部兼容工具、`manage_executor_workflow`、Git push / Draft PR
-delivery、stable promotion 状态与证据在内的全部已注册能力（当前 123 个工具）。它只接受本地绑定的 exact owner
-principal；其他 principal 看不到 owner 工具并且不能调用。返回仍会移除 credential、raw
+delivery、stable promotion 状态与证据在内的全部已注册能力（当前 123 个工具）。ChatGPT
+在 connector metadata admission 阶段可以发现 descriptors，但只有本地绑定的 exact owner
+principal 能调用；descriptor discovery 不授予执行 authority。返回仍会移除 credential、raw
 claim、absolute private path、内部 report/session path 与 traceback。
 
 “全部已实现能力”不等于任意 shell：当前 catalog 没有 stable checkout

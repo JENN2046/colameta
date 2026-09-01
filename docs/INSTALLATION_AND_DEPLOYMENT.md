@@ -176,7 +176,9 @@ The resource-server allowlist must include
 implemented registered MCP capabilities (currently 123 tools), including
 maintainer, legacy, and internal compatibility tools, `manage_executor_workflow`,
 Git push and Draft PR delivery, and stable-promotion status/evidence. Only the
-exact locally bound owner principal can discover or call them. Public-safe
+exact locally bound owner principal can call them. ChatGPT may discover the
+descriptors during connector metadata admission, but discovery grants no
+execution authority. Public-safe
 projection still removes credentials, raw claims, absolute private paths,
 internal report/session paths, and tracebacks.
 

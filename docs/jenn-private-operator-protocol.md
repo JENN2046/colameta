@@ -46,8 +46,9 @@ That statement describes the default Commander profile. Under the separate
 implemented registered tool directly, including maintainer, legacy, and
 internal compatibility tools, but the ordinary scope, preview/apply,
 context, project-routing, and digest gates still apply. A bearer token with
-write scopes is not sufficient by itself. Non-owner discovery and dispatch
-fail closed.
+write scopes is not sufficient by itself. Metadata discovery may enumerate the
+owner descriptors for ChatGPT connector admission; non-owner dispatch and
+resource reads fail closed.
 
 The owner catalog currently includes executor configuration/workflow, bounded
 validation, project/file/plan/memory tools, Git commit/push, Draft PR delivery,

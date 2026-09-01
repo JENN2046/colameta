@@ -236,10 +236,13 @@ def test_owner_profile_exposes_full_advanced_catalog_only_to_exact_owner(
         exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
     )
 
-    assert server._tool_defs_payload(auth_context=_owner_auth(subject="auth0|other")) == []
+    non_owner_tools = server._tool_defs_payload(
+        auth_context=_owner_auth(subject="auth0|other")
+    )
     tools = server._tool_defs_payload(auth_context=_owner_auth())
     names = {item["name"] for item in tools}
 
+    assert {item["name"] for item in non_owner_tools} == set(server.tools)
     assert names == set(server.tools)
     assert len(names) == 123
     assert "manage_executor_workflow" in names
