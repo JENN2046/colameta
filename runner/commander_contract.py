@@ -104,6 +104,7 @@ COMMANDER_PUBLIC_ERROR_CODES = frozenset(
         "PUBLIC_PROJECTION_FAILED",
         "INTERNAL_RESULT_INVALID",
         "INTERNAL_ERROR",
+        "FUNCTIONAL_MVP_PREVIEW_FAILED",
     }
 )
 
@@ -112,6 +113,7 @@ _FAILED_PUBLIC_ERROR_CODES = frozenset(
         "PUBLIC_PROJECTION_FAILED",
         "INTERNAL_RESULT_INVALID",
         "INTERNAL_ERROR",
+        "FUNCTIONAL_MVP_PREVIEW_FAILED",
     }
 )
 _IN_PROGRESS_PUBLIC_ERROR_CODES = frozenset({"EXECUTOR_RUNNING"})
@@ -3031,6 +3033,9 @@ def _normalize_error(
             "PUBLIC_PROJECTION_FAILED": "Commander 公共响应构建失败，内部诊断未公开。",
             "INTERNAL_RESULT_INVALID": "内部结果格式无效，无法安全建立公共响应。",
             "INTERNAL_ERROR": "工具执行失败，内部诊断未公开。",
+            "FUNCTIONAL_MVP_PREVIEW_FAILED": (
+                "Functional MVP preview failed before executor start."
+            ),
         }[public_code]
     elif explicit_message is not None:
         message = _public_text(explicit_message, max_chars=COMMANDER_SUMMARY_MAX_CHARS)

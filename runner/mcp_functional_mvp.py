@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import re
 from typing import Any, Callable
 
 from runner.executor_run_reports import ExecutorRunReportStore
 from runner.functional_mvp_contract import (
     FUNCTIONAL_MVP_POLLING_PROFILE,
+    FUNCTIONAL_MVP_PLAN_CHANGED_FILES_PARAM,
+    FUNCTIONAL_MVP_PREVIEW_FAILED,
     FUNCTIONAL_MVP_SECURITY_PROFILE,
     FUNCTIONAL_MVP_VERSION,
     FUNCTIONAL_MVP_WORKFLOW,
 )
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
+from runner.runner_paths import resolve_project_runner_path
 
 
 FUNCTIONAL_MVP_PHASES = frozenset({"inspect", "run", "status", "read"})
@@ -108,6 +114,8 @@ class MCPFunctionalMVPWorkflow:
                 "context_files",
                 "name",
                 "description",
+                "version",
+                "insert_after",
                 "model",
                 "executor_session_mode",
             )
@@ -118,10 +126,17 @@ class MCPFunctionalMVPWorkflow:
             "security_profile": FUNCTIONAL_MVP_SECURITY_PROFILE,
             **forwarded,
         }
-        preview = router.handle(
-            "agent_dispatch",
-            {**common, "phase": "preview", "user_request": user_request},
-        )
+        append_version, append_after = self._plan_append_target()
+        common.setdefault("version", append_version)
+        common.setdefault("insert_after", append_after)
+        try:
+            preview = router.handle(
+                "agent_dispatch",
+                {**common, "phase": "preview", "user_request": user_request},
+            )
+        except Exception:
+            logging.exception("functional_mvp agent_dispatch preview failed")
+            return self._lifecycle_failure("preview", {})
         plan_preview_id = self._preview_id(preview)
         if not plan_preview_id:
             return self._lifecycle_failure("preview", preview)
@@ -133,8 +148,14 @@ class MCPFunctionalMVPWorkflow:
         if not applied.get("ok"):
             return self._lifecycle_failure("apply", applied)
         version = self._first_string(applied, ("version", "inserted_version", "updated_version"))
+        plan_changed_files = self._project_relative_paths(
+            self._first_list(applied, ("changed_files",))
+        )
 
-        run_preview_params: dict[str, Any] = {**common, "phase": "run_preview"}
+        run_common = dict(common)
+        if plan_changed_files:
+            run_common[FUNCTIONAL_MVP_PLAN_CHANGED_FILES_PARAM] = plan_changed_files
+        run_preview_params: dict[str, Any] = {**run_common, "phase": "run_preview"}
         if version:
             run_preview_params["version"] = version
         executor_preview = router.handle("agent_dispatch", run_preview_params)
@@ -145,7 +166,7 @@ class MCPFunctionalMVPWorkflow:
         started = router.handle(
             "agent_dispatch",
             {
-                **common,
+                **run_common,
                 "phase": "run",
                 "preview_id": executor_preview_id,
                 "profile_id": FUNCTIONAL_MVP_POLLING_PROFILE,
@@ -301,6 +322,11 @@ class MCPFunctionalMVPWorkflow:
         }
 
     def _lifecycle_failure(self, stage: str, result: dict[str, Any]) -> dict[str, Any]:
+        error_code = self._first_string(result, ("error_code",)) or "FUNCTIONAL_MVP_LIFECYCLE_BLOCKED"
+        message = self._first_string(result, ("message",)) or f"Existing agent_dispatch {stage} was blocked."
+        if stage == "preview":
+            error_code = FUNCTIONAL_MVP_PREVIEW_FAILED
+            message = "Functional MVP preview failed before executor start."
         return {
             "ok": False,
             "workflow": FUNCTIONAL_MVP_WORKFLOW,
@@ -309,8 +335,8 @@ class MCPFunctionalMVPWorkflow:
             "terminal": True,
             "executor_run_status": "failed",
             "result_ready": False,
-            "error_code": self._first_string(result, ("error_code",)) or "FUNCTIONAL_MVP_LIFECYCLE_BLOCKED",
-            "message": self._first_string(result, ("message",)) or f"Existing agent_dispatch {stage} was blocked.",
+            "error_code": error_code,
+            "message": message,
             "failed_lifecycle_stage": stage,
             **self._security_boundary(),
         }
@@ -335,6 +361,71 @@ class MCPFunctionalMVPWorkflow:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
         return MCPFunctionalMVPWorkflow._first_string(result, ("preview_id",))
+
+    def _plan_append_target(self) -> tuple[str, str]:
+        plan_path = resolve_project_runner_path(self.project_root, "plan.json")
+        if not os.path.isfile(plan_path):
+            return "v1.0", "__first__"
+        try:
+            with open(plan_path, "r", encoding="utf-8") as handle:
+                plan = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise FunctionalMVPWorkflowError(
+                "FUNCTIONAL_MVP_PLAN_UNAVAILABLE",
+                "functional_mvp/run 无法读取当前 Runner plan。",
+            ) from exc
+        versions = plan.get("versions") if isinstance(plan, dict) else None
+        if not isinstance(versions, list) or not versions:
+            return "v1.0", "__first__"
+        last_version = ""
+        for item in versions:
+            if isinstance(item, dict):
+                candidate = item.get("version")
+                if isinstance(candidate, str) and candidate.strip():
+                    last_version = candidate.strip()
+        if not last_version:
+            raise FunctionalMVPWorkflowError(
+                "FUNCTIONAL_MVP_PLAN_VERSION_UNAVAILABLE",
+                "functional_mvp/run 无法确定 Runner plan 的追加位置。",
+            )
+        match = re.fullmatch(r"v(\d+(?:\.\d+)*)", last_version)
+        if match is None:
+            return f"{last_version}.1", last_version
+        parts = [int(part) for part in match.group(1).split(".")]
+        parts[-1] += 1
+        return "v" + ".".join(str(part) for part in parts), last_version
+
+    @staticmethod
+    def _first_list(value: Any, keys: tuple[str, ...]) -> list[Any]:
+        if isinstance(value, dict):
+            for key in keys:
+                candidate = value.get(key)
+                if isinstance(candidate, list):
+                    return candidate
+            for nested in value.values():
+                candidate = MCPFunctionalMVPWorkflow._first_list(nested, keys)
+                if candidate:
+                    return candidate
+        elif isinstance(value, list):
+            for nested in value:
+                candidate = MCPFunctionalMVPWorkflow._first_list(nested, keys)
+                if candidate:
+                    return candidate
+        return []
+
+    def _project_relative_paths(self, value: list[Any]) -> list[str]:
+        relative: list[str] = []
+        project_prefix = self.project_root + os.sep
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            candidate = os.path.abspath(os.path.expanduser(item.strip()))
+            if candidate != self.project_root and not candidate.startswith(project_prefix):
+                continue
+            path = os.path.relpath(candidate, self.project_root).replace(os.sep, "/")
+            if path not in relative:
+                relative.append(path)
+        return relative
 
     @staticmethod
     def _first_string(value: Any, keys: tuple[str, ...]) -> str:

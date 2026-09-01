@@ -21,7 +21,10 @@ from runner.continuation_snapshot import (
     snapshot_from_fact_bundle,
 )
 from runner.executor_run_reports import ExecutorRunReportStore
-from runner.functional_mvp_contract import FUNCTIONAL_MVP_SECURITY_PROFILE
+from runner.functional_mvp_contract import (
+    FUNCTIONAL_MVP_PLAN_CHANGED_FILES_PARAM,
+    FUNCTIONAL_MVP_SECURITY_PROFILE,
+)
 from runner.mcp_runner_plan import MCPRunnerPlanManager
 from runner.project_identity import build_project_identity
 from runner.canonical_project_state import build_canonical_project_state
@@ -1117,6 +1120,10 @@ class WorkflowOrchestrator:
             git_clean = bool(git_info.get("blocking_working_tree_clean", git_info.get("working_tree_clean")))
         else:
             git_clean = False
+        functional_mvp_plan_dirty_allowed = self._functional_mvp_plan_dirty_matches(
+            params,
+            git_info,
+        )
 
         continuation_snapshot = self._continuation_snapshot or get_or_collect_continuation_snapshot(
             self.project_root,
@@ -1151,7 +1158,7 @@ class WorkflowOrchestrator:
             blockers.append("项目处于 source-only 模式，先完成 Runner 纳管。")
         if lint_blockers > 0:
             blockers.append("plan lint 存在 blocker，先修复后再派发执行。")
-        if not git_clean:
+        if not git_clean and not functional_mvp_plan_dirty_allowed:
             blockers.append("Git 工作区存在改动，先清理后再派发执行。")
 
         hard_blockers: list[str] = []
@@ -1174,7 +1181,7 @@ class WorkflowOrchestrator:
 
         if require_runner_managed and source_only:
             return {"ok": False, "error": self._error_result("agent_dispatch", "RUNNER_MANAGED_REQUIRED", "agent_dispatch 仅支持 Runner-managed 项目。")}
-        if require_git_clean and (not git_clean):
+        if require_git_clean and not git_clean and not functional_mvp_plan_dirty_allowed:
             return {"ok": False, "error": self._error_result("agent_dispatch", "DIRTY_GIT_STATUS", "当前工作区存在改动，agent_dispatch 需要干净工作区。")}
         if require_lint_clean and lint_blockers > 0:
             return {"ok": False, "error": self._error_result("agent_dispatch", "PLAN_LINT_BLOCKED", "plan lint 存在 blocker，无法继续。")}
@@ -1221,6 +1228,66 @@ class WorkflowOrchestrator:
             "warnings": warnings,
             "inspect_result": inspect_result,
         }
+
+    def _functional_mvp_plan_dirty_matches(
+        self,
+        params: dict[str, Any],
+        git_info: Any,
+    ) -> bool:
+        if params.get("security_profile") != FUNCTIONAL_MVP_SECURITY_PROFILE:
+            return False
+        expected_raw = params.get(FUNCTIONAL_MVP_PLAN_CHANGED_FILES_PARAM)
+        if not isinstance(expected_raw, list) or not isinstance(git_info, dict):
+            return False
+
+        def normalized_paths(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            paths: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    continue
+                path = item.strip().replace("\\", "/")
+                if (
+                    not path
+                    or os.path.isabs(path)
+                    or path == ".."
+                    or path.startswith("../")
+                    or "/../" in path
+                ):
+                    return []
+                if path not in paths:
+                    paths.append(path)
+            return paths
+
+        expected = normalized_paths(expected_raw)
+        actual_raw = normalized_paths(
+            [
+                *(git_info.get("blocking_changed_files") or []),
+                *(git_info.get("blocking_untracked_files") or []),
+            ]
+        )
+        actual: list[str] = []
+        for path in actual_raw:
+            candidate = os.path.join(self.project_root, path)
+            if path.endswith("/") and os.path.isdir(candidate) and not os.path.islink(candidate):
+                for root, dirs, files in os.walk(candidate, followlinks=False):
+                    dirs[:] = sorted(dirs)
+                    for filename in sorted(files):
+                        relative = os.path.relpath(
+                            os.path.join(root, filename),
+                            self.project_root,
+                        ).replace(os.sep, "/")
+                        if relative not in actual:
+                            actual.append(relative)
+                continue
+            normalized = path.rstrip("/")
+            if normalized and normalized not in actual:
+                actual.append(normalized)
+        return bool(actual) and set(actual) == set(expected) and all(
+            classify_runner_path(path).get("category") == "project_tracked"
+            for path in expected
+        )
 
     def _agent_dispatch_inspect(self, params: dict[str, Any]) -> dict[str, Any]:
         precheck = self._agent_dispatch_precheck(
@@ -1434,6 +1501,24 @@ class WorkflowOrchestrator:
         steps = list(precheck["steps"])
         steps.append(self._step("agent_dispatch", "manage_plan_version", "apply", result, STEP_RISK_WRITE))
         recommended_version = result.get("inserted_version") or result.get("updated_version")
+        if (
+            result.get("ok")
+            and params.get("security_profile") == FUNCTIONAL_MVP_SECURITY_PROFILE
+            and isinstance(recommended_version, str)
+            and recommended_version.strip()
+        ):
+            state_sync = self._planning_bridge.sync_state_after_plan_change(
+                self.project_root,
+                prefer_version=recommended_version.strip(),
+                force_prefer_version=True,
+            )
+            if not state_sync.get("ok"):
+                return self._error_result(
+                    "agent_dispatch",
+                    "FUNCTIONAL_MVP_STATE_SYNC_FAILED",
+                    "Functional MVP could not select the inserted version.",
+                )
+            result["state_sync"] = state_sync
         next_actions = []
         if result.get("ok"):
             action_params: dict[str, Any] = {"workflow": "agent_dispatch", "phase": "run_preview"}

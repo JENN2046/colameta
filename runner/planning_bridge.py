@@ -613,14 +613,25 @@ class PlanningBridge:
             )
             return result
 
-    def sync_state_after_plan_change(self, project_path: str, *, prefer_version: str | None = None) -> dict[str, Any]:
-        return self._sync_state_after_plan_change(self._paths(project_path), prefer_version=prefer_version)
+    def sync_state_after_plan_change(
+        self,
+        project_path: str,
+        *,
+        prefer_version: str | None = None,
+        force_prefer_version: bool = False,
+    ) -> dict[str, Any]:
+        return self._sync_state_after_plan_change(
+            self._paths(project_path),
+            prefer_version=prefer_version,
+            force_prefer_version=force_prefer_version,
+        )
 
     def _sync_state_after_plan_change(
         self,
         paths: BridgePaths,
         *,
         prefer_version: str | None = None,
+        force_prefer_version: bool = False,
     ) -> dict[str, Any]:
         plan = self._load_json(paths.plan_file)
         state = self._load_json_if_exists(paths.state_file)
@@ -697,8 +708,37 @@ class PlanningBridge:
         if existing:
             changed = True
 
+        preferred = str(prefer_version or "").strip()
+        if force_prefer_version and preferred:
+            preferred_index = next(
+                (
+                    index
+                    for index, item in enumerate(plan_versions)
+                    if isinstance(item, dict)
+                    and item.get("version") == preferred
+                    and item.get("enabled", True) is not False
+                ),
+                None,
+            )
+            if preferred_index is None:
+                return {
+                    "ok": False,
+                    "error_code": "PREFERRED_VERSION_MISSING",
+                    "message": f"prefer_version 在 plan 中不存在或未启用：{preferred}",
+                    "current_version": current_v,
+                    "current_version_index": state.get("current_version_index"),
+                    "synced_version_count": len(new_state_versions),
+                }
+            if current_v != preferred or state.get("current_version_index") != preferred_index:
+                state["current_version"] = preferred
+                state["current_version_index"] = preferred_index
+                current_v = preferred
+                changed = True
+
         current_index = state.get("current_version_index", 0)
-        if current_v:
+        if force_prefer_version and preferred:
+            current_index = int(state.get("current_version_index", 0))
+        elif current_v:
             for idx, v in enumerate(plan_versions):
                 if isinstance(v, dict) and v.get("version") == current_v:
                     if current_index != idx:

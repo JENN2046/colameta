@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from runner.functional_mvp_contract import (
     FUNCTIONAL_MVP_POLLING_PROFILE,
+    FUNCTIONAL_MVP_PREVIEW_FAILED,
     FUNCTIONAL_MVP_SECURITY_PROFILE,
 )
 from runner.mcp_commander_public import COMMANDER_EXPOSED_TOOLS, CommanderPublicProjector
 from runner.mcp_functional_mvp import MCPFunctionalMVPWorkflow
 from runner.mcp_server import MCPPlanningBridgeServer
+from runner.mcp_runner_plan import ensure_minimal_runner_managed_project
+from runner.project_registry import ProjectRegistry
+from runner.runner_paths import resolve_project_runner_path
 from runner.executor_run_workflow import ExecutorRunOnceService
 from runner.core_orchestrator import WorkflowOrchestrator
 
@@ -94,6 +100,83 @@ class FakeReportStore:
                 "token_usage": {"input_tokens": 12, "output_tokens": 34},
             },
             "report_markdown": "Implemented the bounded functional route.",
+        }
+
+
+class RealRouterStubManager:
+    def __init__(self, project_root: str) -> None:
+        self.project_root = project_root
+
+    def latest_active_run_id(self) -> str:
+        return ""
+
+    def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        state_path = Path(resolve_project_runner_path(self.project_root, "state.json"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        current_version = str(state.get("current_version") or "")
+        if action == "preflight":
+            return {
+                "ok": True,
+                "preflight_blocked": False,
+                "runner_status": "READY",
+                "current_version": current_version,
+            }
+        if action == "run_once_preview":
+            preview_id = "executor_preview_real_router_123"
+            preview_path = Path(
+                resolve_project_runner_path(
+                    self.project_root,
+                    "runtime",
+                    "executor-workflow-previews",
+                    f"{preview_id}.json",
+                )
+            )
+            preview_path.parent.mkdir(parents=True, exist_ok=True)
+            preview_path.write_text(
+                json.dumps({"preview_id": preview_id}),
+                encoding="utf-8",
+            )
+            return {"ok": True, "preview_id": preview_id}
+        if action == "run_once":
+            return {
+                "ok": True,
+                "status": "started",
+                "run_id": RUN_ID,
+                "next_poll_after_seconds": 3,
+            }
+        if action == "status":
+            assert params["run_id"] == RUN_ID
+            return {
+                "ok": True,
+                "run_id": RUN_ID,
+                "terminal": True,
+                "executor_run_status": "completed",
+                "report_id": "report-functional-real-router-123",
+                "next_poll_after_seconds": 3,
+            }
+        raise AssertionError(action)
+
+
+class RealRouterReportStore:
+    def __init__(self, project_root: str) -> None:
+        self.project_root = project_root
+
+    def get_report(self, **params: Any) -> dict[str, Any]:
+        assert params["report_id"] == "report-functional-real-router-123"
+        return {
+            "ok": True,
+            "report": {
+                "provider": "codex",
+                "changed_files": ["FUNCTIONAL_MVP_LIVE_REHEARSAL.txt"],
+                "summary": {
+                    "changed_files": ["FUNCTIONAL_MVP_LIVE_REHEARSAL.txt"],
+                    "validation_status_summary": "passed",
+                    "validation_sample": ["marker: PASS"],
+                    "validation_failed_command_count": 0,
+                    "risk_and_followups": ["No automatic delivery."],
+                },
+            },
+            "report_markdown": "Created and validated the disposable marker.",
         }
 
 
@@ -216,6 +299,172 @@ def test_public_surface_smoke_start_status_read(tmp_path, monkeypatch) -> None:
     assert completed["result_ready"] is True
     assert completed["changed_files"] == ["runner/public.py"]
     assert completed["validation_status_summary"] == "passed"
+
+
+def test_real_service_router_public_surface_completes_functional_lifecycle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "functional-real-router"
+    project.mkdir()
+    assert ensure_minimal_runner_managed_project(str(project))["ok"] is True
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Functional MVP Test"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "functional-mvp@example.invalid"],
+        cwd=project,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=project, check=True)
+
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(project),
+        project_name="functional-real-router",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+
+    monkeypatch.setattr(
+        "runner.mcp_workflow_router.MCPExecutorWorkflowManager",
+        RealRouterStubManager,
+    )
+    monkeypatch.setattr(
+        "runner.mcp_functional_mvp.MCPExecutorWorkflowManager",
+        RealRouterStubManager,
+    )
+    monkeypatch.setattr(
+        "runner.mcp_functional_mvp.ExecutorRunReportStore",
+        RealRouterReportStore,
+    )
+    server = MCPPlanningBridgeServer(
+        str(project),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+
+    inspect = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "functional_mvp",
+            "phase": "inspect",
+            "project_name": "functional-real-router",
+            "provider": "codex",
+        },
+    )
+    inspect_facts = inspect["data"]["facts"]
+    assert inspect_facts["available"] is True
+    assert inspect_facts["executor_preflight_ready"] is True
+
+    run_arguments = {
+        "workflow": "functional_mvp",
+        "phase": "run",
+        "project_name": "functional-real-router",
+        "provider": "codex",
+        "user_request": "Create the disposable marker file.",
+        "allowed_files": ["FUNCTIONAL_MVP_LIVE_REHEARSAL.txt"],
+        "acceptance_commands": ["test -f FUNCTIONAL_MVP_LIVE_REHEARSAL.txt"],
+    }
+    started = server.call_tool_for_agent("run_mcp_workflow", run_arguments)
+    started_facts = started["data"]["facts"]
+    assert started["data"]["outcome"] == "in_progress"
+    assert started_facts["run_id"] == RUN_ID
+    assert started_facts["terminal"] is False
+    assert started_facts["executor_run_status"] == "running"
+
+    status = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "functional_mvp",
+            "phase": "status",
+            "project_name": "functional-real-router",
+            "run_id": RUN_ID,
+        },
+    )
+    status_facts = status["data"]["facts"]
+    assert status_facts["run_id"] == RUN_ID
+    assert status_facts["terminal"] is True
+
+    completed = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "functional_mvp",
+            "phase": "read",
+            "project_name": "functional-real-router",
+            "run_id": RUN_ID,
+        },
+    )
+    completed_facts = completed["data"]["facts"]
+    assert completed_facts["run_id"] == RUN_ID
+    assert completed_facts["result_ready"] is True
+    assert completed_facts["changed_files"] == ["FUNCTIONAL_MVP_LIVE_REHEARSAL.txt"]
+    assert completed_facts["validation_status_summary"] == "passed"
+    assert completed_facts["executor_summary"].startswith("status=completed")
+    assert len(server._get_exposed_tool_names("commander")) == 9
+
+    serialized = json.dumps([inspect, started, status, completed])
+    assert "manage_executor_workflow" not in serialized
+    assert str(project) not in serialized
+
+
+def test_preview_exception_returns_specific_bounded_public_error(tmp_path, caplog) -> None:
+    class ExplodingRouter:
+        def handle(self, workflow: str, params: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError(f"private traceback path: {tmp_path}")
+
+    workflow = MCPFunctionalMVPWorkflow(
+        str(tmp_path),
+        workflow_router_factory=ExplodingRouter,
+        executor_workflow_factory=FakeManager,
+        report_store_factory=FakeReportStore,
+    )
+    result = workflow.handle(
+        {
+            "phase": "run",
+            "user_request": "Create marker.txt.",
+            "allowed_files": ["marker.txt"],
+            "acceptance_commands": ["test -f marker.txt"],
+        }
+    )
+    projected = CommanderPublicProjector(str(tmp_path)).project_tool_result(
+        {"ok": True, "tool": "run_mcp_workflow", "data": result},
+        params={"workflow": "functional_mvp", "phase": "run"},
+    )
+
+    assert result["failed_lifecycle_stage"] == "preview"
+    assert result["error_code"] == FUNCTIONAL_MVP_PREVIEW_FAILED
+    assert projected["data"]["error"]["code"] == FUNCTIONAL_MVP_PREVIEW_FAILED
+    assert str(tmp_path) not in json.dumps(projected)
+    assert "traceback" not in json.dumps(projected).lower()
+
+
+def test_functional_mvp_plan_dirty_exception_requires_the_exact_apply_set(tmp_path) -> None:
+    prompt_dir = tmp_path / ".colameta" / "prompts"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "v1.1.md").write_text("bounded plan prompt", encoding="utf-8")
+    orchestrator = WorkflowOrchestrator.__new__(WorkflowOrchestrator)
+    orchestrator.project_root = str(tmp_path)
+    params = {
+        "security_profile": FUNCTIONAL_MVP_SECURITY_PROFILE,
+        "__functional_mvp_plan_changed_files": [
+            ".colameta/plan.json",
+            ".colameta/prompts/v1.1.md",
+        ],
+    }
+    git_info = {
+        "blocking_changed_files": [".colameta/plan.json"],
+        "blocking_untracked_files": [".colameta/prompts/"],
+    }
+
+    assert orchestrator._functional_mvp_plan_dirty_matches(params, git_info) is True
+
+    (prompt_dir / "unexpected.md").write_text("not part of apply", encoding="utf-8")
+    assert orchestrator._functional_mvp_plan_dirty_matches(params, git_info) is False
 
 
 def test_functional_mvp_status_uses_web_profile_and_normalizes_running(tmp_path) -> None:
