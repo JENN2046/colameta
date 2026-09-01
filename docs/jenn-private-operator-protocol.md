@@ -13,6 +13,12 @@ Commander surface.
    execute an explicitly previewed local batch after ChatGPT presents its write
    confirmation.
 
+There is also an explicitly selected service exposure profile,
+`MCP_EXPOSURE_PROFILE=owner`. It reuses the same exact Jenn principal binding
+but exposes the complete registered MCP catalog (currently 123 tools) directly to Jenn's private
+ChatGPT app. It is not enabled by `operator-config enable` alone and never
+changes the default Commander surface.
+
 ChatGPT confirmation is a client-side user-control mechanism. ColaMeta does not
 receive cryptographic proof of the click and must not report that it verified
 the click. The server-side guarantee is narrower: the authenticated principal,
@@ -21,7 +27,7 @@ before execution.
 
 ## Fixed safety boundary
 
-The following remain unavailable to the private operator:
+The following remain unavailable to the `operator_batch` workflow:
 
 - push, pull/fetch apply, restore, revert, undo, reset, clean, merge, or rebase;
 - release, tag, publish, deploy, stable replacement, or service lifecycle work;
@@ -34,6 +40,20 @@ The following remain unavailable to the private operator:
 External callers may not invoke a write action directly. Operator execution is
 available only through `run_mcp_workflow` with `workflow=operator_batch` and an
 opaque, in-process dispatch capability.
+
+That statement describes the default Commander profile. Under the separate
+`owner` exposure profile, an exact locally bound owner principal may invoke any
+implemented registered tool directly, including maintainer, legacy, and
+internal compatibility tools, but the ordinary scope, preview/apply,
+context, project-routing, and digest gates still apply. A bearer token with
+write scopes is not sufficient by itself. Non-owner discovery and dispatch
+fail closed.
+
+The owner catalog currently includes executor configuration/workflow, bounded
+validation, project/file/plan/memory tools, Git commit/push, Draft PR delivery,
+and stable promotion status/evidence. It still has no arbitrary shell tool and
+does not implement stable replacement/restart/rollback, PR merge, release tag,
+or package publication.
 
 ## Public interface
 
@@ -191,6 +211,13 @@ colameta operator-config disable
 It hashes both inputs immediately and writes only fingerprints. `status`
 reports enabled/profile/TTL/maximum steps. `disable` removes fingerprints and
 restores Commander behavior.
+
+For a private ChatGPT service that should expose the advanced catalog, set
+`MCP_EXPOSURE_PROFILE=owner` only after `enable` succeeds. The OAuth resource
+server must also allow `mcp:read`, `mcp:preview`, `mcp:plan`, and `mcp:commit`.
+Owner results continue through the same public-safe projection; private paths,
+credentials, raw claims, internal report/session paths, and tracebacks are not
+returned to ChatGPT.
 
 Configuration defaults:
 

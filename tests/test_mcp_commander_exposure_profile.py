@@ -5,9 +5,11 @@ import json
 from runner.mcp_server import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
+    MCP_EXPOSURE_PROFILE_OWNER,
     NORMAL_EXPOSED_TOOLS,
     MCPPlanningBridgeServer,
 )
+from runner.mcp_private_operator import OperatorSettingsStore
 from runner.mcp_commander_public import (
     COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
     COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
@@ -177,6 +179,226 @@ def test_commander_profile_can_be_selected_from_environment(monkeypatch, tmp_pat
     server = MCPPlanningBridgeServer(str(tmp_path))
 
     assert server.mcp_exposure_profile == "commander"
+
+
+class _OwnerOAuthProvider:
+    issuer = "https://issuer.example/"
+    audience = "https://mcp.example/mcp"
+    resource = "https://mcp.example/mcp"
+    scopes = ("mcp:read", "mcp:preview", "mcp:plan", "mcp:commit")
+
+    @staticmethod
+    def validate_scope(token: dict[str, object], scope: str) -> bool:
+        raw = token.get("scope")
+        return isinstance(raw, str) and scope in raw.split()
+
+
+def _owner_auth(
+    *,
+    subject: str = "auth0|jenn",
+    client: str = "https://chatgpt.example/owner",
+    scopes: str = "mcp:read mcp:preview mcp:plan mcp:commit",
+) -> dict[str, object]:
+    return {
+        "mode": "external-oauth",
+        "oauth_provider": _OwnerOAuthProvider(),
+        "token": {
+            "iss": "https://issuer.example/",
+            "aud": "https://mcp.example/mcp",
+            "sub": subject,
+            "azp": client,
+            "client_id": client,
+            "scope": scopes,
+        },
+    }
+
+
+def _install_owner_settings(monkeypatch, tmp_path) -> OperatorSettingsStore:
+    store = OperatorSettingsStore(str(tmp_path / "owner-config"))
+    assert store.enable(
+        "auth0|jenn",
+        "https://chatgpt.example/owner",
+    )["ok"] is True
+    monkeypatch.setattr(
+        "runner.mcp_server.OperatorSettingsStore",
+        lambda: store,
+    )
+    return store
+
+
+def test_owner_profile_exposes_full_advanced_catalog_only_to_exact_owner(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+
+    assert server._tool_defs_payload(auth_context=_owner_auth(subject="auth0|other")) == []
+    tools = server._tool_defs_payload(auth_context=_owner_auth())
+    names = {item["name"] for item in tools}
+
+    assert names == set(server.tools)
+    assert len(names) == 123
+    assert "manage_executor_workflow" in names
+    assert "manage_stable_promotion_evidence" in names
+    assert "manage_git" in names
+    assert "run_mcp_workflow" in names
+    assert "manage_runner_record" in names
+    assert "get_runner_workbench_context" in names
+
+
+def test_owner_profile_allows_bound_advanced_write_but_preserves_scope_gate(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    calls: list[dict[str, object]] = []
+    server.tools["manage_executor_workflow"] = lambda params: (
+        calls.append(dict(params))
+        or {"ok": True, "run_id": "run_owner_123"}
+    )
+    params = {
+        "action": "run_once",
+        "project_name": "owner-project",
+        "preview_id": "preview_owner_123",
+    }
+
+    denied = server._call_tool(
+        "manage_executor_workflow",
+        params,
+        auth_context=_owner_auth(scopes="mcp:read mcp:preview"),
+    )
+    assert denied["ok"] is False
+    assert denied["error_code"] == "INSUFFICIENT_SCOPE"
+    assert calls == []
+
+    allowed = server._call_tool(
+        "manage_executor_workflow",
+        params,
+        auth_context=_owner_auth(),
+    )
+    assert allowed["ok"] is True
+    assert allowed["data"]["run_id"] == "run_owner_123"
+    assert len(calls) == 1
+
+
+def test_owner_profile_denies_non_owner_before_dispatch_and_keeps_output_public_safe(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    calls = 0
+
+    def handler(_params):
+        nonlocal calls
+        calls += 1
+        return {
+            "ok": True,
+            "project_root": "/home/example/private/project",
+            "access_token": "synthetic-secret-must-not-leak",
+            "run_id": "run_owner_safe",
+        }
+
+    server.tools["manage_executor_workflow"] = handler
+    params = {
+        "action": "status",
+        "project_name": "owner-project",
+        "run_id": "run_owner_safe",
+    }
+
+    denied = server._call_tool(
+        "manage_executor_workflow",
+        params,
+        auth_context=_owner_auth(subject="auth0|other"),
+    )
+    assert denied["ok"] is False
+    assert denied["error_code"] == "OWNER_PRINCIPAL_REQUIRED"
+    assert calls == 0
+
+    allowed = server._call_tool(
+        "manage_executor_workflow",
+        params,
+        auth_context=_owner_auth(),
+    )
+    serialized = json.dumps(allowed, ensure_ascii=False)
+    assert allowed["ok"] is True
+    assert allowed["data"]["run_id"] == "run_owner_safe"
+    assert "/home/example/private/project" not in serialized
+    assert "synthetic-secret-must-not-leak" not in serialized
+    assert calls == 1
+
+
+def test_owner_profile_does_not_change_commander_hidden_tool_boundary(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+
+    result = server._call_tool(
+        "manage_executor_workflow",
+        {
+            "action": "status",
+            "project_name": "owner-project",
+            "run_id": "run_owner_safe",
+        },
+        auth_context=_owner_auth(),
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "TOOL_NOT_EXPOSED"
+
+
+def test_owner_profile_keeps_gate_review_work_item_authority_and_resource_gate(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+
+    gate_error = server._external_oauth_remote_policy_error(
+        "run_mcp_workflow",
+        {
+            "workflow": "gate_review_request",
+            "phase": "apply",
+            "project_name": "owner-project",
+        },
+        _owner_auth(),
+    )
+    assert gate_error is not None
+    assert gate_error["error_code"] == "WORK_ITEM_PRIVATE_PRINCIPAL_REQUIRED"
+
+    denied_resources = server._handle_jsonrpc_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "resources/list"},
+        auth_context=_owner_auth(subject="auth0|other"),
+    )
+    assert denied_resources is not None
+    assert denied_resources["error"]["data"]["error_code"] == "owner_principal_required"
+
+
+def test_owner_profile_can_be_selected_from_environment(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MCP_EXPOSURE_PROFILE", MCP_EXPOSURE_PROFILE_OWNER)
+
+    server = MCPPlanningBridgeServer(str(tmp_path))
+
+    assert server.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_OWNER
 
 
 def test_commander_public_project_list_returns_only_selection_fields(tmp_path) -> None:

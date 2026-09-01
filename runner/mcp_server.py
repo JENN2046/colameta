@@ -286,10 +286,14 @@ def _env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
 
 MCP_EXPOSURE_PROFILE_ENV = "MCP_EXPOSURE_PROFILE"
 MCP_EXPOSURE_PROFILE_COMMANDER = "commander"
+MCP_EXPOSURE_PROFILE_OWNER = "owner"
 MCP_EXPOSURE_PROFILE_NORMAL = "normal"
 MCP_EXPOSURE_PROFILE_MAINTAINER = "maintainer"
 MCP_EXPOSURE_PROFILE_LEGACY = "legacy"
 MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY = "authoritative_canary"
+MCP_CHATGPT_PUBLIC_PROJECTION_PROFILES = frozenset(
+    {MCP_EXPOSURE_PROFILE_COMMANDER, MCP_EXPOSURE_PROFILE_OWNER}
+)
 AUTHORITATIVE_CANARY_PRIVATE_CREDENTIAL_SOURCE = "isolated_xdg_auth_json"
 ACTIONS_API_PREFIX = "/api/"
 ACTIONS_TARGET_RESPONSE_CHARS = 60000
@@ -427,6 +431,10 @@ LEGACY_EXTRA_TOOLS = (
 
 _PROFILE_ORDERS: dict[str, tuple[str, ...]] = {
     MCP_EXPOSURE_PROFILE_COMMANDER: COMMANDER_EXPOSED_TOOLS,
+    # The owner profile is resolved from the complete registered tool catalog
+    # in ``_get_exposed_tool_names``.  Its HTTP tool list and every call remain
+    # gated by the locally configured exact external-OAuth owner principal.
+    MCP_EXPOSURE_PROFILE_OWNER: (),
     MCP_EXPOSURE_PROFILE_NORMAL: NORMAL_EXPOSED_TOOLS,
     MCP_EXPOSURE_PROFILE_MAINTAINER: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS,
     MCP_EXPOSURE_PROFILE_LEGACY: NORMAL_EXPOSED_TOOLS + MAINTAINER_EXTRA_TOOLS + LEGACY_EXTRA_TOOLS,
@@ -2706,8 +2714,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
         return isinstance(sanitized, dict) and sanitized == resource_result
 
-    @staticmethod
     def _commander_public_result_artifact_page_envelope_safety(
+        self,
         resource_result: dict[str, Any],
         *,
         requested_uri: str,
@@ -2738,6 +2746,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             and commander_result_artifact_page_matches_binding(
                 page,
                 page_binding,
+                exposed_tool_names=(
+                    None
+                    if self.mcp_exposure_profile
+                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    else self._get_exposed_tool_names(
+                        self.mcp_exposure_profile
+                    )
+                ),
             )
         )
 
@@ -2951,7 +2967,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         """Preflight complete typed evidence before projecting an exact page."""
 
         if (
-            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            not self._uses_chatgpt_public_projection()
             or not isinstance(params, dict)
         ):
             return None
@@ -3026,7 +3042,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         params: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         if (
-            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            not self._uses_chatgpt_public_projection()
             or not isinstance(params, dict)
         ):
             return None
@@ -3063,7 +3079,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         params: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         if (
-            self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER
+            not self._uses_chatgpt_public_projection()
             or not isinstance(params, dict)
         ):
             return None
@@ -3573,6 +3589,26 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 "Only canonical MCP method names are enabled for authoritative_canary.",
             )
 
+        if (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_OWNER
+            and method
+            in {
+                "list_resources",
+                "resources/list",
+                "list_resource_templates",
+                "resources/templates/list",
+                "read_resource",
+                "resources/read",
+            }
+            and not self._owner_profile_principal_is_allowed(auth_context)
+        ):
+            return self._protocol_error(
+                req_id,
+                -32001,
+                "owner_principal_required",
+                "The owner capability profile requires the exact locally configured external-OAuth owner principal.",
+            )
+
         try:
             if method == "initialize":
                 authoritative_canary = (
@@ -3586,7 +3622,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "instructions": (
                             "Isolated, Token-authenticated, Lease-scoped synthetic Work Item Canary."
                             if authoritative_canary
-                            else COMMANDER_APP_SERVER_INSTRUCTIONS
+                            else self._mcp_server_instructions()
                         ),
                         "capabilities": {
                             "tools": {"listChanged": False},
@@ -3660,8 +3696,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                             parsed_artifact[0]
                         )
                         if (
-                            self.mcp_exposure_profile
-                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                            self._uses_chatgpt_public_projection()
                             and parsed_artifact is not None
                         )
                         else None
@@ -3699,8 +3734,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         return self._protocol_error(req_id, -32602, error_code, message)
                     try:
                         if (
-                            self.mcp_exposure_profile
-                            == MCP_EXPOSURE_PROFILE_COMMANDER
+                            self._uses_chatgpt_public_projection()
                             and parsed_review_manifest is not None
                             and parsed_review_manifest[1] is not None
                         ):
@@ -3725,10 +3759,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         resource_result = self._review_manifest_resource_read_result(normalized_uri)
                     except ReviewManifestError as exc:
                         error_code = exc.error_code
-                        if (
-                            self.mcp_exposure_profile
-                            == MCP_EXPOSURE_PROFILE_COMMANDER
-                        ):
+                        if self._uses_chatgpt_public_projection():
                             error_code = (
                                 commander_public_error_code(error_code)
                                 or "INTERNAL_ERROR"
@@ -3762,8 +3793,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         ),
                     )
                 if (
-                    self.mcp_exposure_profile
-                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    self._uses_chatgpt_public_projection()
                     and parsed_artifact is not None
                     and not self._commander_public_result_artifact_page_envelope_safety(
                         resource_result,
@@ -3778,8 +3808,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                         "结果证据页与已验证的存储页不一致，已拒绝读取。",
                     )
                 if (
-                    self.mcp_exposure_profile
-                    == MCP_EXPOSURE_PROFILE_COMMANDER
+                    self._uses_chatgpt_public_projection()
                     and parsed_review_manifest is not None
                     and not (
                         (
@@ -3865,6 +3894,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self,
         tool_name: str,
         auth_context: MCPAuthContext,
+        *,
+        owner_principal_allowed: bool = False,
     ) -> list[str]:
         if not isinstance(auth_context, dict):
             return []
@@ -3883,7 +3914,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             scopes.add(policy.default_scope)
         if policy.selector in {"manage_files", "run_mcp_workflow"}:
             scopes.update({"mcp:read", "mcp:preview", "mcp:plan", "mcp:commit"})
-        if auth_mode == "external-oauth" and tool_name == "manage_git":
+        if (
+            auth_mode == "external-oauth"
+            and tool_name == "manage_git"
+            and not owner_principal_allowed
+            and not self._owner_profile_principal_is_allowed(auth_context)
+        ):
             scopes.discard("mcp:commit")
         scopes.intersection_update(VALID_MCP_SCOPES)
         oauth_provider = auth_context.get("oauth_provider")
@@ -3899,6 +3935,14 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         *,
         auth_context: MCPAuthContext = None,
     ) -> list[dict[str, Any]]:
+        owner_principal_allowed = self._owner_profile_principal_is_allowed(
+            auth_context
+        )
+        if (
+            self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_OWNER
+            and not owner_principal_allowed
+        ):
+            return []
         exposed_tool_defs = self._filter_tools_by_exposure_profile(self.tool_defs)
         payload: list[dict[str, Any]] = []
         for tool in exposed_tool_defs:
@@ -3914,7 +3958,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             if isinstance(tool.annotations, dict):
                 item["annotations"] = copy.deepcopy(tool.annotations)
             meta = copy.deepcopy(tool.meta) if isinstance(tool.meta, dict) else {}
-            oauth_scopes = self._tool_oauth_scopes(tool.name, auth_context)
+            oauth_scopes = self._tool_oauth_scopes(
+                tool.name,
+                auth_context,
+                owner_principal_allowed=owner_principal_allowed,
+            )
             if oauth_scopes:
                 security_schemes = [{"type": "oauth2", "scopes": oauth_scopes}]
                 item["securitySchemes"] = copy.deepcopy(security_schemes)
@@ -3923,6 +3971,36 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 item["_meta"] = meta
             payload.append(item)
         return payload
+
+    def _owner_profile_principal_is_allowed(
+        self,
+        auth_context: MCPAuthContext,
+    ) -> bool:
+        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
+            return False
+        loaded = OperatorSettingsStore().load()
+        if not loaded.get("ok") or not isinstance(loaded.get("settings"), dict):
+            return False
+        decision = evaluate_operator_principal(
+            auth_context,
+            loaded["settings"],
+        )
+        return decision.allowed
+
+    def _owner_profile_principal_error(
+        self,
+        name: str,
+        auth_context: MCPAuthContext,
+    ) -> dict[str, Any] | None:
+        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
+            return None
+        if self._owner_profile_principal_is_allowed(auth_context):
+            return None
+        return self._tool_error(
+            name,
+            "OWNER_PRINCIPAL_REQUIRED",
+            "The owner capability profile requires the exact locally configured external-OAuth owner principal.",
+        )
 
     def _snake_to_camel(self, name: str) -> str:
         parts = [part for part in name.strip().split("_") if part]
@@ -4296,6 +4374,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
     def _get_exposed_tool_names(self, profile: str | None = None) -> set[str]:
         profile_name = profile or self.mcp_exposure_profile
+        if profile_name == MCP_EXPOSURE_PROFILE_OWNER:
+            return set(self.tools)
         tool_order = _PROFILE_ORDERS.get(profile_name, _PROFILE_ORDERS[MCP_EXPOSURE_PROFILE_NORMAL])
         return set(tool_order)
 
@@ -4307,18 +4387,29 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             filtered.sort(key=lambda tool: position[tool.name])
         return filtered
 
+    def _uses_chatgpt_public_projection(self) -> bool:
+        return self.mcp_exposure_profile in MCP_CHATGPT_PUBLIC_PROJECTION_PROFILES
+
+    def _mcp_server_instructions(self) -> str:
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_OWNER:
+            return (
+                "ColaMeta private owner surface. Tool discovery and dispatch "
+                "require the exact locally configured external-OAuth owner "
+                "principal. All normal scope, preview/apply, context-binding, "
+                "project-routing, and digest gates remain active."
+            )
+        return COMMANDER_APP_SERVER_INSTRUCTIONS
 
 
     def _commander_public_projector(self) -> CommanderPublicProjector:
-        hidden_tool_names = {
-            tool_name
-            for profile_tools in _PROFILE_ORDERS.values()
-            for tool_name in profile_tools
-            if tool_name not in COMMANDER_EXPOSED_TOOLS
-        }
+        exposed_tool_names = self._get_exposed_tool_names(
+            self.mcp_exposure_profile
+        )
+        hidden_tool_names = set(self.tools).difference(exposed_tool_names)
         return CommanderPublicProjector(
             self.project_root,
             hidden_tool_names=hidden_tool_names,
+            exposed_tool_names=exposed_tool_names,
         )
 
     def _commander_public_project_tool_result(
@@ -4330,7 +4421,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             dict[str, Any] | None
         ) = None,
     ) -> dict[str, Any]:
-        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_COMMANDER:
+        if not self._uses_chatgpt_public_projection():
             return tool_result
         projector = self._commander_public_projector()
         tool_name = str(tool_result.get("tool") or "unknown_tool")
@@ -5342,6 +5433,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     ) -> dict[str, Any]:
         if not isinstance(name, str) or not name:
             return self._tool_error("unknown", "INVALID_TOOL", "tool 名称无效。")
+        owner_principal_error = self._owner_profile_principal_error(
+            name,
+            auth_context,
+        )
+        if owner_principal_error is not None:
+            return owner_principal_error
         if name == "apply_plan_patch":
             return self._tool_error(
                 "apply_plan_patch",
@@ -5352,6 +5449,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             self.mcp_exposure_profile
             in {
                 MCP_EXPOSURE_PROFILE_COMMANDER,
+                MCP_EXPOSURE_PROFILE_OWNER,
                 MCP_EXPOSURE_PROFILE_AUTHORITATIVE_CANARY,
             }
             and name not in self._get_exposed_tool_names(self.mcp_exposure_profile)
@@ -5470,7 +5568,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         )
         commander_request_token = _COMMANDER_PUBLIC_REQUEST.set(
             _COMMANDER_PUBLIC_REQUEST.get()
-            or self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+            or self._uses_chatgpt_public_projection()
         )
         try:
             with operator_authenticated_request_scope(auth_context), work_item_authenticated_request_scope(
@@ -5674,6 +5772,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     ) -> dict[str, Any] | None:
         if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
             return None
+        owner_principal_allowed = False
+        if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_OWNER:
+            owner_principal_allowed = (
+                self._owner_profile_principal_is_allowed(auth_context)
+            )
+            if not owner_principal_allowed:
+                return self._tool_error(
+                    name,
+                    "OWNER_PRINCIPAL_REQUIRED",
+                    "Owner capability policy denied this principal.",
+                )
         if (
             name == "run_mcp_workflow"
             and _policy_string_param(params, "workflow") == GATE_REVIEW_WORKFLOW
@@ -5717,6 +5826,8 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 decision.error_code,
                 "Operator policy denied this principal.",
             )
+        if owner_principal_allowed:
+            return None
         required_scope = self._required_scope_for_tool(name, params)
         if required_scope in {"mcp:read", "mcp:preview"}:
             return None
@@ -7461,7 +7572,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 else ""
             )
             commander_routed_read = (
-                self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                self._uses_chatgpt_public_projection()
                 or isinstance(params.get("__context_binding_project_name"), str)
             )
             if (
