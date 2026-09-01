@@ -200,8 +200,9 @@ Owner admission is fail closed at both discovery and dispatch:
 - the external-OAuth issuer and audience/resource must match the server;
 - subject and client fingerprints must match the values installed by the
   interactive local `colameta operator-config enable` command;
-- a non-owner receives no owner tool descriptors and cannot call owner tools or
-  owner resources, even with `mcp:commit` or `mcp:plan` in its token;
+- ChatGPT may discover owner tool descriptors during connector metadata
+  admission, but a non-owner cannot call owner tools or read owner resources,
+  even with `mcp:commit` or `mcp:plan` in its token;
 - each action still passes its normal tool policy, OAuth scope, project routing,
   preview/digest, context-binding, and one-time-consumption checks;
 - ChatGPT responses remain on the public-safe projection and do not expose
