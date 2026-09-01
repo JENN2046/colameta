@@ -82,15 +82,28 @@ COMMANDER_PUBLIC_COMPACT_TOOLS = frozenset(
 )
 
 
-def _commander_result_artifact_tool_is_public(value: Any) -> bool:
+def _commander_result_artifact_tool_is_public(
+    value: Any,
+    *,
+    exposed_tool_names: Iterable[str] | None = None,
+) -> bool:
     if not isinstance(value, str) or not value or len(value) > 128:
+        return False
+    allowed = (
+        frozenset(exposed_tool_names)
+        if exposed_tool_names is not None
+        else None
+    )
+    if allowed is not None and value not in allowed:
         return False
     return (
         commander_public_text(
             value,
             max_chars=128,
             forbidden_tools=(
-                COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES
+                ()
+                if allowed is not None
+                else COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES
             ),
         )
         == value
@@ -102,6 +115,7 @@ def commander_result_artifact_page_matches_binding(
     binding: dict[str, Any] | None,
     *,
     projected_tool: str | None = None,
+    exposed_tool_names: Iterable[str] | None = None,
 ) -> bool:
     if not isinstance(binding, dict):
         return False
@@ -129,12 +143,22 @@ def commander_result_artifact_page_matches_binding(
     page_tool = page.get("tool")
     bound_tool = binding.get("tool")
     if not (
-        _commander_result_artifact_tool_is_public(page_tool)
-        and _commander_result_artifact_tool_is_public(bound_tool)
+        _commander_result_artifact_tool_is_public(
+            page_tool,
+            exposed_tool_names=exposed_tool_names,
+        )
+        and _commander_result_artifact_tool_is_public(
+            bound_tool,
+            exposed_tool_names=exposed_tool_names,
+        )
     ):
         return False
     if page_tool != bound_tool and not (
-        projected_tool in COMMANDER_EXPOSED_TOOLS
+        projected_tool in (
+            frozenset(exposed_tool_names)
+            if exposed_tool_names is not None
+            else COMMANDER_EXPOSED_TOOLS
+        )
         and page_tool == projected_tool
     ):
         return False
@@ -310,8 +334,25 @@ class CommanderPublicProjector:
         project_root: str | None,
         *,
         hidden_tool_names: Iterable[str] | None = None,
+        exposed_tool_names: Iterable[str] | None = None,
+        contract_tool_names: Iterable[str] | None = None,
     ) -> None:
         self._project_root = project_root or ""
+        self._exposed_tool_names = frozenset(
+            exposed_tool_names
+            if exposed_tool_names is not None
+            else COMMANDER_EXPOSED_TOOLS
+        )
+        self._contract_tool_names = frozenset(
+            contract_tool_names
+            if contract_tool_names is not None
+            else COMMANDER_EXPOSED_TOOLS
+        )
+        self._artifact_binding_tool_names = (
+            None
+            if self._exposed_tool_names == frozenset(COMMANDER_EXPOSED_TOOLS)
+            else self._exposed_tool_names
+        )
         self._hidden_tool_names = frozenset(
             hidden_tool_names
             if hidden_tool_names is not None
@@ -346,7 +387,7 @@ class CommanderPublicProjector:
             if (
                 isinstance(referenced_tool, str)
                 and referenced_tool
-                and referenced_tool not in COMMANDER_EXPOSED_TOOLS
+                and referenced_tool not in self._exposed_tool_names
                 and not self._is_resource_read_reference(value)
             ):
                 return None
@@ -423,7 +464,7 @@ class CommanderPublicProjector:
         tool_name = str(public_tool_result.get("tool") or "")
         raw_data = public_tool_result.get("data")
         if (
-            tool_name in COMMANDER_EXPOSED_TOOLS
+            tool_name in self._contract_tool_names
             and isinstance(raw_data, dict)
             and raw_data.get("schema_version") == COMMANDER_RESPONSE_SCHEMA_VERSION
         ):
@@ -445,6 +486,7 @@ class CommanderPublicProjector:
                     contract_artifact_page,
                     exact_result_artifact_page_binding,
                     projected_tool=tool_name,
+                    exposed_tool_names=self._artifact_binding_tool_names,
                 )
             ):
                 return self._wrap_commander_contract(
@@ -650,6 +692,7 @@ class CommanderPublicProjector:
                         raw_page,
                         exact_result_artifact_page_binding,
                         projected_tool=tool_name,
+                        exposed_tool_names=self._artifact_binding_tool_names,
                     )
                 ):
                     return self._wrap_commander_contract(
@@ -749,7 +792,7 @@ class CommanderPublicProjector:
                 params=params,
                 exact_evidence_prevalidated=exact_evidence_prevalidated,
             )
-        if tool_name not in COMMANDER_EXPOSED_TOOLS:
+        if tool_name not in self._contract_tool_names:
             sanitized_root: dict[str, Any] = {}
             for key, value in public_tool_result.items():
                 if self._omit_key(

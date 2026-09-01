@@ -186,6 +186,60 @@ The Commander App exposes exactly nine tools. Gate review is routed
 through `run_mcp_workflow(workflow="gate_review_request")`; no tenth tool or
 hidden Work Item list endpoint is published.
 
+### Jenn-only owner capability profile
+
+`MCP_EXPOSURE_PROFILE=owner` is a separate, opt-in ChatGPT surface for the
+single locally configured Jenn principal. It exposes ColaMeta's complete
+registered catalog (currently 123 tools), including
+`manage_executor_workflow`, Git push and Draft PR
+delivery workflows, and the stable-promotion status/evidence tools. It does not
+change the default `commander` profile.
+
+Owner admission is fail closed at both discovery and dispatch:
+
+- the external-OAuth issuer and audience/resource must match the server;
+- subject and client fingerprints must match the values installed by the
+  interactive local `colameta operator-config enable` command;
+- a non-owner receives no owner tool descriptors and cannot call owner tools or
+  owner resources, even with `mcp:commit` or `mcp:plan` in its token;
+- each action still passes its normal tool policy, OAuth scope, project routing,
+  preview/digest, context-binding, and one-time-consumption checks;
+- ChatGPT responses remain on the public-safe projection and do not expose
+  credentials, raw claims, absolute private paths, internal report/session
+  paths, provider responses, or exception tracebacks.
+
+The profile permits every *implemented and registered* MCP action, including
+maintainer, legacy, and internal compatibility tools. It does not invent
+an operation that the catalog does not contain. In particular, stable status
+and promotion evidence are implemented, while stable checkout replacement,
+service restart/rollback, tag/package publication, and PR merge are not remote
+MCP actions in this version. Those remain unavailable rather than being
+silently mapped to arbitrary shell commands.
+
+Enable the principal locally first, without placing the subject, client ID, or
+bearer token in a command line or service file:
+
+```text
+colameta operator-config enable
+```
+
+Then configure the private service with:
+
+```text
+MCP_EXPOSURE_PROFILE=owner
+```
+
+and include the required resource-server allowlist scopes:
+
+```text
+mcp:read,mcp:preview,mcp:plan,mcp:commit
+```
+
+Do not use `owner` for a shared, public, or directory-submitted app. Switching
+back to `MCP_EXPOSURE_PROFILE=commander` restores the nine-tool surface and the
+default remote read/preview policy without deleting the local owner
+fingerprints.
+
 The current `oauth` mode remains available for Jenn-only private operation and
 local bring-up. Do not treat it as the long-term public or multi-user auth
 boundary.

@@ -150,6 +150,24 @@ handle 后，仍必须验证完整签名 preview、精确 bindings、`confirm_ga
 [Jenn Private Operator Protocol](jenn-private-operator-protocol.md) 交互执行
 `colameta operator-config enable`，再只给已绑定的私人 principal 配置所需 scope 与 claims。
 
+若要让 Jenn 自己的私人 ChatGPT App 直接看到完整 advanced catalog，先完成上述交互式
+principal 绑定，再把同一服务显式设为：
+
+```text
+MCP_EXPOSURE_PROFILE=owner
+```
+
+同时让 resource-server allowlist 包含
+`mcp:read,mcp:preview,mcp:plan,mcp:commit`。`owner` 会暴露包括
+maintainer、legacy、内部兼容工具、`manage_executor_workflow`、Git push / Draft PR
+delivery、stable promotion 状态与证据在内的全部已注册能力（当前 123 个工具）。它只接受本地绑定的 exact owner
+principal；其他 principal 看不到 owner 工具并且不能调用。返回仍会移除 credential、raw
+claim、absolute private path、内部 report/session path 与 traceback。
+
+“全部已实现能力”不等于任意 shell：当前 catalog 没有 stable checkout
+替换/服务重启/回滚、PR merge、release tag 或 package publish 动作，因此 `owner` 也不会
+伪造这些动作。共享或公开 App 继续使用 `commander`。
+
 ## 7. 安装仓库 private-Beta systemd 栈
 
 仓库自带的是 Jenn 当前环境专用部署，换机器前必须先审查所有 unit 路径：

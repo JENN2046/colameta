@@ -163,6 +163,28 @@ protected operation: follow the interactive `colameta operator-config enable`
 workflow in the [Jenn Private Operator Protocol](jenn-private-operator-protocol.md),
 then grant only the bound private principal the required scope and claims.
 
+To expose the full advanced catalog directly to Jenn's private ChatGPT App,
+complete that interactive principal binding first and then explicitly set the
+same service to:
+
+```text
+MCP_EXPOSURE_PROFILE=owner
+```
+
+The resource-server allowlist must include
+`mcp:read,mcp:preview,mcp:plan,mcp:commit`. The owner profile exposes all
+implemented registered MCP capabilities (currently 123 tools), including
+maintainer, legacy, and internal compatibility tools, `manage_executor_workflow`,
+Git push and Draft PR delivery, and stable-promotion status/evidence. Only the
+exact locally bound owner principal can discover or call them. Public-safe
+projection still removes credentials, raw claims, absolute private paths,
+internal report/session paths, and tracebacks.
+
+"All implemented capabilities" is not arbitrary shell authority. Stable
+checkout replacement/service restart/rollback, PR merge, release tags, and
+package publication are not current catalog actions, so the owner profile does
+not synthesize them. Shared or public Apps must continue to use `commander`.
+
 ## 7. Install The Repository Private-Beta systemd Stack
 
 This repository includes a host-specific stack for Jenn's environment. Review
