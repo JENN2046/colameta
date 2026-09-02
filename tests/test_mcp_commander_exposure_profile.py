@@ -342,6 +342,87 @@ def test_owner_profile_denies_non_owner_before_dispatch_and_keeps_output_public_
     assert calls == 1
 
 
+def test_owner_profile_live_call_failure_log_is_bounded_and_public_error_is_exact(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    logs: list[str] = []
+    monkeypatch.setattr(server, "_log", logs.append)
+
+    response = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_registered_projects",
+                "arguments": {},
+            },
+        },
+        auth_context=_owner_auth(
+            subject="auth0|must-not-appear",
+            client="https://chatgpt.example/must-not-appear",
+        ),
+    )
+
+    result = response["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "SCOPE_VIOLATION"
+    assert "[SCOPE_VIOLATION]" in result["content"][0]["text"]
+    assert logs == [
+        "MCP owner live call failure stage=tool_result method=tools/call "
+        "tool=list_registered_projects error_code=OWNER_PRINCIPAL_REQUIRED"
+    ]
+    assert "must-not-appear" not in logs[0]
+
+
+def test_owner_profile_live_jsonrpc_exception_log_omits_exception_message(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    logs: list[str] = []
+    monkeypatch.setattr(server, "_log", logs.append)
+    monkeypatch.setattr(
+        server,
+        "_as_mcp_call_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("credential-value-must-not-appear")
+        ),
+    )
+
+    response = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_registered_projects",
+                "arguments": {},
+            },
+        },
+        auth_context=_owner_auth(),
+    )
+
+    result = response["result"]
+    assert result["error_code"] == "INTERNAL_ERROR"
+    assert result["details"] == {}
+    assert len(logs) == 1
+    assert "stage=jsonrpc_exception" in logs[0]
+    assert "tool=list_registered_projects" in logs[0]
+    assert "exception_type=RuntimeError" in logs[0]
+    assert "credential-value-must-not-appear" not in logs[0]
+
+
 def test_owner_profile_does_not_change_commander_hidden_tool_boundary(
     monkeypatch,
     tmp_path,
