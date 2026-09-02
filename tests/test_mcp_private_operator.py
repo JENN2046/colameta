@@ -132,6 +132,7 @@ def test_operator_settings_store_hashes_principal_and_uses_private_mode(tmp_path
         "profile": OPERATOR_PROFILE_JENN,
         "permit_ttl_seconds": 300,
         "batch_max_steps": 8,
+        "client_rebind_armed": False,
     }
     disabled = store.disable()
     assert disabled["ok"] is True
@@ -182,6 +183,7 @@ def test_local_operator_config_status_surfaces_private_quarantine_alert_only_loc
                 "profile": OPERATOR_PROFILE_JENN,
                 "permit_ttl_seconds": 300,
                 "batch_max_steps": 8,
+                "client_rebind_armed": False,
             }
 
     monkeypatch.setattr(runner_cli, "OperatorSettingsStore", LocalStore)
@@ -386,6 +388,46 @@ def test_operator_principal_diagnostic_reason_distinguishes_issuer_and_audience(
     audience = _auth()
     audience["token"]["aud"] = "https://other-resource.example/mcp"
     assert evaluate_operator_principal(audience, settings).denial_reason == "AUDIENCE_MISMATCH"
+
+
+@pytest.mark.skipif(
+    private_operator_module.fcntl is None,
+    reason="live client rebinding requires a local POSIX lock",
+)
+def test_live_client_rebind_is_single_use_subject_bound_and_claim_private(
+    tmp_path: Path,
+) -> None:
+    store = _settings(tmp_path)
+    armed = store.arm_client_rebind()
+    assert armed["ok"] is True
+    assert armed["client_rebind_armed"] is True
+    assert armed["client_rebind_window_seconds"] == 120
+
+    live_client = "dynamically-registered-live-client"
+    raw = Path(store.path).read_text(encoding="utf-8")
+    assert live_client not in raw
+
+    denied = store.consume_client_rebind(_auth(subject="auth0|other", client=live_client))
+    assert denied["error_code"] == "OPERATOR_CLIENT_REBIND_PRINCIPAL_DENIED"
+    assert store.status()["client_rebind_armed"] is True
+
+    ambiguous = _auth(client=live_client)
+    ambiguous["token"]["client_id"] = "different-client"
+    denied = store.consume_client_rebind(ambiguous)
+    assert denied["error_code"] == "OPERATOR_CLIENT_REBIND_PRINCIPAL_DENIED"
+    assert store.status()["client_rebind_armed"] is True
+
+    rebound = store.consume_client_rebind(_auth(client=live_client))
+    assert rebound == {"ok": True, "consumed": True, "client_rebound": True}
+    assert store.status()["client_rebind_armed"] is False
+    assert evaluate_operator_principal(
+        _auth(client=live_client),
+        store.load()["settings"],
+    ).allowed is True
+    assert live_client not in Path(store.path).read_text(encoding="utf-8")
+
+    repeated = store.consume_client_rebind(_auth(client="another-client"))
+    assert repeated["error_code"] == "OPERATOR_CLIENT_REBIND_NOT_ARMED"
 
 
 def test_operator_operations_are_allowlisted_scope_aware_and_preview_bound() -> None:
@@ -1894,6 +1936,38 @@ def test_operator_cli_rejects_principal_values_on_command_line(capsys: pytest.Ca
     captured = capsys.readouterr()
     assert "raw-subject" not in captured.out + captured.err
     assert "raw-client" not in captured.out + captured.err
+
+
+def test_operator_cli_arms_live_client_rebind_only_after_local_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class InteractiveInput:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+    class LocalStore:
+        @staticmethod
+        def arm_client_rebind() -> dict:
+            return {
+                "ok": True,
+                "enabled": True,
+                "profile": OPERATOR_PROFILE_JENN,
+                "permit_ttl_seconds": 300,
+                "batch_max_steps": 8,
+                "client_rebind_armed": True,
+                "client_rebind_window_seconds": 120,
+            }
+
+    monkeypatch.setattr(runner_cli.sys, "stdin", InteractiveInput())
+    monkeypatch.setattr(runner_cli.getpass, "getpass", lambda _prompt: "REBIND")
+    monkeypatch.setattr(runner_cli, "OperatorSettingsStore", LocalStore)
+
+    assert runner_cli._run_operator_config(["operator-config", "rebind-client"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["client_rebind_armed"] is True
+    assert payload["client_rebind_window_seconds"] == 120
 
 
 def test_operator_config_and_preview_paths_reject_symlinks(tmp_path: Path) -> None:

@@ -213,8 +213,9 @@ def _prompt_initial_global_config(
 
 
 def _run_operator_config(args: list[str]) -> int:
-    if len(args) < 2 or args[0] != "operator-config" or args[1] not in {"status", "enable", "disable"}:
-        print("用法：colameta operator-config <status|enable|disable> [--project-path <path>]", file=sys.stderr)
+    actions = {"status", "enable", "disable", "rebind-client"}
+    if len(args) < 2 or args[0] != "operator-config" or args[1] not in actions:
+        print("用法：colameta operator-config <status|enable|disable|rebind-client> [--project-path <path>]", file=sys.stderr)
         return 1
     action = args[1]
     project_path: str | None = None
@@ -225,7 +226,7 @@ def _run_operator_config(args: list[str]) -> int:
             print("用法：colameta operator-config status [--project-path <path>]", file=sys.stderr)
             return 1
     elif len(args) != 2:
-        print("用法：colameta operator-config <enable|disable>", file=sys.stderr)
+        print("用法：colameta operator-config <enable|disable|rebind-client>", file=sys.stderr)
         return 1
     store = OperatorSettingsStore()
     if action == "status":
@@ -237,6 +238,17 @@ def _run_operator_config(args: list[str]) -> int:
             }
     elif action == "disable":
         result = store.disable()
+    elif action == "rebind-client":
+        if not sys.stdin.isatty():
+            print("operator-config rebind-client 必须在交互终端运行。", file=sys.stderr)
+            return 1
+        confirmation = getpass.getpass("输入 REBIND 以授权 120 秒内绑定下一次 live client（输入不会回显）：")
+        if confirmation != "REBIND":
+            confirmation = ""
+            print("未确认 live client 重新绑定。", file=sys.stderr)
+            return 1
+        confirmation = ""
+        result = store.arm_client_rebind()
     else:
         if not sys.stdin.isatty():
             print("operator-config enable 必须在交互终端运行。", file=sys.stderr)
