@@ -6176,6 +6176,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 self._inject_project_name_into_nested_actions(nested, project_name)
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
+        agent_state = result.get("agent_state")
+        if isinstance(agent_state, dict):
+            # The routed server receives only an internal context-binding alias,
+            # so the outer server remains the authority for the public registry
+            # identity projected to the caller.
+            agent_state["project"] = project_name
+
         workflow = result.get("workflow")
         payload_result = result.get("result")
         if workflow != "thin_governed_loop_preview" or not isinstance(payload_result, dict):

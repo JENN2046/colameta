@@ -104,6 +104,24 @@ def test_fixed_scope_manage_tools_precede_the_name_based_fallback(
     assert server.get_required_scope_for_tool(tool_name, {"action": action}) == required_scope
 
 
+def test_read_scoped_preview_getters_precede_the_name_based_fallback(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
+    read_scoped_preview_getters = {
+        "get_executor_continuation_preview",
+        "get_executor_resume_invocation_preview",
+        "get_stage_parallel_executor_group_preview",
+        "get_stage_parallel_merge_preview",
+        "get_stage_parallel_plan_preview",
+        "get_stage_parallel_run_preview",
+        "get_stage_parallel_worktree_assignment_preview",
+        "get_submission_evidence_fill_preview",
+    }
+
+    for tool_name in read_scoped_preview_getters:
+        assert tool_routing_metadata(tool_name)["side_effect_level"] == "READ_ONLY"
+        assert server.get_required_scope_for_tool(tool_name, {}) == "mcp:read"
+
+
 def test_profile_guidance_preserves_commander_physical_surface() -> None:
     guidance = profile_guidance("web_gpt_commander")
 
@@ -354,6 +372,10 @@ def test_auto_preview_plan_route_preserves_production_patch_handle(tmp_path) -> 
     assert result["continuation"]["kind"] == "plan_patch"
     assert result["continuation"]["field_name"] == "patch_id"
     assert result["continuation"]["id"] == "patch_production_1"
+    assert result["continuation"]["allowed_next_actions"] == [
+        "apply_preview_status",
+        "apply_preview",
+    ]
 
 
 def test_projection_preserves_old_fields_and_grants_no_authority() -> None:
@@ -650,6 +672,7 @@ def test_registered_project_auto_preview_preserves_serving_commander_profile(
     facts = response["data"]["facts"]
     assert facts["selected_workflow"] == "executor_preflight"
     assert facts["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert facts["agent_state"]["project"] == "demo-project"
     assert facts.get("primary_next_action") is None
     assert "manage_executor_workflow" not in json.dumps(response, sort_keys=True)
 

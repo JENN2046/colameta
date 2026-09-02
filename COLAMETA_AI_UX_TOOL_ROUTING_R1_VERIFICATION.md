@@ -16,6 +16,11 @@ Branch: `codex/ai-ux-tool-routing-r1`
 - registered-project tool routing preserves the serving exposure profile, so
   Commander executor preflight remains a successful read-only result without
   publishing or requiring confirmation of a hidden executor action;
+- registered-project projection restores the public registry identity in
+  `agent_state.project`, and plan-patch continuation metadata publishes the
+  exact `manage_plan_version` consumer actions;
+- audited `get_*_preview` evidence readers remain `READ_ONLY` despite the
+  generic preview-name fallback;
 - `analyze_project_state`, `get_agent_operator_flow_packet` and
   `run_mcp_workflow(auto_preview)` emit the additive
   `colameta.agent_state_projection.v1` projection;
@@ -90,9 +95,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `66 passed`.
+Dedicated R1 tests after review hardening: `67 passed`.
 The three previously affected operator-flow production regressions plus the R1
-suite pass together: `69 passed`.
+suite pass together: `70 passed`.
 
 ## Compatibility validation
 

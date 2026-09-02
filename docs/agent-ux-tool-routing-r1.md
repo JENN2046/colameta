@@ -123,7 +123,13 @@ side-effect level 优先采用已审计的固定 action/scope 语义：例如
 通过 `project_name` 路由到登记项目时，内部 routed server 保留当前 serving
 exposure profile。Commander 因而继续使用 `web_gpt_commander` reachability；
 只读 executor preflight 不会推荐、泄露或要求确认 Commander 无法调用的
-`manage_executor_workflow`。
+`manage_executor_workflow`。外层路由还会把已经验证的 registry identity 回填到
+`agent_state.project`，避免内部参数清理使公开 canonical state 丢失项目名称。
+
+Typed continuation 的动作名采用真实消费者 contract：`patch_id` 对应
+`manage_plan_version` 的 `apply_preview_status` 与 `apply_preview`。名称含
+`_preview` 的既有 getter 若服务端固定要求 `mcp:read`，routing registry 同样标记为
+`READ_ONLY`，不会仅凭名称误报为 `PREVIEW`。
 
 支持的 Agent guidance profiles 包括：
 

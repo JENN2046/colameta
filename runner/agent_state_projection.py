@@ -15,7 +15,11 @@ _HANDLE_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("workflow_id", "workflow_run", ("status", "read")),
     ("gate_preview_id", "gate_preview", ("status", "apply")),
     ("batch_preview_id", "batch_preview", ("status", "execute")),
-    ("patch_id", "plan_patch", ("status", "apply")),
+    (
+        "patch_id",
+        "plan_patch",
+        ("apply_preview_status", "apply_preview"),
+    ),
     ("preview_id", "preview", ()),
 )
 

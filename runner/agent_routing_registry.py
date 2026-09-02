@@ -15,6 +15,14 @@ TOOL_TIER_LEGACY_OR_INTERNAL = "LEGACY_OR_INTERNAL"
 _FIXED_SIDE_EFFECT_LEVELS = {
     "manage_workflow_run": "READ_ONLY",
     "manage_plan_workflow": "PREVIEW",
+    "get_executor_continuation_preview": "READ_ONLY",
+    "get_executor_resume_invocation_preview": "READ_ONLY",
+    "get_stage_parallel_executor_group_preview": "READ_ONLY",
+    "get_stage_parallel_merge_preview": "READ_ONLY",
+    "get_stage_parallel_plan_preview": "READ_ONLY",
+    "get_stage_parallel_run_preview": "READ_ONLY",
+    "get_stage_parallel_worktree_assignment_preview": "READ_ONLY",
+    "get_submission_evidence_fill_preview": "READ_ONLY",
 }
 
 
