@@ -204,6 +204,34 @@ def _action_reachable(
     return allowed_tools is None or action.get("tool") in allowed_tools
 
 
+def _clear_unreachable_executor_confirmation(
+    projected: dict[str, Any],
+    *,
+    allowed_tools: frozenset[str] | None,
+    primary_action: Mapping[str, Any] | None,
+) -> None:
+    """Keep a read-only executor preflight valid on a bounded tool profile."""
+
+    if (
+        allowed_tools is None
+        or primary_action is not None
+        or projected.get("selected_workflow") != "executor_preflight"
+        or bool(projected.get("preview_ids"))
+    ):
+        return
+    # The core preflight may advertise a Local-Codex-only executor preview as
+    # its compatibility next action. Once profile reachability removes that
+    # navigation action, there is no typed preview for this caller to confirm.
+    # This changes no execution authority; it prevents the public contract from
+    # claiming that an unreachable confirmation is currently required.
+    projected["requires_confirmation"] = False
+    unified_status = projected.get("unified_status")
+    if isinstance(unified_status, Mapping):
+        public_status = dict(unified_status)
+        public_status["needs_user_confirmation"] = False
+        projected["unified_status"] = public_status
+
+
 def _first_action(
     response: Mapping[str, Any],
     *,
@@ -861,6 +889,11 @@ def add_agent_state_projection(
         selected,
         source_tool=source_tool,
         project_name=project_name,
+    )
+    _clear_unreachable_executor_confirmation(
+        projected,
+        allowed_tools=allowed_tools,
+        primary_action=normalized_action,
     )
     projected["agent_projection_schema_version"] = AGENT_PROJECTION_SCHEMA_VERSION
     projected["agent_state"] = _agent_state(

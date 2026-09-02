@@ -22,6 +22,7 @@ from runner.agent_state_projection import (
     typed_continuation_projection,
 )
 from runner.canonical_project_state import build_canonical_project_state
+from runner.continuation_snapshot import snapshot_from_fact_bundle
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.mcp_server import COMMANDER_EXPOSED_TOOLS, MCPPlanningBridgeServer
 from runner.mcp_workflow_router import MCPWorkflowRouter
@@ -568,6 +569,89 @@ def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_
         agent_profile_id="local_codex_commander",
     ).handle("auto_preview", {"goal": "Run the executor for this task"})
     assert local_result["primary_next_action"]["tool"] == "manage_executor_workflow"
+
+
+def test_registered_project_auto_preview_preserves_serving_commander_profile(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.name", "Test"],
+        check=True,
+    )
+    (project / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(project), "commit", "-qm", "fixture"], check=True)
+
+    snapshot = snapshot_from_fact_bundle(
+        str(project),
+        {
+            "executor_session_status": {"ok": True, "active": False},
+            "continuation_preview": {"ok": True},
+            "requested_provider": "codex",
+            "selected_provider": None,
+            "identity_present": False,
+            "provider_resume_supported": True,
+            "resume_invocation_verified": True,
+            "operation_running": False,
+            "job_status": "idle",
+            "latest_run_status": "completed",
+            "runner_status": "VERSION_PASSED",
+            "current_version_status": "PASSED",
+            "worktree_clean": True,
+            "hard_blockers": [],
+            "risk_warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "runner.core_orchestrator.get_or_collect_continuation_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        "runner.executor_inventory.load_executor_inventory",
+        lambda _project_root: {"ok": True, "available": True, "providers": ["codex"]},
+    )
+
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = server.project_registry.register_project(
+        str(project),
+        project_name="demo-project",
+        project_mode="managed",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+
+    response = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "project_name": "demo-project",
+        },
+    )
+
+    assert response["ok"] is True
+    assert response["data"]["outcome"] == "completed"
+    facts = response["data"]["facts"]
+    assert facts["selected_workflow"] == "executor_preflight"
+    assert facts["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert facts.get("primary_next_action") is None
+    assert "manage_executor_workflow" not in json.dumps(response, sort_keys=True)
 
 
 @pytest.mark.parametrize(

@@ -120,6 +120,11 @@ side-effect level 优先采用已审计的固定 action/scope 语义：例如
 `manage_plan_workflow` 仅生成预览，标记为 `PREVIEW`。只有没有固定分类的
 `manage_*` surface 才使用 `DYNAMIC_BY_ACTION` 命名 fallback。
 
+通过 `project_name` 路由到登记项目时，内部 routed server 保留当前 serving
+exposure profile。Commander 因而继续使用 `web_gpt_commander` reachability；
+只读 executor preflight 不会推荐、泄露或要求确认 Commander 无法调用的
+`manage_executor_workflow`。
+
 支持的 Agent guidance profiles 包括：
 
 - `web_gpt_commander`
