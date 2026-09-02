@@ -376,9 +376,59 @@ def test_owner_profile_live_call_failure_log_is_bounded_and_public_error_is_exac
     assert "[SCOPE_VIOLATION]" in result["content"][0]["text"]
     assert logs == [
         "MCP owner live call failure stage=tool_result method=tools/call "
-        "tool=list_registered_projects error_code=OWNER_PRINCIPAL_REQUIRED"
+        "tool=list_registered_projects error_code=OWNER_PRINCIPAL_REQUIRED "
+        "principal_denial_reason=SUBJECT_MISMATCH"
     ]
     assert "must-not-appear" not in logs[0]
+
+
+def test_owner_profile_live_principal_denial_log_distinguishes_safe_reason_only(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+
+    cases: list[tuple[str, dict[str, object]]] = []
+    issuer = _owner_auth()
+    issuer["token"]["iss"] = "https://other-issuer.example/"
+    cases.append(("ISSUER_MISMATCH", issuer))
+    audience = _owner_auth()
+    audience["token"]["aud"] = "https://other-resource.example/mcp"
+    cases.append(("AUDIENCE_MISMATCH", audience))
+    cases.append(("SUBJECT_MISMATCH", _owner_auth(subject="auth0|other-private")))
+    cases.append(("CLIENT_MISMATCH", _owner_auth(client="https://chatgpt.example/other-private")))
+    ambiguous = _owner_auth()
+    ambiguous["token"]["client_id"] = "https://chatgpt.example/ambiguous-private"
+    cases.append(("CLIENT_CLAIM_AMBIGUOUS", ambiguous))
+
+    for expected_reason, auth_context in cases:
+        logs: list[str] = []
+        monkeypatch.setattr(server, "_log", logs.append)
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_registered_projects",
+                    "arguments": {},
+                },
+            },
+            auth_context=auth_context,
+        )
+
+        assert response["result"]["structuredContent"]["error_code"] == "SCOPE_VIOLATION"
+        assert logs == [
+            "MCP owner live call failure stage=tool_result method=tools/call "
+            "tool=list_registered_projects error_code=OWNER_PRINCIPAL_REQUIRED "
+            f"principal_denial_reason={expected_reason}"
+        ]
+        assert "other-private" not in logs[0]
+        assert "ambiguous-private" not in logs[0]
 
 
 def test_owner_profile_live_jsonrpc_exception_log_omits_exception_message(
