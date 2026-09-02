@@ -12,7 +12,7 @@ _HANDLE_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("review_manifest_id", "review_manifest", ("read", "verify")),
     ("artifact_id", "result_artifact", ("read",)),
     ("run_id", "executor_run", ("status", "read")),
-    ("workflow_id", "workflow_run", ("status", "read")),
+    ("workflow_id", "workflow_run", ("get",)),
     ("gate_preview_id", "gate_preview", ("status", "apply")),
     ("batch_preview_id", "batch_preview", ("status", "execute")),
     (
@@ -616,6 +616,8 @@ def typed_continuation_projection(response: Mapping[str, Any], *, source_tool: s
         "continuation_is_navigation_only": True,
         "does_not_grant_authority": True,
     }
+    if kind == "workflow_run":
+        continuation["consumer_tool"] = "manage_workflow_run"
     if expires_at is not None:
         continuation["expires_at"] = expires_at
     if not actions:

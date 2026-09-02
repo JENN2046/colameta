@@ -70,7 +70,10 @@ from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
     GateReviewPreviewStore,
 )
-from runner.agent_state_projection import add_agent_state_projection
+from runner.agent_state_projection import (
+    add_agent_state_projection,
+    typed_continuation_projection,
+)
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name, is_supported_core_workflow
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
@@ -7269,6 +7272,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
 
         if project_record is None and not _CURRENT_FACTS_INTERNAL_ANALYZE.get():
             self._record_workflow_if_needed("analyze_project_state", "analyze", routed_params, legacy)
+            # Recording adds the typed workflow handle after the initial Agent
+            # projection was built. Refresh only the navigation continuation so
+            # the returned packet describes the handle it actually exposes.
+            legacy["continuation"] = typed_continuation_projection(
+                legacy,
+                source_tool="analyze_project_state",
+            )
         return legacy
 
     def _current_facts_analyze(self, params: dict[str, Any]) -> dict[str, Any]:

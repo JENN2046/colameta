@@ -79,6 +79,11 @@ def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
                 and not continuation.get("why_no_allowed_next_action")
             ):
                 findings.append("context-free preview lacks a fail-closed explanation")
+            if continuation.get("kind") == "workflow_run":
+                if continuation.get("consumer_tool") != "manage_workflow_run":
+                    findings.append("workflow continuation lacks its canonical consumer tool")
+                if allowed_actions != ["get"]:
+                    findings.append("workflow continuation advertises an invalid consumer action")
 
     routing = packet.get("routing")
     if not isinstance(routing, Mapping) or routing.get("routing_metadata_grants_no_authority") is not True:

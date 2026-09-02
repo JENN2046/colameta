@@ -606,7 +606,38 @@ def test_analyze_project_state_exposes_the_canonical_projection(tmp_path) -> Non
     assert result["agent_projection_schema_version"] == "colameta.agent_state_projection.v1"
     assert result["agent_state"]["profile_id"] == "web_gpt_commander"
     assert result["blocked_next_actions"]["exhaustive"] is False
+    assert isinstance(result["workflow_id"], str)
+    assert result["continuation"] == {
+        "kind": "workflow_run",
+        "id": result["workflow_id"],
+        "field_name": "workflow_id",
+        "source_tool": "analyze_project_state",
+        "allowed_next_actions": ["get"],
+        "typed_handle_required_by_next_tool": True,
+        "continuation_is_navigation_only": True,
+        "does_not_grant_authority": True,
+        "consumer_tool": "manage_workflow_run",
+    }
+    retrieved = server._tool_manage_workflow_run(
+        {
+            "action": result["continuation"]["allowed_next_actions"][0],
+            "workflow_id": result["continuation"]["id"],
+        }
+    )
+    assert retrieved["ok"] is True
+    assert retrieved["run"]["workflow_id"] == result["workflow_id"]
     assert verify_agent_projection(result) == []
+
+
+def test_workflow_continuation_names_the_real_consumer_and_action() -> None:
+    continuation = typed_continuation_projection(
+        {"workflow_id": "workflow_1"},
+        source_tool="analyze_project_state",
+    )
+
+    assert continuation is not None
+    assert continuation["consumer_tool"] == "manage_workflow_run"
+    assert continuation["allowed_next_actions"] == ["get"]
 
 
 def test_registered_project_analysis_publishes_copyable_project_bound_action(tmp_path) -> None:

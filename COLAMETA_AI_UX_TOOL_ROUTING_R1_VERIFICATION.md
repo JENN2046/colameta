@@ -32,6 +32,10 @@ Branch: `codex/ai-ux-tool-routing-r1`
 - exact plan-patch failures promote their original code and message; a
   `PATCH_STALE` result remains visible and deterministically projects
   `new_preview_required` instead of degrading to an unknown failure;
+- workflow recording refreshes the returned continuation after adding its
+  `workflow_id`; that continuation names the canonical
+  `manage_workflow_run(action=get)` consumer instead of invented status/read
+  actions;
 - `analyze_project_state`, `get_agent_operator_flow_packet` and
   `run_mcp_workflow(auto_preview)` emit the additive
   `colameta.agent_state_projection.v1` projection;
@@ -99,6 +103,8 @@ Router or projection builder. It inspects only the returned mapping and rejects:
 - any authority domain marked granted by projection;
 - a continuation kind whose typed field does not match;
 - any generic `continuation_id`;
+- a workflow continuation without the canonical `manage_workflow_run` / `get`
+  consumer contract;
 - routing metadata without an explicit no-authority boundary.
 
 The fixture corpus contains 20 production-built canonical state/intent pairs covering project inspection,
@@ -106,7 +112,7 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `75 passed`.
+Dedicated R1 tests after review hardening: `76 passed`.
 The three previously affected operator-flow production regressions plus the R1
 suite pass together: `78 passed`.
 The plan-continuation production-path focus passes: `31 passed`.
@@ -121,7 +127,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the Commander plan-continuation repair: `4809 passed`, `22 failed`,
+- full suite after the workflow-record continuation repair: `4810 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached

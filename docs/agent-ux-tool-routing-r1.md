@@ -80,6 +80,11 @@ generic `preview_id`。
 `action` 或 workflow `phase` 派生，例如 `commit`、`run_once`、`run_bounded`。
 只有 handle、没有消费上下文时返回空列表和原因，不猜测 `status/apply`。
 
+普通状态分析在追加 workflow record 后会同步刷新 continuation，因此返回的
+`workflow_id` 不会与先前生成的空 continuation 脱节。`workflow_run` continuation
+明确指定 `consumer_tool: manage_workflow_run` 和 `allowed_next_actions: [get]`，与
+真实只读消费者 contract 一致。
+
 当入口已解析出注册项目时，canonical action 的 `params` / `arguments` 和
 `required_arguments` 都携带同一个 `project_name`。Agent 复制该 action 后仍会
 走原来的 registry route；这只是上下文绑定，不授予额外 authority。
