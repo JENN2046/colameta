@@ -91,30 +91,32 @@ def test_all_supported_profiles_have_bounded_guidance(profile_id: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("error_code", "expected_class", "should_stop"),
+    ("error_code", "expected_class", "should_stop", "retryable"),
     [
-        ("PREVIEW_EXPIRED", "new_preview_required", False),
-        ("CONTEXT_BINDING_MISMATCH", "context_changed", False),
-        ("EXECUTOR_ALREADY_RUNNING", "wait_for_running_operation", False),
-        ("VALIDATION_FAILED", "operator_action_required", False),
-        ("INSUFFICIENT_SCOPE", "authorization_required", True),
-        ("SCOPE_VIOLATION", "authorization_required", True),
-        ("CONFIRMATION_REQUIRED", "operator_action_required", True),
-        ("UNSUPPORTED_TRANSITION", "unsupported_by_current_surface", False),
-        ("AUTHORITY_MISMATCH", "hard_stop", True),
-        ("PREREQUISITE_NOT_READY", "refresh_state_then_retry", False),
+        ("PREVIEW_EXPIRED", "new_preview_required", False, True),
+        ("CONTEXT_BINDING_MISMATCH", "context_changed", False, True),
+        ("EXECUTOR_ALREADY_RUNNING", "wait_for_running_operation", False, True),
+        ("VALIDATION_FAILED", "operator_action_required", False, True),
+        ("INSUFFICIENT_SCOPE", "authorization_required", True, True),
+        ("SCOPE_VIOLATION", "authorization_required", True, True),
+        ("CONFIRMATION_REQUIRED", "operator_action_required", True, True),
+        ("UNSUPPORTED_TRANSITION", "unsupported_by_current_surface", False, False),
+        ("AUTHORITY_MISMATCH", "hard_stop", True, False),
+        ("PREREQUISITE_NOT_READY", "refresh_state_then_retry", False, True),
     ],
 )
 def test_recovery_classes_are_machine_readable(
     error_code: str,
     expected_class: str,
     should_stop: bool,
+    retryable: bool,
 ) -> None:
     recovery = recovery_projection(error_code)
 
     assert recovery is not None
     assert recovery["recovery_class"] == expected_class
     assert recovery["agent_should_stop"] is should_stop
+    assert recovery["retryable"] is retryable
     assert recovery["does_not_grant_authority"] is True
 
 
@@ -137,6 +139,16 @@ def test_connector_origin_precedes_oauth_markers(error_code: str) -> None:
     assert recovery is not None
     assert recovery["error_origin"] == "connector"
     assert recovery["recovery_class"] == "operator_action_required"
+
+
+def test_unknown_colameta_error_stops_instead_of_retrying() -> None:
+    recovery = recovery_projection("SOME_NEW_INTEGRITY_PRECONDITION")
+
+    assert recovery is not None
+    assert recovery["error_origin"] == "colameta_application"
+    assert recovery["recovery_class"] == "operator_action_required"
+    assert recovery["agent_should_stop"] is True
+    assert recovery["retryable"] is False
 
 
 def test_independent_verifier_rejects_cross_typed_continuation() -> None:
@@ -292,6 +304,23 @@ def test_auto_preview_production_path_wraps_nested_connector_error_conservativel
     assert result["error_origin"] == "connector"
     assert result["recovery"]["recovery_class"] == "operator_action_required"
     assert result["recovery"]["agent_should_stop"] is True
+
+
+def test_auto_preview_production_path_stops_on_unknown_application_error(tmp_path) -> None:
+    state = {
+        "ok": False,
+        "error_code": "SOME_NEW_INTEGRITY_PRECONDITION",
+        "message": "No reviewed recovery classification exists.",
+        "recommended_next_actions": [],
+    }
+    result = MCPWorkflowRouter(str(tmp_path), analyze_state_fn=lambda _params: state).handle(
+        "auto_preview", {"goal": ""}
+    )
+
+    assert result["error_origin"] == "colameta_application"
+    assert result["recovery"]["recovery_class"] == "operator_action_required"
+    assert result["recovery"]["agent_should_stop"] is True
+    assert result["recovery"]["retryable"] is False
 
 
 def _build_fixture_canonical_state(tmp_path: Path, fixture: dict) -> dict:

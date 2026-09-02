@@ -41,6 +41,10 @@ registration or authority gates:
   mechanically evaluated by the independent verifier;
 - validation scope metadata contains only real MCP scopes, expressed by
   inspect/preview/run action rather than a synthetic combined scope.
+- recovery uses a conservative `known retry, unknown stop` fallback: unknown
+  ColaMeta application errors require operator action and are non-retryable;
+  identical-call retry is possible only through an exact reviewed allowlist,
+  which currently contains no entries.
 
 ## Independent Agent UX verification
 
@@ -60,12 +64,14 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests: `33 passed`.
+Dedicated R1 tests after fallback hardening: `35 passed`.
 
 ## Compatibility validation
 
 - high-level routing/workflow set: `232 passed`;
 - Commander/public-contract set: `1426 passed`;
+- combined R1 plus related workflow/Commander regression after fallback
+  hardening: `1660 passed`;
 - functional MVP, thin loop, stage parallel, review manifest, validation,
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - full suite: `4766 passed`, `22 failed`, `2 skipped`, `213 subtests passed`.

@@ -93,6 +93,11 @@ transport、host、external provider 和 unknown。无法由 ColaMeta 证明的�
 不会获得虚假的自动恢复承诺。包含 OAuth/scope 字样的 Connector 错误仍归属
 Connector 边界，并要求 operator action，不会被误判为可自动重试。
 
+Recovery fallback 遵循 `known retry, unknown stop`：只有 exact error code 已被
+审查为 transient 且同调用幂等时才可进入 `retry_same_call` allowlist；未分类的
+ColaMeta application error 返回 `operator_action_required`、`agent_should_stop: true`
+和 `retryable: false`。
+
 ## Routing registry 与 profiles
 
 `runner.agent_routing_registry` 以审计过的 exact tool-name map 对运行时 catalog 生成机器可读 domain、canonical

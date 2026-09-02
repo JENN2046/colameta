@@ -24,6 +24,12 @@ _HARD_STOPS = (
     "The original typed handle, scope, context binding, preview and confirmation gates remain mandatory.",
 )
 
+# Retrying the identical call is safe only when an exact, reviewed error code
+# proves the failure transient and the operation idempotent.  No current
+# ColaMeta-owned error has that proof, so this allowlist intentionally starts
+# empty; additions require a dedicated regression test.
+_RETRY_SAME_CALL_ERROR_CODES: frozenset[str] = frozenset()
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -411,23 +417,35 @@ def recovery_projection(
         return None
     code = error_code.upper()
     origin = infer_error_origin(code, error_origin)
-    recovery_class = "retry_same_call"
-    recommended_action = "Retry the same bounded call after reviewing the returned error facts."
-    agent_should_stop = False
-    retryable = True
-    if any(marker in code for marker in ("PREVIEW_EXPIRED", "PREVIEW_NOT_FOUND", "PREVIEW_STALE")):
+    recovery_class = "operator_action_required"
+    recommended_action = "Stop and inspect the unclassified ColaMeta error before choosing a recovery action."
+    agent_should_stop = True
+    retryable = False
+    if code in _RETRY_SAME_CALL_ERROR_CODES:
+        recovery_class = "retry_same_call"
+        recommended_action = "Retry the same bounded call; this exact error is classified as transient and idempotent."
+        agent_should_stop = False
+        retryable = True
+    elif any(marker in code for marker in ("PREVIEW_EXPIRED", "PREVIEW_NOT_FOUND", "PREVIEW_STALE")):
         recovery_class = "new_preview_required"
         recommended_action = "Create a new preview from current project state; do not reuse the old typed handle."
+        agent_should_stop = False
+        retryable = True
     elif any(marker in code for marker in ("CONTEXT_BINDING_MISMATCH", "HEAD_CHANGED", "PROJECT_CHANGED")):
         recovery_class = "context_changed"
         recommended_action = "Refresh canonical project state, then create a new context-bound preview."
+        agent_should_stop = False
+        retryable = True
     elif any(marker in code for marker in ("RUNNING", "IN_PROGRESS", "ALREADY_CLAIMED")):
         recovery_class = "wait_for_running_operation"
         recommended_action = "Poll the existing typed run or workflow handle; do not start a duplicate operation."
+        agent_should_stop = False
+        retryable = True
     elif origin in {"connector", "transport", "host", "external_provider", "unknown"}:
         recovery_class = "operator_action_required"
         recommended_action = "Inspect the external boundary; ColaMeta cannot prove an automatic recovery path."
         agent_should_stop = True
+        retryable = True
     elif any(
         marker in code
         for marker in (
@@ -441,18 +459,23 @@ def recovery_projection(
         recovery_class = "authorization_required"
         recommended_action = "Obtain the missing scope through the existing authorization flow, then retry."
         agent_should_stop = True
+        retryable = True
     elif any(marker in code for marker in ("CONFIRMATION_REQUIRED", "CONFIRMATION_MISSING")):
         recovery_class = "operator_action_required"
         recommended_action = "Ask the operator to confirm the exact preview and context binding."
         agent_should_stop = True
+        retryable = True
     elif "VALIDATION_FAILED" in code:
         recovery_class = "operator_action_required"
         recommended_action = "Inspect validation evidence, repair the failure, and create any required new preview."
+        agent_should_stop = False
+        retryable = True
     elif any(marker in code for marker in ("UNSUPPORTED", "NOT_SUPPORTED", "UNKNOWN_ACTION", "INVALID_WORKFLOW")):
         recovery_class = "unsupported_by_current_surface"
         recommended_action = "Use a documented supported action or escalate to an advanced tool without bypassing gates."
+        agent_should_stop = False
         retryable = False
-    elif any(marker in code for marker in ("HARD_STOP", "INTEGRITY", "AUTHORITY_MISMATCH")):
+    elif code == "AUTHORITY_MISMATCH" or code.endswith("_HARD_STOP"):
         recovery_class = "hard_stop"
         recommended_action = "Stop and obtain new authoritative evidence or operator direction."
         agent_should_stop = True
@@ -460,6 +483,8 @@ def recovery_projection(
     elif "PREREQUISITE" in code or "NOT_READY" in code:
         recovery_class = "refresh_state_then_retry"
         recommended_action = "Refresh canonical state and satisfy the reported prerequisite before retrying."
+        agent_should_stop = False
+        retryable = True
     return {
         "recovery_class": recovery_class,
         "reason": reason or error_code,
