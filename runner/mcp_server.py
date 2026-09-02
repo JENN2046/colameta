@@ -3846,6 +3846,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     arguments,
                     auth_context=auth_context,
                 )
+                self._log_owner_live_call_failure(
+                    stage="tool_result",
+                    method=method,
+                    tool_name=name,
+                    tool_result=tool_result,
+                )
                 if method == "tools/call":
                     return self._result(req_id, self._as_mcp_call_result(tool_result, arguments))
                 return self._result(
@@ -3885,10 +3891,79 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 )
             return self._protocol_error(req_id, -32601, "method_not_found", f"未知方法：{method}")
         except Exception as e:
+            tool_name = None
+            if isinstance(params, dict):
+                candidate = params.get("name")
+                if isinstance(candidate, str):
+                    tool_name = candidate
+            self._log_owner_live_call_failure(
+                stage="jsonrpc_exception",
+                method=method,
+                tool_name=tool_name,
+                exception=e,
+            )
             return self._result(
                 req_id,
-                self._tool_error("internal", "INTERNAL_ERROR", "服务器内部错误。", {"message": str(e)}),
+                self._tool_error(
+                    "internal",
+                    "INTERNAL_ERROR",
+                    "服务器内部错误。",
+                    (
+                        None
+                        if self._uses_chatgpt_public_projection()
+                        else {"message": str(e)}
+                    ),
+                ),
             )
+
+    def _log_owner_live_call_failure(
+        self,
+        *,
+        stage: str,
+        method: object,
+        tool_name: object,
+        tool_result: object = None,
+        exception: BaseException | None = None,
+    ) -> None:
+        """Emit a bounded owner-call failure marker without request or identity data."""
+
+        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
+            return
+        if isinstance(tool_result, dict) and tool_result.get("ok") is not False:
+            return
+
+        safe_stage = stage if stage in {"tool_result", "jsonrpc_exception"} else "unknown"
+        safe_method = method if method in {"tools/call", "call_tool"} else "unknown"
+        safe_tool = (
+            tool_name
+            if isinstance(tool_name, str) and tool_name in self.tools
+            else "unknown"
+        )
+        fields = [
+            "MCP owner live call failure",
+            f"stage={safe_stage}",
+            f"method={safe_method}",
+            f"tool={safe_tool}",
+        ]
+        if isinstance(tool_result, dict):
+            error_code = tool_result.get("error_code")
+            if isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,80}", error_code):
+                fields.append(f"error_code={error_code}")
+            else:
+                fields.append("error_code=UNKNOWN")
+        if exception is not None:
+            fields.append(f"exception_type={type(exception).__name__}")
+            traceback = exception.__traceback__
+            while traceback is not None and traceback.tb_next is not None:
+                traceback = traceback.tb_next
+            if traceback is not None:
+                code = traceback.tb_frame.f_code
+                safe_function = re.sub(r"[^A-Za-z0-9_]", "_", code.co_name)[:80]
+                fields.append(
+                    "location="
+                    f"{os.path.basename(code.co_filename)}:{traceback.tb_lineno}:{safe_function}"
+                )
+        self._log(" ".join(fields))
 
     def _tool_oauth_scopes(
         self,
@@ -4715,7 +4790,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if self._json_char_count(structured_tool_result) <= target_chars:
             if is_error:
                 err_msg = str(structured_tool_result.get("message") or "unknown error")
-                text_payload = f"{tool_name} failed: {err_msg}"
+                error_code = str(
+                    structured_tool_result.get("error_code") or "UNKNOWN_ERROR"
+                )
+                text_payload = f"{tool_name} failed [{error_code}]: {err_msg}"
             else:
                 text_payload = f"{tool_name} completed."
             return self._attach_mcp_result_meta(
