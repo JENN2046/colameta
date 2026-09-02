@@ -21,7 +21,7 @@ from typing import Any
 from runner.http_server_utils import ReusableThreadingHTTPServer
 from runner.http_url_policy import HTTPRedirectPolicy, open_http_url
 from runner.mcp_external_oauth import ExternalOAuthConfig, ExternalOAuthProvider
-from runner.mcp_oauth import MCPOAuthProvider, default_server_oauth_store_file
+from runner.mcp_oauth import DEFAULT_SCOPES, MCPOAuthProvider, default_server_oauth_store_file
 from runner.planning_bridge import PlanningBridge, PlanningBridgeError
 from runner.source_review_bridge import SourceReviewBridge, SourceReviewError
 from runner.executor_inventory import load_executor_inventory
@@ -707,7 +707,26 @@ def _parse_prompt_front_matter(content: str) -> tuple[dict[str, Any], str | None
 
 
 
-VALID_MCP_SCOPES = frozenset({"mcp:read", "mcp:preview", "mcp:commit", "mcp:plan"})
+MCP_SCOPE_ORDER = DEFAULT_SCOPES
+VALID_MCP_SCOPES = frozenset(MCP_SCOPE_ORDER)
+OWNER_INCREMENTAL_OAUTH_SCOPES = ("mcp:commit",)
+
+
+def _external_oauth_scopes_for_profile(
+    exposure_profile: str,
+    configured_scopes: str | list[str] | tuple[str, ...] | None,
+) -> str | tuple[str, ...] | None:
+    """Make owner commit reauthorization possible without widening Commander."""
+
+    if exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
+        return configured_scopes
+    if isinstance(configured_scopes, str):
+        requested = configured_scopes.replace(",", " ").split()
+    elif isinstance(configured_scopes, (list, tuple)):
+        requested = [scope for scope in configured_scopes if isinstance(scope, str)]
+    else:
+        requested = []
+    return tuple(dict.fromkeys((*requested, *OWNER_INCREMENTAL_OAUTH_SCOPES)))
 
 
 @dataclass(frozen=True)
@@ -1603,7 +1622,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     issuer=oauth_issuer,
                     jwks_url=oauth_jwks_url,
                     audience=oauth_audience,
-                    scopes=oauth_scopes,  # type: ignore[arg-type]
+                    scopes=_external_oauth_scopes_for_profile(
+                        self.mcp_exposure_profile,
+                        oauth_scopes,
+                    ),  # type: ignore[arg-type]
                     algorithms=oauth_algorithms,  # type: ignore[arg-type]
                     token_leeway_seconds=oauth_token_leeway_seconds,
                 )
@@ -5826,6 +5848,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         if not missing_scopes:
             return None
         required_scope = " ".join(missing_scopes)
+        preserved_scopes = [
+            scope
+            for scope in MCP_SCOPE_ORDER
+            if validate_scope(token_payload, scope)
+        ]
+        reauthorization_scopes = {*preserved_scopes, *missing_scopes}
+        reauthorization_scope = " ".join(
+            scope for scope in MCP_SCOPE_ORDER if scope in reauthorization_scopes
+        )
         error = self._tool_error(
             name,
             "INSUFFICIENT_SCOPE",
@@ -5839,7 +5870,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         return self._with_oauth_authenticate_challenge(
             error,
             oauth_provider=oauth_provider,
-            required_scope=required_scope,
+            required_scope=reauthorization_scope,
             error="insufficient_scope",
             error_description="The OAuth access token is missing the required scope.",
         )
