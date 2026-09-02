@@ -90,6 +90,10 @@ generic `preview_id`。
 record 取代。`run_id` continuation 只声明执行器真实支持的 `status` 动作，不再声明
 不存在的 `read`。
 
+Canonical state 为 `EXECUTOR_READY_TO_RUN` 时，高层推荐使用真实支持的
+`manage_executor_workflow(action=run_once_preview, provider=codex,
+execution_mode=run)`；不再输出 manager 无法消费的 generic `action=preview`。
+
 当入口已解析出注册项目时，canonical action 的 `params` / `arguments` 和
 `required_arguments` 都携带同一个 `project_name`。Agent 复制该 action 后仍会
 走原来的 registry route；这只是上下文绑定，不授予额外 authority。

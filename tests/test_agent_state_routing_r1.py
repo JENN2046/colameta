@@ -25,6 +25,7 @@ from runner.canonical_project_state import build_canonical_project_state
 from runner.continuation_snapshot import snapshot_from_fact_bundle
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.mcp_server import COMMANDER_EXPOSED_TOOLS, MCPPlanningBridgeServer
+from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_workflow_router import MCPWorkflowRouter
 from runner.project_registry import ProjectRegistry
 from tests.agent_ux_independent_verifier import (
@@ -296,6 +297,24 @@ def test_executor_run_continuation_advertises_only_status() -> None:
     assert continuation is not None
     assert continuation["kind"] == "executor_run"
     assert continuation["allowed_next_actions"] == ["status"]
+
+
+def test_executor_ready_state_uses_a_supported_preview_action(tmp_path) -> None:
+    action = select_primary_action_from_state({"status": "EXECUTOR_READY_TO_RUN"})
+
+    assert action is not None
+    assert action["tool"] == "manage_executor_workflow"
+    assert action["action"] == "run_once_preview"
+    assert action["required_arguments"] == {
+        "action": "run_once_preview",
+        "provider": "codex",
+        "execution_mode": "run",
+    }
+    result = MCPExecutorWorkflowManager(str(tmp_path)).handle(
+        action["action"],
+        action["required_arguments"],
+    )
+    assert result.get("error_code") != "UNKNOWN_ACTION"
 
 
 def test_patch_handle_precedes_generic_core_preview_ids() -> None:

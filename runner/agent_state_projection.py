@@ -399,9 +399,13 @@ def select_primary_action_from_state(
         ),
         "EXECUTOR_READY_TO_RUN": (
             "manage_executor_workflow",
-            "preview",
-            "Refresh the typed executor preview; this navigation result does not authorize the run.",
-            {"action": "preview"},
+            "run_once_preview",
+            "Refresh the typed single-run executor preview; this navigation result does not authorize the run.",
+            {
+                "action": "run_once_preview",
+                "provider": "codex",
+                "execution_mode": "run",
+            },
         ),
         "EXECUTOR_RUNNING": (
             "manage_executor_workflow",

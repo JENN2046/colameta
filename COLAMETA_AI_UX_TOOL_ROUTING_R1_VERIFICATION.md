@@ -48,6 +48,10 @@ Branch: `codex/ai-ux-tool-routing-r1`
   required-argument contract from omitting a mandatory confirmation binding;
 - executor `run_id` continuations advertise only the implemented `status`
   consumer action, never the unsupported `read` action;
+- `EXECUTOR_READY_TO_RUN` routes to the implemented
+  `manage_executor_workflow(action=run_once_preview)` contract with its
+  default provider/execution mode instead of the unsupported generic
+  `action=preview`;
 - `analyze_project_state`, `get_agent_operator_flow_packet` and
   `run_mcp_workflow(auto_preview)` emit the additive
   `colameta.agent_state_projection.v1` projection;
@@ -124,7 +128,7 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `79 passed`.
+Dedicated R1 tests after review hardening: `80 passed`.
 The three previously affected operator-flow production regressions plus the R1
 suite pass together: `78 passed`.
 The plan-continuation production-path focus passes: `31 passed`.
@@ -139,7 +143,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the continuation consistency repair: `4813 passed`, `22 failed`,
+- full suite after the executor-preview action repair: `4814 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached
