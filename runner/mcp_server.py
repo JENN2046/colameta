@@ -70,6 +70,7 @@ from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
     GateReviewPreviewStore,
 )
+from runner.agent_state_projection import add_agent_state_projection
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name, is_supported_core_workflow
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
@@ -7242,6 +7243,23 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "partial_errors": partial_errors,
         }
 
+        public_project_name = (
+            project_record.get("project_name")
+            if isinstance(project_record, dict)
+            and isinstance(project_record.get("project_name"), str)
+            else None
+        )
+        legacy = add_agent_state_projection(
+            legacy,
+            source_tool="analyze_project_state",
+            profile_id=(
+                "web_gpt_commander"
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                else "local_codex_commander"
+            ),
+            project_name=public_project_name,
+        )
+
         if project_record is None and not _CURRENT_FACTS_INTERNAL_ANALYZE.get():
             self._record_workflow_if_needed("analyze_project_state", "analyze", routed_params, legacy)
         return legacy
@@ -10102,6 +10120,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             project_docs_manager=MCPProjectDocsManager(self.project_root, self.source_review),
             git_history_manager=MCPGitHistoryManager(self.project_root, self.source_review),
             git_commit_manager=MCPGitCommitManager(self.project_root),
+            agent_profile_id=(
+                "web_gpt_commander"
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                else "local_codex_commander"
+            ),
         )
 
     def _operator_preview_validation(self, operation: dict[str, Any]) -> dict[str, Any]:

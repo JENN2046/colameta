@@ -83,6 +83,17 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+
+def _goal_keyword_matches(goal: str, keyword: str) -> bool:
+    """Match ASCII routing keywords as tokens, not accidental substrings."""
+
+    if keyword.isascii() and keyword.replace("_", "").isalnum():
+        return re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(keyword)}(?![A-Za-z0-9_])",
+            goal,
+        ) is not None
+    return keyword in goal
+
 _STOP_NEEDS_PLAN_APPLY_CONFIRMATION = "needs_plan_apply_confirmation"
 _STOP_NEEDS_COMMIT_CONFIRMATION = "needs_commit_confirmation"
 _STOP_NEEDS_DOCS_APPLY_CONFIRMATION = "needs_docs_apply_confirmation"
@@ -5147,7 +5158,7 @@ class WorkflowOrchestrator:
         for keywords, workflow in _GOAL_CLASSIFIERS:
             if workflow == "executor" and executor_explicitly_forbidden:
                 continue
-            matches = sum(1 for kw in keywords if kw in goal_lower)
+            matches = sum(1 for kw in keywords if _goal_keyword_matches(goal_lower, kw))
             if matches > 0:
                 confidence = min(0.5 + matches * 0.15, 1.0)
                 if confidence > best_confidence:

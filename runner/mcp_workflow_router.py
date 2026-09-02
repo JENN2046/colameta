@@ -1,6 +1,7 @@
 import os
 from typing import Any, Callable
 
+from runner.agent_state_projection import add_agent_state_projection
 from runner.planning_bridge import PlanningBridge
 from runner.mcp_plan_workflow import MCPPlanWorkflowManager
 from runner.mcp_project_patch import MCPProjectPatchManager
@@ -27,6 +28,7 @@ class MCPWorkflowRouter:
         git_commit_manager: MCPGitCommitManager | None = None,
         planning_bridge: PlanningBridge | None = None,
         executor_workflow_factory: Callable[[str], MCPExecutorWorkflowManager] | None = None,
+        agent_profile_id: str | None = None,
     ):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self._source_review = source_review or SourceReviewBridge()
@@ -40,6 +42,7 @@ class MCPWorkflowRouter:
         self._executor_workflow_factory = executor_workflow_factory or (
             lambda project_root: MCPExecutorWorkflowManager(project_root)
         )
+        self._agent_profile_id = agent_profile_id
 
     # ---- Lazy managers ----
 
@@ -102,7 +105,29 @@ class MCPWorkflowRouter:
             entrypoint="mcp_workflow",
         )
         core_output = orchestrator.handle_request(core_request)
-        return self._core_output_to_legacy_response(core_output)
+        response = self._core_output_to_legacy_response(core_output)
+        if workflow == "auto_preview":
+            goal = params.get("goal")
+            response = add_agent_state_projection(
+                response,
+                source_tool="run_mcp_workflow",
+                profile_id=self._agent_profile_id,
+                project_name=(
+                    params.get("project_name")
+                    if isinstance(params.get("project_name"), str)
+                    else None
+                ),
+                goal=goal if isinstance(goal, str) else None,
+            )
+            response["classified_intent"] = {
+                "user_request": goal if isinstance(goal, str) else None,
+                "selected_workflow": response.get("selected_workflow"),
+                "reason": response.get("selection_reason"),
+                "confidence": response.get("confidence"),
+                "classification_is_navigation_only": True,
+                "does_not_grant_authority": True,
+            }
+        return response
 
     def _core_output_to_legacy_response(self, output: CoreOutput) -> dict[str, Any]:
         out: dict[str, Any] = {

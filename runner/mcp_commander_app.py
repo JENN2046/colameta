@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from runner.agent_state_projection import add_agent_state_projection
+from runner.agent_routing_registry import profile_guidance
 from runner.commander_projections import CommanderProjectionService
 from runner.commander_widget import commander_widget_html
 from runner.executor_status import polling_guidance_for_profile
@@ -925,10 +927,31 @@ class MCPCommanderAppMixin:
                 "product_console_completion_surface": product_console_completion,
                 "service_entry_profiles_version": "service_entry_profiles.v1",
                 "project_identity": self._project_identity_for_root(project_root),
+                "agent_tool_routing": profile_guidance(profile_id),
             }
             if isinstance(project_record, dict):
                 result["advanced_context"]["project_record"] = project_record
-        return result
+        projected = add_agent_state_projection(
+            result,
+            source_tool="get_agent_operator_flow_packet",
+            profile_id=profile_id,
+            project_name=project_name,
+            goal=task_brief.strip() or None,
+            primary_action=primary_next_action,
+        )
+        blocked_items = projected["blocked_next_actions"]["items"]
+        blocked_items.extend(
+            {
+                "tool": "run_mcp_workflow",
+                "action": workflow,
+                "reason": (
+                    "This workflow is not normally recommended for the selected profile; "
+                    "that guidance does not replace the workflow's own authority checks."
+                ),
+            }
+            for workflow in forbidden_workflows
+        )
+        return projected
 
     @staticmethod
     def _resolve_agent_flow_mode(*, requested_mode: str, consumer_kind: str, task_brief: str) -> str:

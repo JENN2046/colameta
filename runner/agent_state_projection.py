@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from runner.agent_routing_registry import profile_guidance, tool_routing_metadata
+
+
+AGENT_PROJECTION_SCHEMA_VERSION = "colameta.agent_state_projection.v1"
+
+_HANDLE_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("review_manifest_id", "review_manifest", ("read", "verify")),
+    ("artifact_id", "result_artifact", ("read",)),
+    ("run_id", "executor_run", ("status", "read")),
+    ("workflow_id", "workflow_run", ("status", "read")),
+    ("gate_preview_id", "gate_preview", ("status", "apply")),
+    ("batch_preview_id", "batch_preview", ("status", "execute")),
+    ("patch_id", "plan_patch", ("status", "apply")),
+    ("preview_id", "preview", ("status", "apply")),
+)
+
+_HARD_STOPS = (
+    "No Agent projection field grants apply, executor, commit, push, merge, stable replacement, delivery, deploy, or release authority.",
+    "The original typed handle, scope, context binding, preview and confirmation gates remain mandatory.",
+)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def normalize_agent_action(
+    action: Any,
+    *,
+    source_tool: str,
+) -> dict[str, Any] | None:
+    if not isinstance(action, Mapping):
+        return None
+    normalized = dict(action)
+    arguments = _as_dict(normalized.get("arguments"))
+    if not arguments:
+        arguments = _as_dict(normalized.get("params"))
+    copyable = _as_dict(normalized.get("copyable_tool_call"))
+    if not arguments:
+        arguments = _as_dict(copyable.get("arguments"))
+    tool = normalized.get("tool") or copyable.get("tool")
+    if not isinstance(tool, str) or not tool:
+        return None
+    action_name = normalized.get("action")
+    if not isinstance(action_name, str) or not action_name:
+        for field in ("action", "phase", "workflow"):
+            candidate = arguments.get(field)
+            if isinstance(candidate, str) and candidate:
+                action_name = candidate
+                break
+    normalized.setdefault("action", action_name if isinstance(action_name, str) else "inspect")
+    normalized.setdefault("reason", "Follow the first bounded action selected from current project state.")
+    normalized.setdefault("required_arguments", arguments)
+    normalized.setdefault("optional_arguments", {})
+    normalized.setdefault("source_tool", source_tool)
+    normalized.setdefault("routing", tool_routing_metadata(tool))
+    normalized.setdefault("navigation_only", True)
+    normalized.setdefault("does_not_grant_authority", True)
+    return normalized
+
+
+def _first_action(response: Mapping[str, Any]) -> Any:
+    direct = response.get("primary_next_action")
+    if isinstance(direct, Mapping):
+        return direct
+    for key in ("recommended_next_actions", "next_actions"):
+        actions = response.get(key)
+        if isinstance(actions, list):
+            for action in actions:
+                if isinstance(action, Mapping):
+                    return action
+    next_action = response.get("next_action")
+    return next_action if isinstance(next_action, Mapping) else None
+
+
+def select_primary_action_from_state(
+    state: Mapping[str, Any],
+    *,
+    intent: str | None = None,
+) -> dict[str, Any] | None:
+    """Select one conservative navigation action from a recognized state.
+
+    This function deliberately recognizes only states whose next read or
+    preview is unambiguous.  It never selects an apply, run, commit-apply,
+    push, merge, stable replacement, delivery, deploy, or release action.
+    Unknown states return ``None`` instead of guessing.
+    """
+
+    status = str(
+        state.get("status")
+        or state.get("state")
+        or state.get("unified_status")
+        or ""
+    ).strip().upper().replace("-", "_").replace(" ", "_")
+    run_id = state.get("run_id") if isinstance(state.get("run_id"), str) else None
+    rules: dict[str, tuple[str, str, str, dict[str, Any]]] = {
+        "EXECUTOR_PREFLIGHT": (
+            "run_mcp_workflow",
+            "auto_preview",
+            "Executor work needs a bounded preview before any run authority can be evaluated.",
+            {"workflow": "auto_preview"},
+        ),
+        "EXECUTOR_READY_TO_RUN": (
+            "manage_executor_workflow",
+            "preview",
+            "Refresh the typed executor preview; this navigation result does not authorize the run.",
+            {"action": "preview"},
+        ),
+        "EXECUTOR_RUNNING": (
+            "manage_executor_workflow",
+            "status",
+            "An executor is already running; poll the same run instead of starting another.",
+            {"action": "status", **({"run_id": run_id} if run_id else {})},
+        ),
+        "EXECUTOR_COMPLETED": (
+            "manage_validation_run",
+            "preview",
+            "Executor work completed and acceptance validation is the next bounded gate.",
+            {"action": "preview"},
+        ),
+        "EXECUTOR_COMPLETED_VALIDATION_PENDING": (
+            "manage_validation_run",
+            "preview",
+            "Executor work completed and acceptance validation has not run.",
+            {"action": "preview"},
+        ),
+        "VALIDATION_PENDING": (
+            "manage_validation_run",
+            "preview",
+            "Validation has not run; create or refresh its bounded preview.",
+            {"action": "preview"},
+        ),
+        "VALIDATION_FAILED": (
+            "manage_validation_run",
+            "inspect",
+            "Inspect failed validation evidence before planning a repair.",
+            {"action": "inspect"},
+        ),
+        "VALIDATION_PASSED": (
+            "manage_git",
+            "commit_preview",
+            "Validation passed; the next bounded Git step is a commit preview, not commit apply.",
+            {"action": "commit_preview"},
+        ),
+        "COMMIT_PENDING": (
+            "manage_git",
+            "commit_preview",
+            "Changes are ready for Git review; create a dedicated commit preview.",
+            {"action": "commit_preview"},
+        ),
+        "CONTEXT_CHANGED": (
+            "analyze_project_state",
+            "inspect",
+            "Context changed after the prior projection; refresh canonical state.",
+            {},
+        ),
+        "PREVIEW_EXPIRED": (
+            "analyze_project_state",
+            "inspect",
+            "The prior preview expired; refresh state before creating a new typed preview.",
+            {},
+        ),
+        "REVIEW_TASK": (
+            "review_manifest",
+            "inspect",
+            "Review work should begin with immutable manifest evidence.",
+            {"action": "inspect"},
+        ),
+        "PARALLEL_STAGE": (
+            "get_stage_parallel_next_action_packet",
+            "inspect",
+            "Read the stage state machine before selecting the next shard or merge gate.",
+            {},
+        ),
+        "BLOCKED_WORK_ITEM": (
+            "get_work_item_governance_status",
+            "inspect",
+            "Read the governed blocker before proposing a transition.",
+            {},
+        ),
+        "STABLE_PROMOTION_NOT_READY": (
+            "get_stable_promotion_readiness",
+            "inspect",
+            "Stable promotion is not ready; inspect its evidence gate without mutating Stable.",
+            {},
+        ),
+        "PROJECT_INSPECTION": (
+            "analyze_project_state",
+            "inspect",
+            "Read canonical project facts before selecting a workflow.",
+            {},
+        ),
+    }
+    rule = rules.get(status)
+    if rule is None:
+        return None
+    tool, action, reason, required_arguments = rule
+    if intent and tool == "run_mcp_workflow":
+        required_arguments = {**required_arguments, "goal": intent}
+    return {
+        "tool": tool,
+        "action": action,
+        "reason": reason,
+        "required_arguments": required_arguments,
+        "optional_arguments": {},
+    }
+
+
+def _walk_for_handle(value: Any, depth: int = 0) -> tuple[str, str, tuple[str, ...], str, str | None] | None:
+    if depth > 5:
+        return None
+    if isinstance(value, Mapping):
+        for field_name, kind, actions in _HANDLE_SPECS:
+            candidate = value.get(field_name)
+            if isinstance(candidate, str) and candidate:
+                expires_at = value.get("expires_at")
+                return field_name, kind, actions, candidate, expires_at if isinstance(expires_at, str) else None
+        preview_ids = value.get("preview_ids")
+        if isinstance(preview_ids, list) and len(preview_ids) == 1 and isinstance(preview_ids[0], str):
+            return "preview_id", "preview", ("status", "apply"), preview_ids[0], None
+        for key in ("primary_next_action", "next_action", "confirmation", "result", "facts", "data"):
+            if key in value:
+                found = _walk_for_handle(value[key], depth + 1)
+                if found is not None:
+                    return found
+    return None
+
+
+def typed_continuation_projection(response: Mapping[str, Any], *, source_tool: str) -> dict[str, Any] | None:
+    found = _walk_for_handle(response)
+    if found is None:
+        return None
+    field_name, kind, actions, identifier, expires_at = found
+    continuation = {
+        "kind": kind,
+        "id": identifier,
+        "field_name": field_name,
+        "source_tool": source_tool,
+        "allowed_next_actions": list(actions),
+        "typed_handle_required_by_next_tool": True,
+        "continuation_is_navigation_only": True,
+        "does_not_grant_authority": True,
+    }
+    if expires_at is not None:
+        continuation["expires_at"] = expires_at
+    return continuation
+
+
+def infer_error_origin(error_code: str | None, explicit_origin: str | None = None) -> str:
+    allowed = {
+        "colameta_application",
+        "colameta_workflow",
+        "colameta_state_gate",
+        "connector",
+        "oauth",
+        "transport",
+        "host",
+        "external_provider",
+        "unknown",
+    }
+    if explicit_origin in allowed:
+        return explicit_origin
+    code = (error_code or "").upper()
+    if any(marker in code for marker in ("OAUTH", "SCOPE", "AUTHORIZATION", "PRINCIPAL")):
+        return "oauth"
+    if "CONNECTOR" in code:
+        return "connector"
+    if "TRANSPORT" in code:
+        return "transport"
+    if "HOST" in code:
+        return "host"
+    if any(marker in code for marker in ("PREVIEW", "CONTEXT", "HEAD_CHANGED", "CONFIRMATION", "PREREQUISITE")):
+        return "colameta_state_gate"
+    if "WORKFLOW" in code or "TRANSITION" in code:
+        return "colameta_workflow"
+    return "colameta_application" if code else "unknown"
+
+
+def recovery_projection(
+    error_code: str | None,
+    *,
+    reason: str = "",
+    error_origin: str | None = None,
+) -> dict[str, Any] | None:
+    if not error_code:
+        return None
+    code = error_code.upper()
+    origin = infer_error_origin(code, error_origin)
+    recovery_class = "retry_same_call"
+    recommended_action = "Retry the same bounded call after reviewing the returned error facts."
+    agent_should_stop = False
+    retryable = True
+    if any(marker in code for marker in ("PREVIEW_EXPIRED", "PREVIEW_NOT_FOUND", "PREVIEW_STALE")):
+        recovery_class = "new_preview_required"
+        recommended_action = "Create a new preview from current project state; do not reuse the old typed handle."
+    elif any(marker in code for marker in ("CONTEXT_BINDING_MISMATCH", "HEAD_CHANGED", "PROJECT_CHANGED")):
+        recovery_class = "context_changed"
+        recommended_action = "Refresh canonical project state, then create a new context-bound preview."
+    elif any(marker in code for marker in ("RUNNING", "IN_PROGRESS", "ALREADY_CLAIMED")):
+        recovery_class = "wait_for_running_operation"
+        recommended_action = "Poll the existing typed run or workflow handle; do not start a duplicate operation."
+    elif any(
+        marker in code
+        for marker in (
+            "INSUFFICIENT_SCOPE",
+            "SCOPE_REQUIRED",
+            "SCOPE_MISMATCH",
+            "SCOPE_VIOLATION",
+            "AUTHORIZATION_REQUIRED",
+        )
+    ):
+        recovery_class = "authorization_required"
+        recommended_action = "Obtain the missing scope through the existing authorization flow, then retry."
+        agent_should_stop = True
+    elif any(marker in code for marker in ("CONFIRMATION_REQUIRED", "CONFIRMATION_MISSING")):
+        recovery_class = "operator_action_required"
+        recommended_action = "Ask the operator to confirm the exact preview and context binding."
+        agent_should_stop = True
+    elif "VALIDATION_FAILED" in code:
+        recovery_class = "operator_action_required"
+        recommended_action = "Inspect validation evidence, repair the failure, and create any required new preview."
+    elif any(marker in code for marker in ("UNSUPPORTED", "NOT_SUPPORTED", "UNKNOWN_ACTION", "INVALID_WORKFLOW")):
+        recovery_class = "unsupported_by_current_surface"
+        recommended_action = "Use a documented supported action or escalate to an advanced tool without bypassing gates."
+        retryable = False
+    elif any(marker in code for marker in ("HARD_STOP", "INTEGRITY", "AUTHORITY_MISMATCH")):
+        recovery_class = "hard_stop"
+        recommended_action = "Stop and obtain new authoritative evidence or operator direction."
+        agent_should_stop = True
+        retryable = False
+    elif "PREREQUISITE" in code or "NOT_READY" in code:
+        recovery_class = "refresh_state_then_retry"
+        recommended_action = "Refresh canonical state and satisfy the reported prerequisite before retrying."
+    elif origin in {"connector", "transport", "host", "external_provider", "unknown"}:
+        recovery_class = "operator_action_required"
+        recommended_action = "Inspect the external boundary; ColaMeta cannot prove an automatic recovery path."
+        agent_should_stop = True
+    return {
+        "recovery_class": recovery_class,
+        "reason": reason or error_code,
+        "recommended_action": recommended_action,
+        "agent_should_stop": agent_should_stop,
+        "retryable": retryable,
+        "error_origin": origin,
+        "recovery_is_navigation_only": True,
+        "does_not_grant_authority": True,
+    }
+
+
+def authority_projection() -> dict[str, Any]:
+    def scope(scope_name: str) -> dict[str, Any]:
+        return {
+            "status": "INDEPENDENT_SCOPE_AND_GATE_REQUIRED",
+            "required_scope": scope_name,
+            "granted_by_projection": False,
+        }
+
+    return {
+        "read": scope("mcp:read"),
+        "preview": scope("mcp:preview"),
+        "execute": {
+            "status": "TYPED_PREVIEW_CONTEXT_AND_CONFIRMATION_REQUIRED",
+            "granted_by_projection": False,
+        },
+        "validate": scope("mcp:preview_or_commit_by_action"),
+        "commit": scope("mcp:commit"),
+        "push": {
+            "status": "DEDICATED_GIT_GATE_REQUIRED",
+            "granted_by_projection": False,
+        },
+        "stable_replacement": {
+            "status": "DEDICATED_STABLE_PROMOTION_GATE_REQUIRED",
+            "granted_by_projection": False,
+        },
+        "projection_is_navigation_only": True,
+        "projection_grants_no_authority": True,
+    }
+
+
+def _agent_state(
+    response: Mapping[str, Any],
+    *,
+    project_name: str | None,
+    goal: str | None,
+    profile_id: str | None,
+) -> dict[str, Any]:
+    identity = _as_dict(response.get("project_identity"))
+    canonical = _as_dict(response.get("canonical_state"))
+    current_state = _as_dict(response.get("current_state"))
+    runner = _as_dict(response.get("runner"))
+    plan = _as_dict(response.get("plan"))
+    current_version = (
+        response.get("current_version")
+        or current_state.get("current_version")
+        or canonical.get("current_version")
+        or runner.get("current_version")
+        or plan.get("current_version")
+    )
+    current_phase = (
+        response.get("phase")
+        or current_state.get("current_phase")
+        or canonical.get("phase")
+        or runner.get("phase")
+        or plan.get("phase")
+    )
+    readiness = _as_dict(current_state.get("readiness"))
+    status = (
+        response.get("status")
+        or response.get("mode")
+        or current_state.get("status")
+        or readiness.get("status")
+        or canonical.get("status")
+        or "unknown"
+    )
+    return {
+        "project": project_name or response.get("project_name") or identity.get("project_name"),
+        "goal": goal,
+        "current_phase": current_phase,
+        "current_version": current_version,
+        "status": status,
+        "profile_id": profile_id,
+        "state_is_observation_not_authority": True,
+    }
+
+
+def _blocked_next_actions(
+    response: Mapping[str, Any],
+    *,
+    primary_action: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    blockers = _as_string_list(response.get("blockers"))
+    if blockers:
+        items.append(
+            {
+                "tool": primary_action.get("tool") if primary_action else "analyze_project_state",
+                "action": primary_action.get("action") if primary_action else "inspect",
+                "reason": "; ".join(blockers[:5]),
+            }
+        )
+    if response.get("requires_confirmation") is True:
+        items.append(
+            {
+                "tool": primary_action.get("tool") if primary_action else "run_mcp_workflow",
+                "action": "apply_or_run",
+                "reason": "The current preview still requires explicit operator confirmation and its original typed binding.",
+            }
+        )
+    for tool, action, reason in (
+        ("manage_git", "commit_apply", "A navigation response is not commit authority; a dedicated commit preview must pass."),
+        ("manage_git", "push_apply", "Push remains behind its independent Git remote and confirmation gate."),
+        (
+            "manage_stable_promotion_evidence",
+            "apply",
+            "Stable replacement remains behind its dedicated evidence and authorization gate.",
+        ),
+    ):
+        items.append({"tool": tool, "action": action, "reason": reason})
+    return {
+        "exhaustive": False,
+        "items": items,
+        "navigation_only": True,
+        "does_not_define_an_allowlist": True,
+    }
+
+
+def add_agent_state_projection(
+    response: Mapping[str, Any],
+    *,
+    source_tool: str,
+    profile_id: str | None = None,
+    project_name: str | None = None,
+    goal: str | None = None,
+    primary_action: Mapping[str, Any] | None = None,
+    error_origin: str | None = None,
+) -> dict[str, Any]:
+    projected = dict(response)
+    selected = primary_action if primary_action is not None else _first_action(projected)
+    if selected is None:
+        selected = select_primary_action_from_state(projected, intent=goal)
+    normalized_action = normalize_agent_action(selected, source_tool=source_tool)
+    projected["agent_projection_schema_version"] = AGENT_PROJECTION_SCHEMA_VERSION
+    projected["agent_state"] = _agent_state(
+        projected,
+        project_name=project_name,
+        goal=goal,
+        profile_id=profile_id,
+    )
+    projected.setdefault("completed", [])
+    projected.setdefault("pending", [])
+    projected.setdefault("blocked", _as_string_list(projected.get("blockers")))
+    projected["authority"] = authority_projection()
+    projected["primary_next_action"] = normalized_action
+    if normalized_action is None:
+        projected["why_no_unique_action"] = (
+            "Current facts do not prove one unique safe next action; refresh state or provide a bounded goal."
+        )
+    projected["blocked_next_actions"] = _blocked_next_actions(
+        projected,
+        primary_action=normalized_action,
+    )
+    projected["continuation"] = typed_continuation_projection(projected, source_tool=source_tool)
+    error_code = projected.get("error_code")
+    projected["error_origin"] = infer_error_origin(
+        error_code if isinstance(error_code, str) else None,
+        error_origin,
+    ) if error_code else None
+    projected["recovery"] = recovery_projection(
+        error_code if isinstance(error_code, str) else None,
+        reason=str(projected.get("message") or ""),
+        error_origin=error_origin,
+    )
+    projected["hard_stops"] = list(_HARD_STOPS)
+    projected["routing"] = {
+        "source": tool_routing_metadata(source_tool),
+        "profile": profile_guidance(profile_id),
+        "selected_workflow": projected.get("selected_workflow"),
+        "routing_metadata_is_navigation_only": True,
+        "routing_metadata_grants_no_authority": True,
+    }
+    return projected

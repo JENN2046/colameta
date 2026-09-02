@@ -5127,6 +5127,13 @@ vm.runInThisContext({json.dumps(widget_script)});
         assert planner["primary_next_action"]["requires_confirmation_before_write_or_run"] is False
         assert planner["primary_next_action"]["arguments"]["workflow"] == "thin_governed_loop_preview"
         assert planner["primary_next_action"]["arguments"]["draft_seed"]["goal"].startswith("Make the onboarding")
+        assert planner["agent_projection_schema_version"] == "colameta.agent_state_projection.v1"
+        assert planner["agent_state"]["project"] == "demo-project"
+        assert planner["agent_state"]["goal"].startswith("Make the onboarding")
+        assert planner["blocked_next_actions"]["exhaustive"] is False
+        assert planner["authority"]["execute"]["granted_by_projection"] is False
+        assert planner["routing"]["profile"]["profile_id"] == "planner_agent"
+        assert planner["advanced_context"]["agent_tool_routing"]["does_not_grant_tool_authority"] is True
         assert planner["persona_safe_next_tool"] == "run_mcp_workflow"
         assert planner["requires_confirmation_before_preview"] is False
         assert planner["requires_confirmation_before_write_or_run"] is True
