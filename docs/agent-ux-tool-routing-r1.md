@@ -140,7 +140,8 @@ Commander 收到成功的 plan preview 时仍保留原 `patch_id` typed handle�
 `run_mcp_workflow(workflow=plan_update, phase=apply, patch_id=...)`；该映射只是导航，
 不会绕过既有 confirmation、context binding 或 plan scope gate。传入的
 `patch_id` 会约束该路径只消费同一个 typed plan patch；未传 `patch_id` 的既有
-auto-apply 调用保持原语义。
+auto-apply 调用保持原语义。若 plan 在 preview 后变化，原始 `PATCH_STALE` 会保留在
+高层响应并映射为 `new_preview_required`，不会降级为通用内部错误。
 
 支持的 Agent guidance profiles 包括：
 

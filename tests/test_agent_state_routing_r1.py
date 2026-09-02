@@ -43,12 +43,15 @@ class _PlanPreviewManager:
 
 
 class _ExactPlanApplyBridge:
-    def __init__(self) -> None:
+    def __init__(self, *, result: dict | None = None) -> None:
         self.applied_patch_ids: list[str] = []
+        self.result = result
 
     def apply_plan_patch(self, project_root: str, patch_id: str) -> dict:
         assert project_root
         self.applied_patch_ids.append(patch_id)
+        if self.result is not None:
+            return dict(self.result)
         return {
             "ok": True,
             "patch_id": patch_id,
@@ -194,6 +197,7 @@ def test_all_supported_profiles_have_bounded_guidance(profile_id: str) -> None:
     ("error_code", "expected_class", "should_stop", "retryable"),
     [
         ("PREVIEW_EXPIRED", "new_preview_required", False, True),
+        ("PATCH_STALE", "new_preview_required", False, True),
         ("CONTEXT_BINDING_MISMATCH", "context_changed", False, True),
         ("EXECUTOR_ALREADY_RUNNING", "wait_for_running_operation", False, True),
         ("VALIDATION_FAILED", "operator_action_required", False, True),
@@ -465,6 +469,33 @@ def test_commander_plan_preview_maps_hidden_consumer_to_public_workflow(tmp_path
     assert applied["data"]["outcome"] == "completed"
     assert ".colameta/plan.json" in applied["data"]["facts"]["changed_files"]
     assert apply_bridge.applied_patch_ids == ["patch_production_1"]
+
+
+def test_exact_plan_patch_failure_preserves_stale_recovery(tmp_path) -> None:
+    stale_bridge = _ExactPlanApplyBridge(
+        result={
+            "ok": False,
+            "status": "PATCH_STALE",
+            "error_code": "PATCH_STALE",
+            "message": "plan.json changed after preview",
+            "patch_id": "patch_stale_1",
+        }
+    )
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        planning_bridge=stale_bridge,  # type: ignore[arg-type]
+    ).handle(
+        "plan_update",
+        {"phase": "apply", "patch_id": "patch_stale_1"},
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["error_code"] == "PATCH_STALE"
+    assert result["message"] == "plan.json changed after preview"
+    assert result["recovery"]["recovery_class"] == "new_preview_required"
+    assert result["recovery"]["agent_should_stop"] is False
+    assert stale_bridge.applied_patch_ids == ["patch_stale_1"]
 
 
 def test_projection_preserves_old_fields_and_grants_no_authority() -> None:

@@ -674,7 +674,16 @@ def recovery_projection(
         recommended_action = "Retry the same bounded call; this exact error is classified as transient and idempotent."
         agent_should_stop = False
         retryable = True
-    elif any(marker in code for marker in ("PREVIEW_EXPIRED", "PREVIEW_NOT_FOUND", "PREVIEW_STALE")):
+    elif any(
+        marker in code
+        for marker in (
+            "PREVIEW_EXPIRED",
+            "PREVIEW_NOT_FOUND",
+            "PREVIEW_STALE",
+            "STALE_PREVIEW",
+            "PATCH_STALE",
+        )
+    ):
         recovery_class = "new_preview_required"
         recommended_action = "Create a new preview from current project state; do not reuse the old typed handle."
         agent_should_stop = False

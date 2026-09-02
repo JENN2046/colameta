@@ -2,7 +2,7 @@ import os
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable
 
-from runner.agent_state_projection import add_agent_state_projection
+from runner.agent_state_projection import add_agent_state_projection, recovery_projection
 from runner.planning_bridge import PlanningBridge
 from runner.mcp_plan_workflow import MCPPlanWorkflowManager
 from runner.mcp_project_patch import MCPProjectPatchManager
@@ -154,7 +154,12 @@ class MCPWorkflowRouter:
         if output.phase is not None:
             out["phase"] = output.phase
         if output.action_outcome and output.action_outcome.get("error_code"):
-            out["error_code"] = output.action_outcome["error_code"]
+            error_code = output.action_outcome["error_code"]
+            out["error_code"] = error_code
+            out["recovery"] = recovery_projection(
+                error_code,
+                reason=str(output.action_outcome.get("message") or ""),
+            )
         if output.action_outcome and output.action_outcome.get("message"):
             out["message"] = output.action_outcome["message"]
         if output.partial is not None:

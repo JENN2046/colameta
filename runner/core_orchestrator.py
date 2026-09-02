@@ -2105,6 +2105,8 @@ class WorkflowOrchestrator:
     def _workflow_plan_update(self, params: dict[str, Any]) -> dict[str, Any]:
         phase = str(params.get("phase", "preview")).strip().lower() or "preview"
         if phase == "apply":
+            exact_patch_error_code: str | None = None
+            exact_patch_error_message: str | None = None
             disallowed_raw_inputs = ("plan_json", "raw_plan", "patch_body", "raw_patch_body", "raw_patch", "spec_json")
             for key in disallowed_raw_inputs:
                 if key in params and params.get(key) is not None:
@@ -2126,6 +2128,13 @@ class WorkflowOrchestrator:
                         patch_id.strip(),
                     )
                     patch_ok = patch_result.get("ok") is True
+                    if not patch_ok:
+                        patch_error_code = patch_result.get("error_code")
+                        patch_error_message = patch_result.get("message")
+                        if isinstance(patch_error_code, str) and patch_error_code:
+                            exact_patch_error_code = patch_error_code
+                        if isinstance(patch_error_message, str) and patch_error_message:
+                            exact_patch_error_message = patch_error_message
                     auto_apply_result = {
                         "ok": patch_ok,
                         "results": [patch_result],
@@ -2134,6 +2143,10 @@ class WorkflowOrchestrator:
                         "skipped_count": 0,
                         "changed_files": self._extract_changed_files(patch_result),
                     }
+                    if exact_patch_error_code is not None:
+                        auto_apply_result["error_code"] = exact_patch_error_code
+                    if exact_patch_error_message is not None:
+                        auto_apply_result["message"] = exact_patch_error_message
                 else:
                     auto_apply_service = PlanPatchAutoApplyService(self.project_root)
                     auto_apply_result = auto_apply_service.auto_apply()
@@ -2200,8 +2213,10 @@ class WorkflowOrchestrator:
                 status = "succeeded"
             elif result_ok and failed_count > 0:
                 status = "blocked"
+            elif exact_patch_error_code is not None:
+                status = "blocked"
 
-            return self._build_core_result(
+            core_result = self._build_core_result(
                 workflow="plan_update",
                 steps=steps,
                 risk_level=STEP_RISK_WRITE if status == "succeeded" else STEP_RISK_BLOCKED,
@@ -2213,6 +2228,10 @@ class WorkflowOrchestrator:
                 warnings=warnings,
                 result=auto_apply_result,
             )
+            if exact_patch_error_code is not None:
+                core_result.error_code = exact_patch_error_code
+                core_result.message = exact_patch_error_message
+            return core_result
 
         if phase != "preview":
             return self._error_result("plan_update", "PHASE_NOT_SUPPORTED",
