@@ -1882,7 +1882,7 @@ def test_server_reports_scope_union_and_plan_scope(monkeypatch: pytest.MonkeyPat
     assert error is not None
     assert error["details"]["required_scopes"] == ["mcp:commit", "mcp:plan"]
     assert error["details"]["missing_scopes"] == ["mcp:commit"]
-    assert 'scope="mcp:commit"' in error["_meta"]["mcp/www_authenticate"][0]
+    assert 'scope="mcp:commit mcp:plan"' in error["_meta"]["mcp/www_authenticate"][0]
 
 
 def test_call_tool_preserves_exact_operator_public_projection(tmp_path: Path) -> None:
