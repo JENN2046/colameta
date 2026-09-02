@@ -253,6 +253,29 @@ def test_owner_profile_exposes_full_advanced_catalog_only_to_exact_owner(
     assert "get_runner_workbench_context" in names
 
 
+def test_owner_profile_consumes_armed_live_client_rebind_before_retry(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = _install_owner_settings(monkeypatch, tmp_path)
+    assert store.arm_client_rebind()["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    live_auth = _owner_auth(client="dynamically-registered-live-client")
+
+    first = server._owner_profile_principal_decision(live_auth)
+    assert first is not None
+    assert first.allowed is False
+    assert first.denial_reason == "CLIENT_REBOUND_RETRY_REQUIRED"
+    assert store.status()["client_rebind_armed"] is False
+
+    retry = server._owner_profile_principal_decision(live_auth)
+    assert retry is not None
+    assert retry.allowed is True
+
+
 def test_owner_profile_allows_bound_advanced_write_but_preserves_scope_gate(
     monkeypatch,
     tmp_path,

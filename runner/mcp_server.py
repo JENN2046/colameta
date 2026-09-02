@@ -3967,6 +3967,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     "SUBJECT_MISMATCH",
                     "CLIENT_MISMATCH",
                     "CLIENT_CLAIM_AMBIGUOUS",
+                    "CLIENT_REBOUND_RETRY_REQUIRED",
                 }:
                     fields.append(f"principal_denial_reason={denial_reason}")
         if exception is not None:
@@ -4066,13 +4067,23 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
     ) -> OperatorPrincipalDecision | None:
         if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
             return None
-        loaded = OperatorSettingsStore().load()
+        store = OperatorSettingsStore()
+        loaded = store.load()
         if not loaded.get("ok") or not isinstance(loaded.get("settings"), dict):
             return None
-        return evaluate_operator_principal(
+        decision = evaluate_operator_principal(
             auth_context,
             loaded["settings"],
         )
+        if not decision.allowed and decision.denial_reason == "CLIENT_MISMATCH":
+            rebound = store.consume_client_rebind(auth_context)
+            if rebound.get("ok") and rebound.get("client_rebound") is True:
+                return OperatorPrincipalDecision(
+                    False,
+                    "OPERATOR_PRINCIPAL_DENIED",
+                    denial_reason="CLIENT_REBOUND_RETRY_REQUIRED",
+                )
+        return decision
 
     def _owner_profile_principal_is_allowed(
         self,

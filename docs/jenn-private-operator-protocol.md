@@ -205,6 +205,7 @@ Local commands:
 ```text
 colameta operator-config status
 colameta operator-config enable
+colameta operator-config rebind-client
 colameta operator-config disable
 ```
 
@@ -212,6 +213,14 @@ colameta operator-config disable
 It hashes both inputs immediately and writes only fingerprints. `status`
 reports enabled/profile/TTL/maximum steps. `disable` removes fingerprints and
 restores Commander behavior.
+
+If the external OAuth provider rotates or dynamically registers the Connector
+client, `rebind-client` opens a 120-second, local-interactive, single-use
+window. The next externally validated request must still match issuer,
+audience/resource, and the already-bound subject. The server consumes the
+window and persists only the live client fingerprint; it never logs, returns,
+or stores the raw claim. A direct tool call that consumes the window is denied
+and must be retried, so rebinding cannot authorize that same business action.
 
 For a private ChatGPT service that should expose the advanced catalog, set
 `MCP_EXPOSURE_PROFILE=owner` only after `enable` succeeds. The OAuth resource

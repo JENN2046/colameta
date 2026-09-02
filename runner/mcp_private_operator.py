@@ -36,6 +36,7 @@ OPERATOR_PROFILE_DISABLED = "disabled"
 OPERATOR_PROFILE_JENN = "jenn_private_operator"
 DEFAULT_OPERATOR_TTL_SECONDS = 300
 DEFAULT_OPERATOR_MAX_STEPS = 8
+CLIENT_REBIND_WINDOW_SECONDS = 120
 OPERATOR_TTL_RANGE = (1, 900)
 OPERATOR_STEP_RANGE = (1, 16)
 OPERATOR_CONFIG_VERSION = "jenn_private_operator.v1"
@@ -192,6 +193,7 @@ class OperatorSettingsStore:
     def __init__(self, config_dir: str | None = None):
         self.config_dir = os.path.abspath(os.path.expanduser(config_dir or user_config_dir()))
         self.path = os.path.join(self.config_dir, "operator.json")
+        self.lock_path = os.path.join(self.config_dir, "operator-client-rebind.lock")
 
     def defaults(self) -> dict[str, Any]:
         return {
@@ -263,6 +265,95 @@ class OperatorSettingsStore:
             return self._error("OPERATOR_CONFIG_WRITE_FAILED")
         return {"ok": True, **self.public_status(settings)}
 
+    def arm_client_rebind(self) -> dict[str, Any]:
+        """Arm one short, local-only window for binding the next matching subject."""
+
+        if fcntl is None:
+            return self._error("OPERATOR_CLIENT_REBIND_UNSUPPORTED")
+        try:
+            with self._client_rebind_lock():
+                loaded = self.load()
+                if not loaded.get("ok") or not isinstance(loaded.get("settings"), dict):
+                    return loaded
+                settings = dict(loaded["settings"])
+                if settings.get("oauth_operator_profile") != OPERATOR_PROFILE_JENN:
+                    return self._error("OPERATOR_PROFILE_DISABLED")
+                issued_at = _utc_now()
+                settings["client_rebind_issued_at"] = _iso(issued_at)
+                settings["client_rebind_expires_at"] = _iso(
+                    issued_at + timedelta(seconds=CLIENT_REBIND_WINDOW_SECONDS)
+                )
+                written = self._write_settings(settings)
+                if not written.get("ok"):
+                    return written
+                return {
+                    "ok": True,
+                    **self.public_status(written["settings"]),
+                    "client_rebind_window_seconds": CLIENT_REBIND_WINDOW_SECONDS,
+                }
+        except Exception:
+            return self._error("OPERATOR_CONFIG_WRITE_FAILED")
+
+    def consume_client_rebind(self, auth_context: object) -> dict[str, Any]:
+        """Consume an armed window without exposing the live OAuth identifiers."""
+
+        if fcntl is None:
+            return self._error("OPERATOR_CLIENT_REBIND_UNSUPPORTED")
+        try:
+            with self._client_rebind_lock():
+                loaded = self.load()
+                if not loaded.get("ok") or not isinstance(loaded.get("settings"), dict):
+                    return loaded
+                settings = dict(loaded["settings"])
+                issued_at = _parse_iso(settings.get("client_rebind_issued_at"))
+                expires_at = _parse_iso(settings.get("client_rebind_expires_at"))
+                now = _utc_now()
+                if (
+                    issued_at is None
+                    or expires_at is None
+                    or now < issued_at
+                    or now >= expires_at
+                ):
+                    return self._error("OPERATOR_CLIENT_REBIND_NOT_ARMED")
+
+                decision = evaluate_operator_principal(auth_context, settings)
+                if decision.allowed:
+                    settings.pop("client_rebind_issued_at", None)
+                    settings.pop("client_rebind_expires_at", None)
+                    written = self._write_settings(settings)
+                    if not written.get("ok"):
+                        return written
+                    return {"ok": True, "consumed": True, "client_rebound": False}
+                if decision.denial_reason != "CLIENT_MISMATCH":
+                    return self._error("OPERATOR_CLIENT_REBIND_PRINCIPAL_DENIED")
+
+                token = auth_context.get("token") if isinstance(auth_context, dict) else None
+                if not isinstance(token, dict):
+                    return self._error("OPERATOR_CLIENT_REBIND_PRINCIPAL_DENIED")
+                azp = token.get("azp")
+                client_id = token.get("client_id")
+                if (
+                    isinstance(azp, str)
+                    and azp
+                    and isinstance(client_id, str)
+                    and client_id
+                    and azp != client_id
+                ):
+                    return self._error("OPERATOR_CLIENT_REBIND_PRINCIPAL_DENIED")
+                client = azp if isinstance(azp, str) and azp else client_id
+                if not isinstance(client, str) or not client:
+                    return self._error("OPERATOR_CLIENT_REBIND_PRINCIPAL_DENIED")
+
+                settings["client_fingerprint"] = _fingerprint(client)
+                settings.pop("client_rebind_issued_at", None)
+                settings.pop("client_rebind_expires_at", None)
+                written = self._write_settings(settings)
+                if not written.get("ok"):
+                    return written
+                return {"ok": True, "consumed": True, "client_rebound": True}
+        except Exception:
+            return self._error("OPERATOR_CONFIG_WRITE_FAILED")
+
     def status(self) -> dict[str, Any]:
         loaded = self.load()
         if not loaded.get("ok"):
@@ -271,6 +362,9 @@ class OperatorSettingsStore:
 
     def public_status(self, settings: dict[str, Any]) -> dict[str, Any]:
         profile = settings.get("oauth_operator_profile", OPERATOR_PROFILE_DISABLED)
+        issued_at = _parse_iso(settings.get("client_rebind_issued_at"))
+        expires_at = _parse_iso(settings.get("client_rebind_expires_at"))
+        now = _utc_now()
         return {
             "enabled": profile == OPERATOR_PROFILE_JENN,
             "profile": profile,
@@ -279,6 +373,11 @@ class OperatorSettingsStore:
             ),
             "batch_max_steps": settings.get(
                 "oauth_operator_batch_max_steps", DEFAULT_OPERATOR_MAX_STEPS
+            ),
+            "client_rebind_armed": bool(
+                issued_at is not None
+                and expires_at is not None
+                and issued_at <= now < expires_at
             ),
         }
 
@@ -306,7 +405,62 @@ class OperatorSettingsStore:
                 if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
                     return self._error("OPERATOR_CONFIG_INVALID")
                 normalized[key] = value
+            issued_raw = data.get("client_rebind_issued_at")
+            expires_raw = data.get("client_rebind_expires_at")
+            if (issued_raw is None) != (expires_raw is None):
+                return self._error("OPERATOR_CONFIG_INVALID")
+            if issued_raw is not None:
+                issued_at = _parse_iso(issued_raw)
+                expires_at = _parse_iso(expires_raw)
+                if (
+                    issued_at is None
+                    or expires_at is None
+                    or expires_at <= issued_at
+                    or expires_at - issued_at
+                    > timedelta(seconds=CLIENT_REBIND_WINDOW_SECONDS)
+                ):
+                    return self._error("OPERATOR_CONFIG_INVALID")
+                normalized["client_rebind_issued_at"] = _iso(issued_at)
+                normalized["client_rebind_expires_at"] = _iso(expires_at)
         return {"ok": True, "settings": normalized}
+
+    def _write_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        validated = self._validate(settings)
+        if not validated.get("ok"):
+            return validated
+        try:
+            self._ensure_private_dir(self.config_dir)
+            self._reject_symlink(self.path)
+            write_json_atomic(self.path, validated["settings"])
+            self._chmod(self.path, 0o600)
+        except Exception:
+            return self._error("OPERATOR_CONFIG_WRITE_FAILED")
+        return {"ok": True, "settings": validated["settings"]}
+
+    @contextlib.contextmanager
+    def _client_rebind_lock(self) -> Iterator[None]:
+        self._ensure_private_dir(self.config_dir)
+        self._reject_symlink(self.lock_path)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(self.lock_path, flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or (os.name == "posix" and info.st_uid != os.getuid())
+            ):
+                raise OSError("unsafe operator rebind lock")
+            self._chmod(self.lock_path, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            with contextlib.suppress(BaseException):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def _validate_private_file(self, path: str) -> dict[str, Any] | None:
         try:
