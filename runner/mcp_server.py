@@ -709,14 +709,13 @@ def _parse_prompt_front_matter(content: str) -> tuple[dict[str, Any], str | None
 
 MCP_SCOPE_ORDER = DEFAULT_SCOPES
 VALID_MCP_SCOPES = frozenset(MCP_SCOPE_ORDER)
-OWNER_INCREMENTAL_OAUTH_SCOPES = ("mcp:commit",)
 
 
 def _external_oauth_scopes_for_profile(
     exposure_profile: str,
     configured_scopes: str | list[str] | tuple[str, ...] | None,
 ) -> str | tuple[str, ...] | None:
-    """Make owner commit reauthorization possible without widening Commander."""
+    """Preserve the external OAuth default without widening an explicit allowlist."""
 
     if exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
         return configured_scopes
@@ -732,7 +731,7 @@ def _external_oauth_scopes_for_profile(
         requested = list(DEFAULT_SCOPES)
     if not requested:
         requested = list(DEFAULT_SCOPES)
-    return tuple(dict.fromkeys((*requested, *OWNER_INCREMENTAL_OAUTH_SCOPES)))
+    return tuple(dict.fromkeys(requested))
 
 
 @dataclass(frozen=True)
