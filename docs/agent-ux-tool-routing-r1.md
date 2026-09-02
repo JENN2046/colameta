@@ -115,6 +115,11 @@ primary tool、`PRIMARY` / `ADVANCED` / `LEGACY_OR_INTERNAL`、推荐 profile �
 side-effect level。高层投影直接消费这个 registry，因此它不是只存在于文档中
 的静态清单。新工具在完成显式分类前显示为 `unclassified`，不会按名称猜测 domain。
 
+side-effect level 优先采用已审计的固定 action/scope 语义：例如
+`manage_workflow_run` 仅提供读取动作，标记为 `READ_ONLY`；legacy
+`manage_plan_workflow` 仅生成预览，标记为 `PREVIEW`。只有没有固定分类的
+`manage_*` surface 才使用 `DYNAMIC_BY_ACTION` 命名 fallback。
+
 支持的 Agent guidance profiles 包括：
 
 - `web_gpt_commander`

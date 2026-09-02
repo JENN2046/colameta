@@ -9,6 +9,15 @@ TOOL_TIER_ADVANCED = "ADVANCED"
 TOOL_TIER_LEGACY_OR_INTERNAL = "LEGACY_OR_INTERNAL"
 
 
+# These managed surfaces have a fixed server-side policy despite their generic
+# ``manage_`` names. Keep the projection aligned with the audited catalog
+# actions and MCP scope policy before applying the naming fallback below.
+_FIXED_SIDE_EFFECT_LEVELS = {
+    "manage_workflow_run": "READ_ONLY",
+    "manage_plan_workflow": "PREVIEW",
+}
+
+
 PRIMARY_TOOLS = frozenset(
     {
         "list_registered_projects",
@@ -274,6 +283,9 @@ def _tier_for_tool(tool_name: str) -> str:
 
 
 def _side_effect_level(tool_name: str) -> str:
+    fixed_level = _FIXED_SIDE_EFFECT_LEVELS.get(tool_name)
+    if fixed_level is not None:
+        return fixed_level
     if tool_name == "run_mcp_workflow" or tool_name.startswith("manage_"):
         return "DYNAMIC_BY_ACTION"
     if tool_name.startswith("preview_") or "_preview" in tool_name:

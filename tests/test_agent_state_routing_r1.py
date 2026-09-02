@@ -83,6 +83,26 @@ def test_commit_scoped_legacy_commands_are_never_advertised_read_only(
     assert server.get_required_scope_for_tool(tool_name, {}) == "mcp:commit"
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "action", "side_effect_level", "required_scope"),
+    [
+        ("manage_workflow_run", "list", "READ_ONLY", "mcp:read"),
+        ("manage_plan_workflow", "plan_repair_preview", "PREVIEW", "mcp:preview"),
+    ],
+)
+def test_fixed_scope_manage_tools_precede_the_name_based_fallback(
+    tmp_path,
+    tool_name: str,
+    action: str,
+    side_effect_level: str,
+    required_scope: str,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
+
+    assert tool_routing_metadata(tool_name)["side_effect_level"] == side_effect_level
+    assert server.get_required_scope_for_tool(tool_name, {"action": action}) == required_scope
+
+
 def test_profile_guidance_preserves_commander_physical_surface() -> None:
     guidance = profile_guidance("web_gpt_commander")
 
