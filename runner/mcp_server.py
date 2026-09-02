@@ -723,9 +723,15 @@ def _external_oauth_scopes_for_profile(
     if isinstance(configured_scopes, str):
         requested = configured_scopes.replace(",", " ").split()
     elif isinstance(configured_scopes, (list, tuple)):
-        requested = [scope for scope in configured_scopes if isinstance(scope, str)]
+        requested = [
+            scope.strip()
+            for scope in configured_scopes
+            if isinstance(scope, str) and scope.strip()
+        ]
     else:
-        requested = []
+        requested = list(DEFAULT_SCOPES)
+    if not requested:
+        requested = list(DEFAULT_SCOPES)
     return tuple(dict.fromkeys((*requested, *OWNER_INCREMENTAL_OAUTH_SCOPES)))
 
 

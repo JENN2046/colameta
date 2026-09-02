@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from urllib.request import urlopen
 
+from runner.mcp_external_oauth import ExternalOAuthConfig, ExternalOAuthProvider
+from runner.mcp_oauth import DEFAULT_SCOPES
 from runner.mcp_server import (
     MCP_EXPOSURE_PROFILE_OWNER,
     MCPPlanningBridgeServer,
@@ -124,6 +126,31 @@ def test_owner_external_oauth_scope_metadata_includes_commit_without_changing_co
         MCP_EXPOSURE_PROFILE_OWNER,
         configured,
     ) == ("mcp:read", "mcp:preview", "mcp:commit")
+
+
+def test_owner_external_oauth_scope_metadata_preserves_defaults_when_unconfigured() -> None:
+    for configured in (None, "", " , ", [], (), ["", " "]):
+        assert _external_oauth_scopes_for_profile(
+            MCP_EXPOSURE_PROFILE_OWNER,
+            configured,
+        ) == DEFAULT_SCOPES
+
+
+def test_owner_external_oauth_provider_validates_default_scopes_when_unconfigured() -> None:
+    scopes = _external_oauth_scopes_for_profile(MCP_EXPOSURE_PROFILE_OWNER, None)
+    assert isinstance(scopes, tuple)
+    provider = ExternalOAuthProvider(
+        ExternalOAuthConfig(
+            public_base_url="https://colameta-mcp.example.com",
+            issuer="https://issuer.example.com/",
+            jwks_url="https://issuer.example.com/.well-known/jwks.json",
+            scopes=scopes,
+        )
+    )
+    token = {"scope": " ".join(DEFAULT_SCOPES)}
+
+    assert provider.scopes == DEFAULT_SCOPES
+    assert all(provider.validate_scope(token, scope) for scope in DEFAULT_SCOPES)
 
 
 def test_owner_external_oauth_http_metadata_publishes_incremental_commit_scope(tmp_path) -> None:
