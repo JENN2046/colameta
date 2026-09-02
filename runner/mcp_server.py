@@ -113,6 +113,7 @@ from runner.mcp_private_operator import (
     OPERATOR_DISPATCH_CAPABILITY,
     OperatorBatchService,
     OperatorPermitStore,
+    OperatorPrincipalDecision,
     OperatorSettingsStore,
     evaluate_operator_principal,
     operator_authenticated_request_scope,
@@ -3851,6 +3852,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     method=method,
                     tool_name=name,
                     tool_result=tool_result,
+                    auth_context=auth_context,
                 )
                 if method == "tools/call":
                     return self._result(req_id, self._as_mcp_call_result(tool_result, arguments))
@@ -3924,6 +3926,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         tool_name: object,
         tool_result: object = None,
         exception: BaseException | None = None,
+        auth_context: MCPAuthContext = None,
     ) -> None:
         """Emit a bounded owner-call failure marker without request or identity data."""
 
@@ -3951,6 +3954,21 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 fields.append(f"error_code={error_code}")
             else:
                 fields.append("error_code=UNKNOWN")
+            if error_code == "OWNER_PRINCIPAL_REQUIRED":
+                decision = self._owner_profile_principal_decision(auth_context)
+                denial_reason = (
+                    decision.denial_reason
+                    if decision is not None and not decision.allowed
+                    else ""
+                )
+                if denial_reason in {
+                    "ISSUER_MISMATCH",
+                    "AUDIENCE_MISMATCH",
+                    "SUBJECT_MISMATCH",
+                    "CLIENT_MISMATCH",
+                    "CLIENT_CLAIM_AMBIGUOUS",
+                }:
+                    fields.append(f"principal_denial_reason={denial_reason}")
         if exception is not None:
             fields.append(f"exception_type={type(exception).__name__}")
             traceback = exception.__traceback__
@@ -4042,20 +4060,26 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             payload.append(item)
         return payload
 
+    def _owner_profile_principal_decision(
+        self,
+        auth_context: MCPAuthContext,
+    ) -> OperatorPrincipalDecision | None:
+        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
+            return None
+        loaded = OperatorSettingsStore().load()
+        if not loaded.get("ok") or not isinstance(loaded.get("settings"), dict):
+            return None
+        return evaluate_operator_principal(
+            auth_context,
+            loaded["settings"],
+        )
+
     def _owner_profile_principal_is_allowed(
         self,
         auth_context: MCPAuthContext,
     ) -> bool:
-        if self.mcp_exposure_profile != MCP_EXPOSURE_PROFILE_OWNER:
-            return False
-        loaded = OperatorSettingsStore().load()
-        if not loaded.get("ok") or not isinstance(loaded.get("settings"), dict):
-            return False
-        decision = evaluate_operator_principal(
-            auth_context,
-            loaded["settings"],
-        )
-        return decision.allowed
+        decision = self._owner_profile_principal_decision(auth_context)
+        return bool(decision is not None and decision.allowed)
 
     def _owner_profile_principal_error(
         self,

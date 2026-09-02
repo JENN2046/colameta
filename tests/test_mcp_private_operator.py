@@ -357,14 +357,35 @@ def test_local_service_health_summary_includes_private_attention_without_fd_ids(
 def test_operator_principal_requires_subject_and_unambiguous_client(tmp_path: Path) -> None:
     settings = _settings(tmp_path).load()["settings"]
     assert evaluate_operator_principal(_auth(), settings).allowed is True
-    assert evaluate_operator_principal(_auth(subject="other"), settings).error_code == "OPERATOR_PRINCIPAL_DENIED"
+    subject_mismatch = evaluate_operator_principal(_auth(subject="other"), settings)
+    assert subject_mismatch.error_code == "OPERATOR_PRINCIPAL_DENIED"
+    assert subject_mismatch.denial_reason == "SUBJECT_MISMATCH"
+    client_mismatch = evaluate_operator_principal(_auth(client="other-client"), settings)
+    assert client_mismatch.error_code == "OPERATOR_PRINCIPAL_DENIED"
+    assert client_mismatch.denial_reason == "CLIENT_MISMATCH"
     missing = _auth()
     missing["token"].pop("azp")
     missing["token"].pop("client_id")
-    assert evaluate_operator_principal(missing, settings).error_code == "OPERATOR_CLIENT_CLAIM_MISSING"
+    missing_decision = evaluate_operator_principal(missing, settings)
+    assert missing_decision.error_code == "OPERATOR_CLIENT_CLAIM_MISSING"
+    assert missing_decision.denial_reason == "CLIENT_MISMATCH"
     ambiguous = _auth()
     ambiguous["token"]["client_id"] = "different"
-    assert evaluate_operator_principal(ambiguous, settings).error_code == "OPERATOR_CLIENT_CLAIM_AMBIGUOUS"
+    ambiguous_decision = evaluate_operator_principal(ambiguous, settings)
+    assert ambiguous_decision.error_code == "OPERATOR_CLIENT_CLAIM_AMBIGUOUS"
+    assert ambiguous_decision.denial_reason == "CLIENT_CLAIM_AMBIGUOUS"
+
+
+def test_operator_principal_diagnostic_reason_distinguishes_issuer_and_audience(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path).load()["settings"]
+    issuer = _auth()
+    issuer["token"]["iss"] = "https://other-issuer.example/"
+    assert evaluate_operator_principal(issuer, settings).denial_reason == "ISSUER_MISMATCH"
+    audience = _auth()
+    audience["token"]["aud"] = "https://other-resource.example/mcp"
+    assert evaluate_operator_principal(audience, settings).denial_reason == "AUDIENCE_MISMATCH"
 
 
 def test_operator_operations_are_allowlisted_scope_aware_and_preview_bound() -> None:

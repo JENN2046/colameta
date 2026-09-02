@@ -183,6 +183,7 @@ class OperatorPrincipalDecision:
     error_code: str
     subject_fingerprint: str | None = None
     client_fingerprint: str | None = None
+    denial_reason: str = ""
 
 
 class OperatorSettingsStore:
@@ -362,36 +363,82 @@ def evaluate_operator_principal(
     settings: dict[str, Any],
 ) -> OperatorPrincipalDecision:
     if settings.get("oauth_operator_profile") != OPERATOR_PROFILE_JENN:
-        return OperatorPrincipalDecision(False, "OPERATOR_PROFILE_DISABLED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PROFILE_DISABLED",
+            denial_reason="PROFILE_DISABLED",
+        )
     if not isinstance(auth_context, dict) or auth_context.get("mode") != "external-oauth":
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="PRINCIPAL_CONTEXT_INVALID",
+        )
     token = auth_context.get("token")
     provider = auth_context.get("oauth_provider")
     if not isinstance(token, dict) or provider is None:
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="PRINCIPAL_CONTEXT_INVALID",
+        )
     issuer = getattr(provider, "issuer", None)
     if not isinstance(issuer, str) or token.get("iss") != issuer:
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="ISSUER_MISMATCH",
+        )
     resource = getattr(provider, "resource", None)
     audience = getattr(provider, "audience", None) or resource
     if not isinstance(resource, str) or not isinstance(audience, str):
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="AUDIENCE_MISMATCH",
+        )
     if not (_claim_contains(token.get("aud"), audience) or _claim_contains(token.get("resource"), resource)):
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="AUDIENCE_MISMATCH",
+        )
     subject = token.get("sub")
     if not isinstance(subject, str) or not subject:
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="SUBJECT_MISMATCH",
+        )
     azp = token.get("azp")
     client_id = token.get("client_id")
     if isinstance(azp, str) and azp and isinstance(client_id, str) and client_id and azp != client_id:
-        return OperatorPrincipalDecision(False, "OPERATOR_CLIENT_CLAIM_AMBIGUOUS")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_CLIENT_CLAIM_AMBIGUOUS",
+            denial_reason="CLIENT_CLAIM_AMBIGUOUS",
+        )
     client = azp if isinstance(azp, str) and azp else client_id
     if not isinstance(client, str) or not client:
-        return OperatorPrincipalDecision(False, "OPERATOR_CLIENT_CLAIM_MISSING")
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_CLIENT_CLAIM_MISSING",
+            denial_reason="CLIENT_MISMATCH",
+        )
     subject_fp = _fingerprint(subject)
     client_fp = _fingerprint(client)
-    if subject_fp != settings.get("subject_fingerprint") or client_fp != settings.get("client_fingerprint"):
-        return OperatorPrincipalDecision(False, "OPERATOR_PRINCIPAL_DENIED")
+    if subject_fp != settings.get("subject_fingerprint"):
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="SUBJECT_MISMATCH",
+        )
+    if client_fp != settings.get("client_fingerprint"):
+        return OperatorPrincipalDecision(
+            False,
+            "OPERATOR_PRINCIPAL_DENIED",
+            denial_reason="CLIENT_MISMATCH",
+        )
     return OperatorPrincipalDecision(True, "", subject_fp, client_fp)
 
 
