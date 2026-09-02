@@ -414,6 +414,25 @@ def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_
     assert local_result["primary_next_action"]["tool"] == "manage_executor_workflow"
 
 
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Editing a source file", "small_project_patch"),
+        ("Patching the code", "small_project_patch"),
+        ("Committing the current changes", "git_commit"),
+        ("Commiting the current changes", "git_commit"),
+    ],
+)
+def test_auto_preview_preserves_common_inflected_routing_keywords(
+    tmp_path,
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    result = MCPWorkflowRouter(str(tmp_path)).handle("auto_preview", {"goal": goal})
+
+    assert result["selected_workflow"] == expected_workflow
+
+
 def test_auto_preview_projects_nested_production_state_instead_of_workflow_envelope(tmp_path) -> None:
     state = {
         "ok": True,

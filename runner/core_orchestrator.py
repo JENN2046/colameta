@@ -52,6 +52,24 @@ _GOAL_CLASSIFIERS: list[tuple[set[str], str]] = [
     ({"patch", "edit", "修改"}, "small_project_patch"),
 ]
 
+_GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
+    "append": frozenset({"appends", "appended", "appending"}),
+    "commit": frozenset({"commits", "committed", "committing", "commiting"}),
+    "continuation": frozenset({"continuations"}),
+    "edit": frozenset({"edits", "edited", "editing"}),
+    "executor": frozenset({"executors"}),
+    "extend": frozenset({"extends", "extended", "extending"}),
+    "heading": frozenset({"headings"}),
+    "patch": frozenset({"patches", "patched", "patching"}),
+    "plan": frozenset({"plans", "planned", "planning"}),
+    "repair": frozenset({"repairs", "repaired", "repairing"}),
+    "resume": frozenset({"resumes", "resumed", "resuming"}),
+    "section": frozenset({"sections"}),
+    "stage": frozenset({"stages", "staged", "staging"}),
+    "sync": frozenset({"syncs", "synced", "syncing"}),
+    "version": frozenset({"versions", "versioned", "versioning"}),
+}
+
 # ``auto_preview`` may infer a bounded route, but an explicit instruction not
 # to execute must always win over a keyword match such as "executor", "Codex",
 # or the historical short form "exec". These are deliberately narrow safety
@@ -85,11 +103,13 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def _goal_keyword_matches(goal: str, keyword: str) -> bool:
-    """Match ASCII routing keywords as tokens, not accidental substrings."""
+    """Match ASCII routing keywords and audited inflections as whole tokens."""
 
     if keyword.isascii() and keyword.replace("_", "").isalnum():
+        forms = (keyword, *_GOAL_KEYWORD_INFLECTIONS.get(keyword, ()))
+        alternatives = "|".join(re.escape(form) for form in forms)
         return re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(keyword)}(?![A-Za-z0-9_])",
+            rf"(?<![A-Za-z0-9_])(?:{alternatives})(?![A-Za-z0-9_])",
             goal,
         ) is not None
     return keyword in goal

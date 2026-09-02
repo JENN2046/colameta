@@ -140,3 +140,6 @@ packet 自身的 route contract。
 所有未知状态均 fail closed 到 `primary_next_action: null`。
 同一入口生成的 `refresh_project_state` fallback 也不会再次成为该入口的 primary
 action；Router 会选择下一条可用建议，或者返回 `null`，从而避免刷新自循环。
+英文 routing keyword 采用 whole-token 匹配，并显式接纳常见词形变化，例如
+`editing`、`patching`、`committed` 和 `committing`；短词不会因为出现在
+`expired` 等无关单词内部而误触发路由。

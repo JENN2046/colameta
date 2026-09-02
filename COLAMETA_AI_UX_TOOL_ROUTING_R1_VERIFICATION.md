@@ -55,6 +55,9 @@ registration or authority gates:
   their own route-specific contracts;
 - `source_observer` guidance contains only read-only tools and never advertises
   the mixed read/write `manage_files` surface.
+- ASCII routing keywords remain whole-token matched, while audited common
+  inflections such as `editing`, `patching`, and `committing` retain their
+  intended preview routes.
 
 ## Independent Agent UX verification
 
@@ -74,9 +77,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `48 passed`.
+Dedicated R1 tests after review hardening: `52 passed`.
 The three previously affected operator-flow production regressions plus the R1
-suite pass together: `51 passed`.
+suite pass together: `55 passed`.
 
 ## Compatibility validation
 
