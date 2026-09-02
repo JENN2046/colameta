@@ -33,6 +33,12 @@ from tests.agent_ux_independent_verifier import (
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "agent_routing_r1.json"
 
 
+class _PlanPreviewManager:
+    def handle(self, action: str, params: dict) -> dict:
+        assert action == "plan_extend_preview"
+        return {"ok": True, "patch_id": "patch_production_1"}
+
+
 def test_registry_classifies_the_complete_runtime_catalog(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
     registry = build_capability_routing_registry(tool.name for tool in server.tool_defs)
@@ -51,6 +57,28 @@ def test_registry_classifies_the_complete_runtime_catalog(tmp_path) -> None:
     assert tool_routing_metadata("get_review_context")["domain"] == "review"
     assert tool_routing_metadata("manage_project_patch")["domain"] == "source"
     assert tool_routing_metadata("retry_delivery")["domain"] == "product_release"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "todo_add",
+        "todo_update",
+        "todo_delete",
+        "decision_add",
+        "decision_update",
+        "decision_delete",
+        "recover_outbox_event",
+    ],
+)
+def test_commit_scoped_legacy_commands_are_never_advertised_read_only(
+    tmp_path,
+    tool_name: str,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
+
+    assert tool_routing_metadata(tool_name)["side_effect_level"] == "WRITE_OR_TRANSITION"
+    assert server.get_required_scope_for_tool(tool_name, {}) == "mcp:commit"
 
 
 def test_profile_guidance_preserves_commander_physical_surface() -> None:
@@ -183,6 +211,47 @@ def test_typed_continuations_remain_distinct(
     assert "continuation_id" not in continuation
 
 
+def test_patch_handle_precedes_generic_core_preview_ids() -> None:
+    continuation = typed_continuation_projection(
+        {
+            "preview_ids": ["patch_1"],
+            "next_actions": [
+                {
+                    "tool": "manage_plan_version",
+                    "params": {"action": "apply", "patch_id": "patch_1"},
+                }
+            ],
+            "result": {"patch_id": "patch_1"},
+        },
+        source_tool="run_mcp_workflow",
+    )
+
+    assert continuation is not None
+    assert continuation["kind"] == "plan_patch"
+    assert continuation["field_name"] == "patch_id"
+    assert continuation["id"] == "patch_1"
+
+
+def test_auto_preview_plan_route_preserves_production_patch_handle(tmp_path) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        plan_workflow_manager=_PlanPreviewManager(),  # type: ignore[arg-type]
+    ).handle(
+        "auto_preview",
+        {
+            "goal": "Update the implementation plan",
+            "name": "R2",
+            "description": "Bounded follow-up",
+        },
+    )
+
+    assert result["selected_workflow"] == "plan_update"
+    assert result["preview_ids"] == ["patch_production_1"]
+    assert result["continuation"]["kind"] == "plan_patch"
+    assert result["continuation"]["field_name"] == "patch_id"
+    assert result["continuation"]["id"] == "patch_production_1"
+
+
 def test_projection_preserves_old_fields_and_grants_no_authority() -> None:
     original = {
         "ok": True,
@@ -241,6 +310,46 @@ def test_unknown_state_does_not_invent_a_primary_action() -> None:
 
     assert projected["primary_next_action"] is None
     assert projected["why_no_unique_action"]
+
+
+def test_same_source_refresh_fallback_is_not_promoted_to_primary_action() -> None:
+    fallback = {
+        "tool": "analyze_project_state",
+        "action": "refresh_project_state",
+        "params": {},
+        "reason": "Refresh project state.",
+    }
+    projected = add_agent_state_projection(
+        {"ok": True, "recommended_next_actions": [fallback]},
+        source_tool="analyze_project_state",
+    )
+
+    assert projected["primary_next_action"] is None
+    assert projected["why_no_unique_action"]
+
+
+def test_same_source_refresh_fallback_yields_to_next_usable_action() -> None:
+    projected = add_agent_state_projection(
+        {
+            "ok": True,
+            "recommended_next_actions": [
+                {
+                    "tool": "analyze_project_state",
+                    "action": "refresh_project_state",
+                    "params": {},
+                },
+                {
+                    "tool": "manage_validation_run",
+                    "action": "preview",
+                    "params": {"action": "preview"},
+                },
+            ],
+        },
+        source_tool="analyze_project_state",
+    )
+
+    assert projected["primary_next_action"]["tool"] == "manage_validation_run"
+    assert projected["primary_next_action"]["action"] == "preview"
 
 
 def test_analyze_project_state_exposes_the_canonical_projection(tmp_path) -> None:

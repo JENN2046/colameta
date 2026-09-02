@@ -116,20 +116,39 @@ def normalize_agent_action(
     return normalized
 
 
-def _first_action(response: Mapping[str, Any]) -> Any:
+def _is_same_source_refresh(action: Mapping[str, Any], source_tool: str) -> bool:
+    tool = action.get("tool")
+    arguments = action.get("arguments")
+    if not isinstance(arguments, Mapping):
+        arguments = action.get("params")
+    action_name = action.get("action")
+    if not isinstance(action_name, str) and isinstance(arguments, Mapping):
+        action_name = arguments.get("action")
+    return tool == source_tool and action_name == "refresh_project_state"
+
+
+def _first_action(response: Mapping[str, Any], *, source_tool: str) -> Any:
     for source in _projection_sources(response):
         direct = source.get("primary_next_action")
-        if isinstance(direct, Mapping):
+        if isinstance(direct, Mapping) and not _is_same_source_refresh(direct, source_tool):
             return direct
         for key in ("recommended_next_actions", "next_actions", "recommended_next_steps"):
             actions = source.get(key)
             if isinstance(actions, list):
                 for action in actions:
-                    if isinstance(action, Mapping) and isinstance(action.get("tool"), str):
+                    if (
+                        isinstance(action, Mapping)
+                        and isinstance(action.get("tool"), str)
+                        and not _is_same_source_refresh(action, source_tool)
+                    ):
                         return action
         for key in ("recommended_next_action", "next_action", "safe_next_action"):
             next_action = source.get(key)
-            if isinstance(next_action, Mapping) and isinstance(next_action.get("tool"), str):
+            if (
+                isinstance(next_action, Mapping)
+                and isinstance(next_action.get("tool"), str)
+                and not _is_same_source_refresh(next_action, source_tool)
+            ):
                 return next_action
     return None
 
@@ -340,20 +359,37 @@ def select_primary_action_from_state(
 def _walk_for_handle(value: Any, depth: int = 0) -> tuple[str, str, tuple[str, ...], str, str | None] | None:
     if depth > 5:
         return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _walk_for_handle(item, depth + 1)
+            if found is not None:
+                return found
+        return None
     if isinstance(value, Mapping):
         for field_name, kind, actions in _HANDLE_SPECS:
             candidate = value.get(field_name)
             if isinstance(candidate, str) and candidate:
                 expires_at = value.get("expires_at")
                 return field_name, kind, actions, candidate, expires_at if isinstance(expires_at, str) else None
-        preview_ids = value.get("preview_ids")
-        if isinstance(preview_ids, list) and len(preview_ids) == 1 and isinstance(preview_ids[0], str):
-            return "preview_id", "preview", ("status", "apply"), preview_ids[0], None
-        for key in ("primary_next_action", "next_action", "confirmation", "result", "facts", "data"):
+        for key in (
+            "primary_next_action",
+            "next_action",
+            "next_actions",
+            "recommended_next_actions",
+            "arguments",
+            "params",
+            "confirmation",
+            "result",
+            "facts",
+            "data",
+        ):
             if key in value:
                 found = _walk_for_handle(value[key], depth + 1)
                 if found is not None:
                     return found
+        preview_ids = value.get("preview_ids")
+        if isinstance(preview_ids, list) and len(preview_ids) == 1 and isinstance(preview_ids[0], str):
+            return "preview_id", "preview", ("status", "apply"), preview_ids[0], None
     return None
 
 
@@ -661,7 +697,10 @@ def add_agent_state_projection(
     error_origin: str | None = None,
 ) -> dict[str, Any]:
     projected = dict(response)
-    selected = primary_action if primary_action is not None else _first_action(projected)
+    selected = primary_action if primary_action is not None else _first_action(
+        projected,
+        source_tool=source_tool,
+    )
     if selected is None:
         selected = select_primary_action_from_state(projected, intent=goal)
     normalized_action = normalize_agent_action(selected, source_tool=source_tool)

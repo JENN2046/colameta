@@ -185,6 +185,16 @@ for _domain, _tool_names in DOMAIN_TOOLS.items():
             raise RuntimeError(f"duplicate routing domain for {_tool_name}")
         _TOOL_DOMAIN[_tool_name] = _domain
 
+_WRITE_OR_TRANSITION_TOOLS = frozenset({
+    "todo_add",
+    "todo_update",
+    "todo_delete",
+    "decision_add",
+    "decision_update",
+    "decision_delete",
+    "recover_outbox_event",
+})
+
 
 PROFILE_GUIDANCE: dict[str, dict[str, Any]] = {
     "web_gpt_commander": {
@@ -260,7 +270,7 @@ def _side_effect_level(tool_name: str) -> str:
         return "DYNAMIC_BY_ACTION"
     if tool_name.startswith("preview_") or "_preview" in tool_name:
         return "PREVIEW"
-    if tool_name.startswith(
+    if tool_name in _WRITE_OR_TRANSITION_TOOLS or tool_name.startswith(
         (
             "apply_",
             "create_",

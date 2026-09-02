@@ -72,7 +72,9 @@ R1 统一的是 handle 的解释信息，不是 handle 本身。投影继续区�
 - `batch_preview_id`
 
 下游工具仍必须接收原来的 typed 字段；不存在通用的 authority-bearing
-`continuation_id`。
+`continuation_id`。当高层 `preview_ids` envelope 与嵌套 result/next-action 中的
+typed handle 同时存在时，投影优先保留 `patch_id` 等精确类型，不把它降级成
+generic `preview_id`。
 
 ## Recovery classes
 
@@ -128,3 +130,5 @@ side-effect level。高层投影直接消费这个 registry，因此它不是只
 - Stable not ready → 读取 readiness，不执行 Stable 变更。
 
 所有未知状态均 fail closed 到 `primary_next_action: null`。
+同一入口生成的 `refresh_project_state` fallback 也不会再次成为该入口的 primary
+action；Router 会选择下一条可用建议，或者返回 `null`，从而避免刷新自循环。
