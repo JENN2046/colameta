@@ -29,6 +29,10 @@ Branch: `codex/ai-ux-tool-routing-r1`
   continuation without changing its confirmation or context-binding gates;
   the mapped apply consumes that exact patch, while the pre-existing no-ID
   auto-apply behavior remains available to existing callers;
+- Commander Git auto-preview maps the hidden `manage_git_commit` consumer to
+  `manage_git(action=commit_apply)` before operation context binding is
+  projected, preserving the successful preview, its exact `preview_id`, and
+  the Git-specific confirmation identity;
 - exact plan-patch failures promote their original code and message; a
   `PATCH_STALE` result remains visible and deterministically projects
   `new_preview_required` instead of degrading to an unknown failure;
@@ -112,7 +116,7 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `76 passed`.
+Dedicated R1 tests after review hardening: `77 passed`.
 The three previously affected operator-flow production regressions plus the R1
 suite pass together: `78 passed`.
 The plan-continuation production-path focus passes: `31 passed`.
@@ -127,7 +131,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the workflow-record continuation repair: `4810 passed`, `22 failed`,
+- full suite after the Commander Git-continuation repair: `4811 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached

@@ -148,6 +148,12 @@ Commander 收到成功的 plan preview 时仍保留原 `patch_id` typed handle�
 auto-apply 调用保持原语义。若 plan 在 preview 后变化，原始 `PATCH_STALE` 会保留在
 高层响应并映射为 `new_preview_required`，不会降级为通用内部错误。
 
+Commander 的 Git `auto_preview` 同样不会暴露隐藏的 `manage_git_commit`。成功生成
+commit preview 后，projection 会在 context-binding 阶段之前将消费者映射为可见的
+`manage_git(action=commit_apply, preview_id=...)`；公开 action 因此携带同一个 Git
+confirmation identity 与 context binding。该映射仍只是导航，不能绕过原 preview、
+confirmation 或 commit scope gate。
+
 支持的 Agent guidance profiles 包括：
 
 - `web_gpt_commander`

@@ -471,6 +471,55 @@ def test_commander_plan_preview_maps_hidden_consumer_to_public_workflow(tmp_path
     assert apply_bridge.applied_patch_ids == ["patch_production_1"]
 
 
+def test_commander_auto_preview_maps_hidden_git_consumer_before_binding(tmp_path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Test"],
+        check=True,
+    )
+    readme = tmp_path / "README.md"
+    readme.write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "fixture"], check=True)
+    readme.write_text("changed\n", encoding="utf-8")
+
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    response = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Commit the current changes",
+            "message": "test: update fixture",
+        },
+    )
+
+    assert response["ok"] is True
+    data = response["data"]
+    assert data["outcome"] == "confirmation_required"
+    next_action = data["next_action"]
+    assert next_action["tool"] == "manage_git"
+    assert next_action["arguments"]["action"] == "commit_apply"
+    assert next_action["arguments"]["preview_id"] == data["confirmation"]["preview_id"]
+    assert next_action["arguments"]["context_binding"] == data["context_binding"]
+    facts = data["facts"]
+    assert facts["primary_next_action"]["tool"] == "manage_git"
+    assert facts["primary_next_action"]["params"]["action"] == "commit_apply"
+    assert "manage_git_commit" not in json.dumps(response, sort_keys=True)
+
+    tampered_arguments = dict(next_action["arguments"])
+    tampered_arguments["context_binding"] = {
+        **tampered_arguments["context_binding"],
+        "head": "0" * 40,
+    }
+    blocked = server.call_tool_for_agent("manage_git", tampered_arguments)
+    assert blocked["ok"] is False
+    assert blocked["error_code"] == "PROJECT_CONTEXT_MISMATCH"
+
+
 def test_exact_plan_patch_failure_preserves_stale_recovery(tmp_path) -> None:
     stale_bridge = _ExactPlanApplyBridge(
         result={

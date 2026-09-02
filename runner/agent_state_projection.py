@@ -277,6 +277,46 @@ def _profile_visible_plan_continuation_action(
     }
 
 
+def _profile_visible_git_commit_continuation_action(
+    response: Mapping[str, Any],
+    *,
+    source_tool: str,
+    allowed_tools: frozenset[str] | None,
+) -> dict[str, Any] | None:
+    """Map the hidden commit consumer to Commander's bounded Git surface."""
+
+    if (
+        allowed_tools is None
+        or "manage_git" not in allowed_tools
+        or "manage_git_commit" in allowed_tools
+        or response.get("selected_workflow") != "git_commit"
+    ):
+        return None
+    continuation = typed_continuation_projection(response, source_tool=source_tool)
+    if (
+        not isinstance(continuation, Mapping)
+        or continuation.get("kind") != "preview"
+        or "commit" not in continuation.get("allowed_next_actions", ())
+    ):
+        return None
+    preview_id = continuation.get("id")
+    if not isinstance(preview_id, str) or not preview_id:
+        return None
+    return {
+        "tool": "manage_git",
+        "action": "commit_apply",
+        "reason": (
+            "Apply the exact commit preview through Commander's bounded Git "
+            "surface after its existing confirmation and context-binding gates pass."
+        ),
+        "params": {
+            "action": "commit_apply",
+            "preview_id": preview_id,
+        },
+        "requires_confirmation": True,
+    }
+
+
 def _first_action(
     response: Mapping[str, Any],
     *,
@@ -939,6 +979,12 @@ def add_agent_state_projection(
         )
     if selected is None:
         selected = _profile_visible_plan_continuation_action(
+            projected,
+            source_tool=source_tool,
+            allowed_tools=allowed_tools,
+        )
+    if selected is None:
+        selected = _profile_visible_git_commit_continuation_action(
             projected,
             source_tool=source_tool,
             allowed_tools=allowed_tools,
