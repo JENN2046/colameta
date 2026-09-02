@@ -85,6 +85,11 @@ generic `preview_id`。
 明确指定 `consumer_tool: manage_workflow_run` 和 `allowed_next_actions: [get]`，与
 真实只读消费者 contract 一致。
 
+无 operational handle 的 status-only `auto_preview` 也会在记录 outer workflow 后
+刷新原本为空的 continuation；已有 preview、patch 或 run handle 不会被 workflow
+record 取代。`run_id` continuation 只声明执行器真实支持的 `status` 动作，不再声明
+不存在的 `read`。
+
 当入口已解析出注册项目时，canonical action 的 `params` / `arguments` 和
 `required_arguments` 都携带同一个 `project_name`。Agent 复制该 action 后仍会
 走原来的 registry route；这只是上下文绑定，不授予额外 authority。
@@ -153,6 +158,10 @@ commit preview 后，projection 会在 context-binding 阶段之前将消费者�
 `manage_git(action=commit_apply, preview_id=...)`；公开 action 因此携带同一个 Git
 confirmation identity 与 context binding。该映射仍只是导航，不能绕过原 preview、
 confirmation 或 commit scope gate。
+
+当下一步需要 operation context binding 时，投影会同步更新 action 的 `params`、
+`arguments` 与 `required_arguments`。因此依据 canonical required-argument contract
+构造调用与直接复制公开 action 具有相同的绑定要求。
 
 支持的 Agent guidance profiles 包括：
 

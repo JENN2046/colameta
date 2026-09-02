@@ -14,6 +14,7 @@ import copy
 from re import Pattern
 from typing import Any, Protocol
 
+from runner.agent_state_projection import typed_continuation_projection
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name
 from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
@@ -496,6 +497,15 @@ class MCPWorkflowCompatibilityService:
                     next_actions,
                 )
         self._host._record_workflow_if_needed("run_mcp_workflow", workflow, params, result)
+        if workflow == "auto_preview" and result.get("continuation") is None:
+            # A status-only auto-preview has no operational handle when its
+            # projection is first built. Recording adds workflow_id afterward,
+            # so refresh the null continuation without displacing a real
+            # preview/run/patch continuation.
+            result["continuation"] = typed_continuation_projection(
+                result,
+                source_tool="run_mcp_workflow",
+            )
         return self._host._attach_operation_context_binding(
             result,
             tool_name="run_mcp_workflow",

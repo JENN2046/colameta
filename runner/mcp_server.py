@@ -7988,7 +7988,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             tool = next_action.get("tool")
             if not isinstance(tool, str):
                 continue
-            for params_key in ("params", "arguments"):
+            for params_key in ("params", "arguments", "required_arguments"):
                 target_params = next_action.get(params_key)
                 if not isinstance(target_params, dict):
                     continue

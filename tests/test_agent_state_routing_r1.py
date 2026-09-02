@@ -287,6 +287,17 @@ def test_typed_continuations_remain_distinct(
     assert "continuation_id" not in continuation
 
 
+def test_executor_run_continuation_advertises_only_status() -> None:
+    continuation = typed_continuation_projection(
+        {"run_id": "run_1"},
+        source_tool="run_mcp_workflow",
+    )
+
+    assert continuation is not None
+    assert continuation["kind"] == "executor_run"
+    assert continuation["allowed_next_actions"] == ["status"]
+
+
 def test_patch_handle_precedes_generic_core_preview_ids() -> None:
     continuation = typed_continuation_projection(
         {
@@ -443,6 +454,9 @@ def test_commander_plan_preview_maps_hidden_consumer_to_public_workflow(tmp_path
     assert next_action["arguments"]["context_binding"] == response["data"][
         "context_binding"
     ]
+    assert facts["primary_next_action"]["required_arguments"][
+        "context_binding"
+    ] == response["data"]["context_binding"]
     assert response["data"]["confirmation"]["preview_id"] == "patch_production_1"
     assert "manage_plan_version" not in json.dumps(response, sort_keys=True)
 
@@ -508,6 +522,9 @@ def test_commander_auto_preview_maps_hidden_git_consumer_before_binding(tmp_path
     facts = data["facts"]
     assert facts["primary_next_action"]["tool"] == "manage_git"
     assert facts["primary_next_action"]["params"]["action"] == "commit_apply"
+    assert facts["primary_next_action"]["required_arguments"][
+        "context_binding"
+    ] == data["context_binding"]
     assert "manage_git_commit" not in json.dumps(response, sort_keys=True)
 
     tampered_arguments = dict(next_action["arguments"])
@@ -770,6 +787,30 @@ def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None
     assert result["agent_state"]["goal"].startswith("Inspect project state")
     assert result["routing"]["selected_workflow"] == "project_status"
     assert verify_agent_projection(result) == []
+
+
+def test_status_only_auto_preview_refreshes_recorded_workflow_continuation(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    server._create_mcp_workflow_router = lambda: MCPWorkflowRouter(  # type: ignore[method-assign]
+        str(tmp_path),
+        analyze_state_fn=lambda _params: {"ok": True},
+        agent_profile_id="web_gpt_commander",
+    )
+
+    result = server._tool_run_mcp_workflow({"workflow": "auto_preview"})
+
+    assert isinstance(result["workflow_id"], str)
+    assert result["continuation"] == {
+        "kind": "workflow_run",
+        "id": result["workflow_id"],
+        "field_name": "workflow_id",
+        "source_tool": "run_mcp_workflow",
+        "allowed_next_actions": ["get"],
+        "typed_handle_required_by_next_tool": True,
+        "continuation_is_navigation_only": True,
+        "does_not_grant_authority": True,
+        "consumer_tool": "manage_workflow_run",
+    }
 
 
 def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_path) -> None:

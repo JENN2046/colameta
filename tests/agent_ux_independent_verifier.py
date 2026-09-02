@@ -84,6 +84,11 @@ def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
                     findings.append("workflow continuation lacks its canonical consumer tool")
                 if allowed_actions != ["get"]:
                     findings.append("workflow continuation advertises an invalid consumer action")
+            if (
+                continuation.get("kind") == "executor_run"
+                and allowed_actions != ["status"]
+            ):
+                findings.append("executor continuation advertises an invalid consumer action")
 
     routing = packet.get("routing")
     if not isinstance(routing, Mapping) or routing.get("routing_metadata_grants_no_authority") is not True:

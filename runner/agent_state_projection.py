@@ -11,7 +11,7 @@ AGENT_PROJECTION_SCHEMA_VERSION = "colameta.agent_state_projection.v1"
 _HANDLE_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("review_manifest_id", "review_manifest", ("read", "verify")),
     ("artifact_id", "result_artifact", ("read",)),
-    ("run_id", "executor_run", ("status", "read")),
+    ("run_id", "executor_run", ("status",)),
     ("workflow_id", "workflow_run", ("get",)),
     ("gate_preview_id", "gate_preview", ("status", "apply")),
     ("batch_preview_id", "batch_preview", ("status", "execute")),
