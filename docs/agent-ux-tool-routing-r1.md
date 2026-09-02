@@ -54,7 +54,9 @@ routing:
 
 `authority` 中每个动作域都明确带有 `granted_by_projection: false`。特别是投影不
 授予 executor、commit、push、merge、Stable replacement、delivery、deploy 或
-release 权限。
+release 权限。所有 scope 值均为现有协议值 `mcp:read`、`mcp:preview`、
+`mcp:plan` 或 `mcp:commit`；validation 按 inspect/preview/run 动作分别表达，
+不会制造伪 scope。
 
 ## Typed continuation
 
@@ -88,14 +90,15 @@ ColaMeta 控制的高层错误可以投影为：
 
 `error_origin` 区分 application、workflow、state gate、connector、OAuth、
 transport、host、external provider 和 unknown。无法由 ColaMeta 证明的外部错误
-不会获得虚假的自动恢复承诺。
+不会获得虚假的自动恢复承诺。包含 OAuth/scope 字样的 Connector 错误仍归属
+Connector 边界，并要求 operator action，不会被误判为可自动重试。
 
 ## Routing registry 与 profiles
 
-`runner.agent_routing_registry` 对运行时 catalog 生成机器可读 domain、canonical
+`runner.agent_routing_registry` 以审计过的 exact tool-name map 对运行时 catalog 生成机器可读 domain、canonical
 primary tool、`PRIMARY` / `ADVANCED` / `LEGACY_OR_INTERNAL`、推荐 profile 和
 side-effect level。高层投影直接消费这个 registry，因此它不是只存在于文档中
-的静态清单。
+的静态清单。新工具在完成显式分类前显示为 `unclassified`，不会按名称猜测 domain。
 
 支持的 Agent guidance profiles 包括：
 

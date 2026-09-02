@@ -15,6 +15,8 @@ _TYPED_FIELDS = {
     "preview": "preview_id",
 }
 
+_VALID_SCOPES = {"mcp:read", "mcp:preview", "mcp:plan", "mcp:commit"}
+
 
 def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
     """Independently check the public projection without importing its builder."""
@@ -43,6 +45,15 @@ def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
             scope = authority.get(name)
             if not isinstance(scope, Mapping) or scope.get("granted_by_projection") is not False:
                 findings.append(f"projection appears to grant {name} authority")
+                continue
+            required_scope = scope.get("required_scope")
+            if required_scope is not None and required_scope not in _VALID_SCOPES:
+                findings.append(f"{name} contains a non-protocol scope")
+            scope_by_action = scope.get("scope_by_action")
+            if isinstance(scope_by_action, Mapping) and any(
+                value not in _VALID_SCOPES for value in scope_by_action.values()
+            ):
+                findings.append(f"{name} contains a non-protocol action scope")
 
     continuation = packet.get("continuation")
     if continuation is not None:
@@ -60,4 +71,47 @@ def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
     routing = packet.get("routing")
     if not isinstance(routing, Mapping) or routing.get("routing_metadata_grants_no_authority") is not True:
         findings.append("routing authority separation missing")
+    return findings
+
+
+def verify_authority_expectation(packet: Mapping[str, Any], expectation: str) -> list[str]:
+    """Mechanically evaluate fixture authority expectations."""
+
+    findings: list[str] = []
+    authority = packet.get("authority")
+    if not isinstance(authority, Mapping):
+        return ["authority projection missing"]
+
+    def denied(name: str) -> bool:
+        value = authority.get(name)
+        return isinstance(value, Mapping) and value.get("granted_by_projection") is False
+
+    if not all(denied(name) for name in ("read", "preview", "execute", "validate", "commit", "push", "stable_replacement")):
+        findings.append("projection widened at least one authority gate")
+
+    primary = packet.get("primary_next_action")
+    action = primary.get("action") if isinstance(primary, Mapping) else None
+    recovery = packet.get("recovery")
+    recovery_class = recovery.get("recovery_class") if isinstance(recovery, Mapping) else None
+
+    checks = {
+        "NO_AUTHORITY_FROM_PROJECTION": lambda: True,
+        "PREVIEW_GATE_REMAINS_REQUIRED": lambda: denied("preview"),
+        "EXECUTOR_AUTHORITY_NOT_GRANTED": lambda: denied("execute"),
+        "NO_DUPLICATE_EXECUTOR_START": lambda: denied("execute") and action == "status",
+        "VALIDATION_GATE_REMAINS_REQUIRED": lambda: denied("validate"),
+        "COMMIT_AUTHORITY_NOT_GRANTED": lambda: denied("commit"),
+        "COMMIT_PREVIEW_ONLY": lambda: denied("commit"),
+        "NEW_PREVIEW_REQUIRED": lambda: denied("preview") and recovery_class in {"new_preview_required", "context_changed"},
+        "SCOPE_NOT_WIDENED": lambda: recovery_class == "authorization_required",
+        "REVIEW_ONLY": lambda: denied("execute") and denied("commit"),
+        "STAGE_GATE_REMAINS_REQUIRED": lambda: denied("execute"),
+        "TRANSITION_AUTHORITY_NOT_GRANTED": lambda: denied("execute"),
+        "STABLE_AUTHORITY_NOT_GRANTED": lambda: denied("stable_replacement"),
+    }
+    check = checks.get(expectation)
+    if check is None:
+        findings.append(f"unknown authority expectation: {expectation}")
+    elif not check():
+        findings.append(f"authority expectation not met: {expectation}")
     return findings

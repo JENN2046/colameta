@@ -1,6 +1,6 @@
 # ColaMeta AI UX / Tool Routing R1 — Verification
 
-Status: IMPLEMENTATION COMPLETE; FULL-SUITE BASELINE FAILURES PRESERVED
+Status: NARROW INTEGRATION-REVIEW REPAIR VALIDATED; FULL-SUITE BASELINE FAILURES PRESERVED
 
 Implementation base: `3f64276a1f907d6a2490fac3c45ded779259b72f`
 
@@ -23,6 +23,25 @@ Branch: `codex/ai-ux-tool-routing-r1`
 - ASCII goal keywords are token-matched so substrings such as `pi` in
   `expired` cannot select the executor route.
 
+## Integration-review repair closure
+
+The narrow repair closes the four P1 and two P2 findings without changing MCP
+registration or authority gates:
+
+- `auto_preview` reads the nested production result/canonical-state envelope;
+  operation status remains separately visible as `operation_status`;
+- Web Commander guidance recommends only tools in its physical nine-tool
+  surface and starts at `analyze_project_state`;
+- Connector-origin errors take precedence over embedded OAuth/scope markers
+  and map conservatively to operator action on the production workflow route;
+- all 123 current tools have one explicit exact-name domain assignment, with
+  future unknown names fail-visible as `unclassified`;
+- all 20 routing fixtures are materialized through
+  `build_canonical_project_state`, and every `authority_expectation` is
+  mechanically evaluated by the independent verifier;
+- validation scope metadata contains only real MCP scopes, expressed by
+  inspect/preview/run action rather than a synthetic combined scope.
+
 ## Independent Agent UX verification
 
 The verifier in `tests/agent_ux_independent_verifier.py` imports no production
@@ -36,20 +55,20 @@ Router or projection builder. It inspects only the returned mapping and rejects:
 - any generic `continuation_id`;
 - routing metadata without an explicit no-authority boundary.
 
-The fixture corpus contains 20 state/intent pairs covering project inspection,
+The fixture corpus contains 20 production-built canonical state/intent pairs covering project inspection,
 source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests: `29 passed`.
+Dedicated R1 tests: `33 passed`.
 
 ## Compatibility validation
 
-- primary Commander/project-routing/auto-preview set: `1570 passed`;
-- functional MVP, workflow policy, thin loop, stage parallel, review manifest,
-  validation, Stable and Work Item targeted set: `776 passed`, `1 failed`,
-  `29 subtests passed`;
-- full suite: `4761 passed`, `22 failed`, `2 skipped`, `213 subtests passed`.
+- high-level routing/workflow set: `232 passed`;
+- Commander/public-contract set: `1426 passed`;
+- functional MVP, thin loop, stage parallel, review manifest, validation,
+  Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
+- full suite: `4766 passed`, `22 failed`, `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached
 worktree at the implementation base. Every one reproduced there:

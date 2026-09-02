@@ -35,6 +35,46 @@ def _as_string_list(value: Any) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _projection_sources(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Return bounded production envelopes from outermost to innermost."""
+
+    sources: list[Mapping[str, Any]] = []
+    queue: list[tuple[Mapping[str, Any], int]] = [(value, 0)]
+    seen: set[int] = set()
+    while queue:
+        current, depth = queue.pop(0)
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        sources.append(current)
+        if depth >= 5:
+            continue
+        for key in (
+            "result",
+            "facts",
+            "data",
+            "current_state",
+            "canonical_state",
+            "canonical_project_state",
+            "current_conclusion",
+            "unified_status",
+        ):
+            nested = current.get(key)
+            if isinstance(nested, Mapping):
+                queue.append((nested, depth + 1))
+    return sources
+
+
+def _first_text(sources: list[Mapping[str, Any]], *keys: str) -> str | None:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 def normalize_agent_action(
     action: Any,
     *,
@@ -71,17 +111,21 @@ def normalize_agent_action(
 
 
 def _first_action(response: Mapping[str, Any]) -> Any:
-    direct = response.get("primary_next_action")
-    if isinstance(direct, Mapping):
-        return direct
-    for key in ("recommended_next_actions", "next_actions"):
-        actions = response.get(key)
-        if isinstance(actions, list):
-            for action in actions:
-                if isinstance(action, Mapping):
-                    return action
-    next_action = response.get("next_action")
-    return next_action if isinstance(next_action, Mapping) else None
+    for source in _projection_sources(response):
+        direct = source.get("primary_next_action")
+        if isinstance(direct, Mapping):
+            return direct
+        for key in ("recommended_next_actions", "next_actions", "recommended_next_steps"):
+            actions = source.get(key)
+            if isinstance(actions, list):
+                for action in actions:
+                    if isinstance(action, Mapping) and isinstance(action.get("tool"), str):
+                        return action
+        for key in ("recommended_next_action", "next_action", "safe_next_action"):
+            next_action = source.get(key)
+            if isinstance(next_action, Mapping) and isinstance(next_action.get("tool"), str):
+                return next_action
+    return None
 
 
 def select_primary_action_from_state(
@@ -97,13 +141,29 @@ def select_primary_action_from_state(
     Unknown states return ``None`` instead of guessing.
     """
 
-    status = str(
-        state.get("status")
-        or state.get("state")
-        or state.get("unified_status")
-        or ""
-    ).strip().upper().replace("-", "_").replace(" ", "_")
-    run_id = state.get("run_id") if isinstance(state.get("run_id"), str) else None
+    sources = _projection_sources(state)
+    run_id = _first_text(sources, "run_id")
+    executor_run_status = _first_text(sources, "executor_run_status")
+    if executor_run_status:
+        status = f"EXECUTOR_{executor_run_status}".upper()
+    else:
+        status = ""
+        for source in sources:
+            candidate = (
+                source.get("status")
+                or source.get("state")
+                or source.get("readiness_status")
+            )
+            if isinstance(candidate, str) and candidate:
+                # An outer workflow's succeeded/failed status must not preempt
+                # the canonical or nested project state it is carrying.
+                if source is state and "result" in state and candidate.lower() in {
+                    "succeeded", "failed", "completed"
+                }:
+                    continue
+                status = candidate
+                break
+        status = status.strip().upper().replace("-", "_").replace(" ", "_")
     rules: dict[str, tuple[str, str, str, dict[str, Any]]] = {
         "EXECUTOR_PREFLIGHT": (
             "run_mcp_workflow",
@@ -201,6 +261,60 @@ def select_primary_action_from_state(
             "Read canonical project facts before selecting a workflow.",
             {},
         ),
+        "SOURCE_ONLY": (
+            "run_mcp_workflow",
+            "auto_preview",
+            "The canonical checkout is source-only; request the existing bounded onboarding preview.",
+            {"workflow": "auto_preview"},
+        ),
+        "READY_TO_EXECUTE": (
+            "run_mcp_workflow",
+            "auto_preview",
+            "Canonical Runner state has pending work; route the bounded task through auto_preview.",
+            {"workflow": "auto_preview"},
+        ),
+        "ACTION_REQUIRED": (
+            "manage_git",
+            "review_context",
+            "Canonical state reports a dirty delivery worktree; inspect its bounded Git context first.",
+            {"action": "review_context"},
+        ),
+        "FRESHNESS_REQUIRED": (
+            "analyze_project_state",
+            "inspect",
+            "Current observations are incomplete or stale; refresh canonical project state.",
+            {},
+        ),
+        "PARTIAL_OBSERVATION": (
+            "analyze_project_state",
+            "inspect",
+            "Some canonical state sources are unavailable; refresh the read-only observation.",
+            {},
+        ),
+        "BLOCKED": (
+            "analyze_project_state",
+            "inspect",
+            "Canonical project state is blocked; inspect the reported blockers before any transition.",
+            {},
+        ),
+        "WAITING_FOR_EXECUTOR_RESULTS": (
+            "get_stage_parallel_executor_results_packet",
+            "inspect",
+            "The production stage packet reports running executors; read results instead of starting duplicates.",
+            {},
+        ),
+        "READY_FOR_MERGE_PREVIEW": (
+            "get_stage_parallel_merge_preview",
+            "inspect",
+            "The stage packet proves executor results are ready for the bounded merge preview.",
+            {},
+        ),
+        "NOT_READY_FOR_STABLE_PROMOTION_REVIEW": (
+            "get_stable_promotion_readiness",
+            "inspect",
+            "Stable promotion readiness reports local blockers; remain on its read-only evidence surface.",
+            {},
+        ),
     }
     rule = rules.get(status)
     if rule is None:
@@ -272,10 +386,10 @@ def infer_error_origin(error_code: str | None, explicit_origin: str | None = Non
     if explicit_origin in allowed:
         return explicit_origin
     code = (error_code or "").upper()
-    if any(marker in code for marker in ("OAUTH", "SCOPE", "AUTHORIZATION", "PRINCIPAL")):
-        return "oauth"
     if "CONNECTOR" in code:
         return "connector"
+    if any(marker in code for marker in ("OAUTH", "SCOPE", "AUTHORIZATION", "PRINCIPAL")):
+        return "oauth"
     if "TRANSPORT" in code:
         return "transport"
     if "HOST" in code:
@@ -310,6 +424,10 @@ def recovery_projection(
     elif any(marker in code for marker in ("RUNNING", "IN_PROGRESS", "ALREADY_CLAIMED")):
         recovery_class = "wait_for_running_operation"
         recommended_action = "Poll the existing typed run or workflow handle; do not start a duplicate operation."
+    elif origin in {"connector", "transport", "host", "external_provider", "unknown"}:
+        recovery_class = "operator_action_required"
+        recommended_action = "Inspect the external boundary; ColaMeta cannot prove an automatic recovery path."
+        agent_should_stop = True
     elif any(
         marker in code
         for marker in (
@@ -342,10 +460,6 @@ def recovery_projection(
     elif "PREREQUISITE" in code or "NOT_READY" in code:
         recovery_class = "refresh_state_then_retry"
         recommended_action = "Refresh canonical state and satisfy the reported prerequisite before retrying."
-    elif origin in {"connector", "transport", "host", "external_provider", "unknown"}:
-        recovery_class = "operator_action_required"
-        recommended_action = "Inspect the external boundary; ColaMeta cannot prove an automatic recovery path."
-        agent_should_stop = True
     return {
         "recovery_class": recovery_class,
         "reason": reason or error_code,
@@ -373,7 +487,15 @@ def authority_projection() -> dict[str, Any]:
             "status": "TYPED_PREVIEW_CONTEXT_AND_CONFIRMATION_REQUIRED",
             "granted_by_projection": False,
         },
-        "validate": scope("mcp:preview_or_commit_by_action"),
+        "validate": {
+            "status": "ACTION_DEPENDENT_SCOPE_AND_GATE_REQUIRED",
+            "scope_by_action": {
+                "inspect": "mcp:read",
+                "preview": "mcp:preview",
+                "run": "mcp:commit",
+            },
+            "granted_by_projection": False,
+        },
         "commit": scope("mcp:commit"),
         "push": {
             "status": "DEDICATED_GIT_GATE_REQUIRED",
@@ -395,20 +517,43 @@ def _agent_state(
     goal: str | None,
     profile_id: str | None,
 ) -> dict[str, Any]:
-    identity = _as_dict(response.get("project_identity"))
-    canonical = _as_dict(response.get("canonical_state"))
-    current_state = _as_dict(response.get("current_state"))
-    runner = _as_dict(response.get("runner"))
-    plan = _as_dict(response.get("plan"))
+    sources = _projection_sources(response)
+    identity = next(
+        (_as_dict(source.get("project_identity")) for source in sources if source.get("project_identity")),
+        {},
+    )
+    canonical = next(
+        (
+            _as_dict(source.get("canonical_state") or source.get("canonical_project_state"))
+            for source in sources
+            if isinstance(source.get("canonical_state") or source.get("canonical_project_state"), Mapping)
+        ),
+        {},
+    )
+    canonical_context = _as_dict(canonical.get("context_binding"))
+    canonical_observed = _as_dict(canonical.get("currently_observed"))
+    canonical_runner = _as_dict(canonical_observed.get("runner"))
+    conclusion = _as_dict(canonical.get("current_conclusion"))
+    nested_result = _as_dict(response.get("result"))
+    current_state = next(
+        (_as_dict(source.get("current_state")) for source in sources if source.get("current_state")),
+        {},
+    )
+    runner = next((_as_dict(source.get("runner")) for source in sources if source.get("runner")), {})
+    plan = next((_as_dict(source.get("plan")) for source in sources if source.get("plan")), {})
     current_version = (
-        response.get("current_version")
+        canonical_context.get("current_version")
+        or canonical_runner.get("current_version")
+        or nested_result.get("current_version")
+        or response.get("current_version")
         or current_state.get("current_version")
         or canonical.get("current_version")
         or runner.get("current_version")
         or plan.get("current_version")
     )
     current_phase = (
-        response.get("phase")
+        nested_result.get("phase")
+        or response.get("phase")
         or current_state.get("current_phase")
         or canonical.get("phase")
         or runner.get("phase")
@@ -416,15 +561,16 @@ def _agent_state(
     )
     readiness = _as_dict(current_state.get("readiness"))
     status = (
-        response.get("status")
-        or response.get("mode")
+        nested_result.get("status")
+        or conclusion.get("status")
         or current_state.get("status")
         or readiness.get("status")
-        or canonical.get("status")
+        or response.get("status")
+        or response.get("mode")
         or "unknown"
     )
-    return {
-        "project": project_name or response.get("project_name") or identity.get("project_name"),
+    agent_state = {
+        "project": project_name or _first_text(sources, "project_name") or identity.get("project_name"),
         "goal": goal,
         "current_phase": current_phase,
         "current_version": current_version,
@@ -432,6 +578,10 @@ def _agent_state(
         "profile_id": profile_id,
         "state_is_observation_not_authority": True,
     }
+    operation_status = response.get("status")
+    if isinstance(operation_status, str) and operation_status != status:
+        agent_state["operation_status"] = operation_status
+    return agent_state
 
 
 def _blocked_next_actions(
@@ -511,15 +661,20 @@ def add_agent_state_projection(
         primary_action=normalized_action,
     )
     projected["continuation"] = typed_continuation_projection(projected, source_tool=source_tool)
-    error_code = projected.get("error_code")
+    sources = _projection_sources(projected)
+    error_code = _first_text(sources, "error_code")
+    detected_origin = _first_text(sources, "error_origin")
+    detected_message = _first_text(sources, "message", "reason") or ""
+    if error_code and "error_code" not in projected:
+        projected["error_code"] = error_code
     projected["error_origin"] = infer_error_origin(
-        error_code if isinstance(error_code, str) else None,
-        error_origin,
+        error_code,
+        error_origin or detected_origin,
     ) if error_code else None
     projected["recovery"] = recovery_projection(
-        error_code if isinstance(error_code, str) else None,
-        reason=str(projected.get("message") or ""),
-        error_origin=error_origin,
+        error_code,
+        reason=detected_message,
+        error_origin=error_origin or detected_origin,
     )
     projected["hard_stops"] = list(_HARD_STOPS)
     projected["routing"] = {

@@ -81,16 +81,116 @@ DOMAIN_PRIMARY_TOOL: dict[str, str] = {
     "stage_parallel": "get_stage_parallel_next_action_packet",
     "work_item_governance": "get_work_item_governance_status",
     "stable": "get_stable_promotion_readiness",
-    "platform": "get_agent_operator_flow_packet",
+    "runtime": "get_runtime_version_status",
+    "unclassified": "analyze_project_state",
 }
+
+
+# Exact, audited ownership for the current public catalog.  Tool names are an
+# API, so guessing their domain from substrings is both unnecessary and prone
+# to misrouting (for example ``get_runtime_version_status`` used to be treated
+# as planning merely because it contains "version").  Unknown future tools are
+# deliberately visible as ``unclassified`` until this registry is reviewed.
+DOMAIN_TOOLS: dict[str, frozenset[str]] = {
+    "orientation": frozenset({
+        "list_registered_projects", "get_agent_consumer_contract",
+        "get_service_entry_profile", "get_agent_operator_flow_packet",
+        "get_web_gpt_service_entrypoint", "get_commander_app_manifest",
+        "render_commander_app", "get_project_identity",
+        "get_runner_execution_standards", "get_runner_status",
+        "get_runner_workbench_context", "analyze_project_state",
+    }),
+    "connector": frozenset({
+        "get_apps_connector_smoke_packet", "get_connector_runtime_health_status",
+    }),
+    "runtime": frozenset({"get_runtime_version_status"}),
+    "product_release": frozenset({
+        "get_product_readiness_status", "get_chatgpt_app_readiness",
+        "get_product_console_map", "get_release_submission_readiness",
+        "get_submission_evidence_fill_preview", "get_submission_evidence_auto_draft",
+        "manage_submission_evidence_revision", "manage_p1_release_evidence",
+        "init_submission_evidence", "fill_submission_evidence_files",
+        "mark_submission_evidence_ready_fields", "record_product_console_action_result",
+        "register_artifact_reference", "retry_delivery", "acknowledge_delivery",
+    }),
+    "workflow": frozenset({
+        "get_full_loop_authority_status", "manage_workflow_run",
+        "manage_prompt_file", "run_mcp_workflow", "list_workflow_runs",
+        "get_workflow_run",
+    }),
+    "stable": frozenset({
+        "get_stable_replacement_cadence", "get_stable_promotion_readiness",
+        "manage_stable_promotion_evidence",
+    }),
+    "stage_parallel": frozenset({
+        "get_stage_parallel_plan_preview", "get_stage_parallel_run_preview",
+        "get_stage_parallel_worktree_assignment_preview",
+        "get_stage_parallel_next_action_packet",
+        "get_stage_parallel_executor_group_preview",
+        "get_stage_parallel_executor_results_packet",
+        "get_stage_parallel_group_status", "get_stage_parallel_merge_preview",
+        "get_stage_parallel_closeout_packet", "manage_stage_parallel_worktrees",
+        "manage_stage_parallel_shard_inputs", "manage_stage_parallel_executor_group",
+        "manage_stage_parallel_executor_runs", "manage_stage_parallel_merges",
+    }),
+    "planning": frozenset({
+        "get_plan_standards_report", "manage_runner_plan", "manage_plan_version",
+        "add_task_version", "manage_plan_workflow", "get_version_result",
+        "get_next_version_plan", "get_plan_overview", "preview_insert_version",
+        "preview_update_version", "get_plan_patch_status",
+    }),
+    "review": frozenset({
+        "get_review_context", "review_manifest", "read_result_artifact",
+    }),
+    "source": frozenset({
+        "manage_project_patch", "manage_files", "get_repo_overview",
+        "get_source_file", "search_source",
+    }),
+    "documentation": frozenset({"manage_project_docs", "get_project_doc_section"}),
+    "git": frozenset({
+        "manage_git", "manage_git_commit", "manage_git_remote",
+        "manage_git_history", "get_git_status", "get_git_log", "get_git_diff",
+    }),
+    "memory": frozenset({
+        "manage_project_memory", "manage_runner_record", "todo_read", "todo_add",
+        "todo_update", "todo_delete", "decision_read", "decision_add",
+        "decision_update", "decision_delete",
+    }),
+    "executor": frozenset({
+        "get_executor_session_status", "get_executor_continuation_preview",
+        "get_executor_continuation_decision", "get_executor_resume_invocation_preview",
+        "get_executor_inventory", "list_executor_run_reports",
+        "get_executor_run_report", "inspect_executor_activity",
+        "manage_executor_config", "manage_executor_workflow",
+    }),
+    "validation": frozenset({"manage_validation_run"}),
+    "work_item_governance": frozenset({
+        "get_work_item_governance_status", "get_work_item", "list_work_items",
+        "get_work_item_timeline", "list_outbox_events",
+        "get_execution_attempt_dispatch_authority", "preview_work_item_create",
+        "preview_legacy_work_item_import", "preview_work_item_transition",
+        "apply_work_item_create", "apply_legacy_work_item_import",
+        "create_execution_attempt", "bind_historical_execution_attempt",
+        "complete_execution_attempt", "record_review_decision",
+        "apply_work_item_transition", "apply_blocker", "clear_blocker",
+        "create_delivery_receipt", "record_outbox_delivery_result",
+        "recover_outbox_event",
+    }),
+}
+
+_TOOL_DOMAIN: dict[str, str] = {}
+for _domain, _tool_names in DOMAIN_TOOLS.items():
+    for _tool_name in _tool_names:
+        if _tool_name in _TOOL_DOMAIN:
+            raise RuntimeError(f"duplicate routing domain for {_tool_name}")
+        _TOOL_DOMAIN[_tool_name] = _domain
 
 
 PROFILE_GUIDANCE: dict[str, dict[str, Any]] = {
     "web_gpt_commander": {
-        "preferred_first_entrypoint": "get_agent_operator_flow_packet",
+        "preferred_first_entrypoint": "analyze_project_state",
         "primary_tools": [
             "list_registered_projects",
-            "get_agent_operator_flow_packet",
             "analyze_project_state",
             "run_mcp_workflow",
             "review_manifest",
@@ -98,7 +198,7 @@ PROFILE_GUIDANCE: dict[str, dict[str, Any]] = {
             "manage_validation_run",
             "manage_git",
         ],
-        "advanced_tools": ["get_stage_parallel_next_action_packet"],
+        "advanced_tools": [],
         "tools_not_normally_recommended": sorted(LEGACY_OR_INTERNAL_TOOLS),
         "read_write_expectation": "read_or_preview_first; write requires the existing typed gate and confirmation",
     },
@@ -144,58 +244,7 @@ PROFILE_GUIDANCE: dict[str, dict[str, Any]] = {
 
 
 def _domain_for_tool(tool_name: str) -> str:
-    if "stage_parallel" in tool_name:
-        return "stage_parallel"
-    if "stable" in tool_name or "managed_runtime_closeout" in tool_name:
-        return "stable"
-    if any(
-        marker in tool_name
-        for marker in (
-            "work_item",
-            "execution_attempt",
-            "review_decision",
-            "blocker",
-            "outbox",
-            "delivery_receipt",
-        )
-    ):
-        return "work_item_governance"
-    if "connector" in tool_name or "runtime_health" in tool_name:
-        return "connector"
-    if any(marker in tool_name for marker in ("product", "submission", "release")):
-        return "product_release"
-    if "validation" in tool_name:
-        return "validation"
-    if "executor" in tool_name or "run_report" in tool_name:
-        return "executor"
-    if "git" in tool_name or tool_name in {"project_delivery_preview", "github_delivery"}:
-        return "git"
-    if "review_manifest" in tool_name or "result_artifact" in tool_name:
-        return "review"
-    if "plan" in tool_name or "version" in tool_name:
-        return "planning"
-    if "doc" in tool_name:
-        return "documentation"
-    if any(marker in tool_name for marker in ("memory", "todo", "decision", "runner_record")):
-        return "memory"
-    if any(marker in tool_name for marker in ("source", "repo_overview", "manage_files")):
-        return "source"
-    if "workflow" in tool_name or "prompt" in tool_name:
-        return "workflow"
-    if tool_name in {
-        "list_registered_projects",
-        "get_agent_consumer_contract",
-        "get_service_entry_profile",
-        "get_agent_operator_flow_packet",
-        "get_commander_app_manifest",
-        "render_commander_app",
-        "get_web_gpt_service_entrypoint",
-        "get_project_identity",
-        "get_runner_workbench_context",
-        "analyze_project_state",
-    }:
-        return "orientation"
-    return "platform"
+    return _TOOL_DOMAIN.get(tool_name, "unclassified")
 
 
 def _tier_for_tool(tool_name: str) -> str:

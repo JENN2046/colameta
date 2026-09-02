@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,14 @@ from runner.agent_state_projection import (
     select_primary_action_from_state,
     typed_continuation_projection,
 )
+from runner.canonical_project_state import build_canonical_project_state
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.mcp_server import COMMANDER_EXPOSED_TOOLS, MCPPlanningBridgeServer
 from runner.mcp_workflow_router import MCPWorkflowRouter
-from tests.agent_ux_independent_verifier import verify_agent_projection
+from tests.agent_ux_independent_verifier import (
+    verify_agent_projection,
+    verify_authority_expectation,
+)
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "agent_routing_r1.json"
@@ -41,6 +46,11 @@ def test_registry_classifies_the_complete_runtime_catalog(tmp_path) -> None:
     assert registry["registry_does_not_grant_authority"] is True
     assert tool_routing_metadata("manage_git")["canonical_primary_tool"] == "manage_git"
     assert tool_routing_metadata("get_git_status")["classification"] == TOOL_TIER_LEGACY_OR_INTERNAL
+    assert [item["tool"] for item in registry["tools"] if item["domain"] == "unclassified"] == []
+    assert tool_routing_metadata("get_runtime_version_status")["domain"] == "runtime"
+    assert tool_routing_metadata("get_review_context")["domain"] == "review"
+    assert tool_routing_metadata("manage_project_patch")["domain"] == "source"
+    assert tool_routing_metadata("retry_delivery")["domain"] == "product_release"
 
 
 def test_profile_guidance_preserves_commander_physical_surface() -> None:
@@ -51,6 +61,13 @@ def test_profile_guidance_preserves_commander_physical_surface() -> None:
     )
     assert guidance["does_not_grant_tool_authority"] is True
     assert "manage_executor_workflow" not in guidance["primary_tools"]
+    recommended = set(guidance["primary_tools"]) | set(guidance["advanced_tools"])
+    assert guidance["preferred_first_entrypoint"] in COMMANDER_EXPOSED_TOOLS
+    assert recommended <= set(COMMANDER_EXPOSED_TOOLS)
+    assert all(
+        tool_routing_metadata(tool)["classification"] == TOOL_TIER_PRIMARY
+        for tool in guidance["primary_tools"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -102,15 +119,24 @@ def test_recovery_classes_are_machine_readable(
 
 
 def test_external_connector_failure_does_not_claim_automatic_recovery() -> None:
-    recovery = recovery_projection(
-        "CONNECTOR_PRINCIPAL_REJECTED",
-        error_origin="connector",
-    )
+    recovery = recovery_projection("CONNECTOR_PRINCIPAL_REJECTED")
 
     assert recovery is not None
     assert recovery["error_origin"] == "connector"
     assert recovery["recovery_class"] == "operator_action_required"
     assert recovery["agent_should_stop"] is True
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["CONNECTOR_PRINCIPAL_REJECTED", "CONNECTOR_OAUTH_SCOPE_REJECTED"],
+)
+def test_connector_origin_precedes_oauth_markers(error_code: str) -> None:
+    recovery = recovery_projection(error_code)
+
+    assert recovery is not None
+    assert recovery["error_origin"] == "connector"
+    assert recovery["recovery_class"] == "operator_action_required"
 
 
 def test_independent_verifier_rejects_cross_typed_continuation() -> None:
@@ -229,19 +255,87 @@ def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None
     assert verify_agent_projection(result) == []
 
 
-def _fixture_error_code(name: str) -> str | None:
-    return {
-        "executor_currently_running": "EXECUTOR_ALREADY_RUNNING",
-        "validation_failed": "VALIDATION_FAILED",
-        "context_changed": "CONTEXT_BINDING_MISMATCH",
-        "preview_expired": "PREVIEW_EXPIRED",
-        "scope_violation": "SCOPE_VIOLATION",
-        "blocked_work_item": "PREREQUISITE_NOT_READY",
-        "stable_promotion_not_ready": "PREREQUISITE_NOT_READY",
-    }.get(name)
+def test_auto_preview_projects_nested_production_state_instead_of_workflow_envelope(tmp_path) -> None:
+    state = {
+        "ok": True,
+        "status": "EXECUTOR_RUNNING",
+        "current_version": "R9",
+        "phase": "implementation",
+        "recommended_next_actions": [],
+    }
+    result = MCPWorkflowRouter(str(tmp_path), analyze_state_fn=lambda _params: state).handle(
+        "auto_preview", {"goal": ""}
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["agent_state"]["status"] == "EXECUTOR_RUNNING"
+    assert result["agent_state"]["operation_status"] == "succeeded"
+    assert result["agent_state"]["current_version"] == "R9"
+    assert result["agent_state"]["current_phase"] == "implementation"
+    assert result["primary_next_action"]["tool"] == "manage_executor_workflow"
+    assert result["primary_next_action"]["action"] == "status"
 
 
-def test_canonical_routing_fixtures() -> None:
+def test_auto_preview_production_path_wraps_nested_connector_error_conservatively(tmp_path) -> None:
+    state = {
+        "ok": False,
+        "error_code": "CONNECTOR_PRINCIPAL_REJECTED",
+        "message": "Connector rejected the current principal.",
+        "recommended_next_actions": [],
+    }
+    result = MCPWorkflowRouter(str(tmp_path), analyze_state_fn=lambda _params: state).handle(
+        "auto_preview", {"goal": ""}
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "CONNECTOR_PRINCIPAL_REJECTED"
+    assert result["error_origin"] == "connector"
+    assert result["recovery"]["recovery_class"] == "operator_action_required"
+    assert result["recovery"]["agent_should_stop"] is True
+
+
+def _build_fixture_canonical_state(tmp_path: Path, fixture: dict) -> dict:
+    inputs = fixture["canonical_inputs"]
+    mode = inputs.get("mode", "runner_managed")
+    pending_count = inputs.get("pending_count", 0)
+    observed_at = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+    observation = {"status": "current", "observed_at": "2026-09-02T12:00:00Z"}
+    return build_canonical_project_state(
+        project_root=str(tmp_path),
+        project_identity={"project_name": "routing-fixture"},
+        mode=mode,
+        git={
+            "ok": True,
+            "branch": "fixture",
+            "head": "a" * 40,
+            "working_tree_clean": inputs.get("delivery_clean", True),
+            "blocking_working_tree_clean": inputs.get("delivery_clean", True),
+            "ignored_runner_runtime_files": [],
+        },
+        runner={
+            "has_runner_state": mode == "runner_managed",
+            "runner_status": "READY",
+            "current_version": "R1",
+            "current_version_status": "NOT_STARTED" if pending_count else "PASSED",
+            "pending_count": pending_count,
+            "has_pending_versions": pending_count > 0,
+        },
+        plan={"has_plan": mode == "runner_managed"},
+        executor={
+            "has_session": inputs.get("executor_has_session", False),
+            "continuation_available": False,
+        },
+        reports={},
+        blockers=inputs.get("blockers", []),
+        warnings=[],
+        partial_errors=[],
+        observed_at=observed_at,
+        runtime_observation=observation,
+        connector_observation=observation,
+    )
+
+
+def test_canonical_routing_fixtures(tmp_path) -> None:
     fixtures = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
     assert len(fixtures) >= 20
@@ -250,30 +344,28 @@ def test_canonical_routing_fixtures() -> None:
         classified = WorkflowOrchestrator._classify_goal(fixture["intent"])
         assert classified["selected_workflow"] == expected["selected_workflow"], fixture["name"]
 
-        action = select_primary_action_from_state(
-            fixture["initial_state"],
-            intent=fixture["intent"],
-        )
-        assert action is not None, fixture["name"]
-        assert {"tool": action["tool"], "action": action["action"]} == expected["primary_next_action"]
+        canonical_state = _build_fixture_canonical_state(tmp_path, fixture)
+        initial_state = {
+            "ok": True,
+            "canonical_state": canonical_state,
+            "recommended_next_actions": fixture.get("recommended_next_actions", []),
+            **({"result": fixture["result"]} if "result" in fixture else {}),
+            **({"error_code": fixture["error_code"]} if "error_code" in fixture else {}),
+        }
+        assert canonical_state["schema_version"] == "colameta.canonical_project_state.v1"
+        assert canonical_state["current_conclusion"]["authorization"] == "observation_only"
 
         packet = add_agent_state_projection(
-            {
-                **fixture["initial_state"],
-                **({"error_code": _fixture_error_code(fixture["name"])} if _fixture_error_code(fixture["name"]) else {}),
-            },
+            initial_state,
             source_tool="analyze_project_state",
             goal=fixture["intent"],
         )
+        action = packet["primary_next_action"]
+        assert action is not None, fixture["name"]
+        assert {"tool": action["tool"], "action": action["action"]} == expected["primary_next_action"]
         actual_recovery = packet["recovery"]["recovery_class"] if packet["recovery"] else None
         assert actual_recovery == expected["recovery_class"], fixture["name"]
-        blocked_actions = [
-            (
-                "stable_apply"
-                if item["tool"] == "manage_stable_promotion_evidence"
-                else item["action"]
-            )
-            for item in packet["blocked_next_actions"]["items"]
-        ]
-        assert blocked_actions == expected["blocked_actions"], fixture["name"]
+        assert packet["blocked_next_actions"]["exhaustive"] is False
         assert verify_agent_projection(packet) == [], fixture["name"]
+        assert verify_authority_expectation(packet, expected["authority_expectation"]) == [], fixture["name"]
+        assert tool_routing_metadata(action["tool"])["classification"] != TOOL_TIER_LEGACY_OR_INTERNAL

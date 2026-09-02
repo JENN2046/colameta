@@ -112,9 +112,10 @@ The physically visible Commander tools are exactly:
 8. `manage_validation_run`
 9. `manage_git`
 
-Logical profile guidance should make `analyze_project_state`,
-`get_agent_operator_flow_packet` where visible, and `auto_preview` the preferred
-orientation routes without changing this accepted public surface.
+Logical profile guidance makes `analyze_project_state` the Commander first
+entrypoint and recommends only members of this exact nine-tool surface.
+`get_agent_operator_flow_packet` remains a high-level Owner/local entrypoint,
+but is not advertised to a Commander that cannot physically call it.
 
 ## 7. Physical exposure feasibility
 
@@ -144,13 +145,15 @@ will be accepted by an authority gate.
 
 ## 10. Required code changes
 
-1. Add a runtime-consumable routing registry covering all registered tools.
+1. Add a runtime-consumable, exact-name routing registry covering all
+   registered tools without substring classification.
 2. Add a pure Agent projection module for state, authority guidance, one primary
    action, non-exhaustive blocked actions, typed continuation and recovery.
 3. Additively project that contract from `analyze_project_state`,
    `get_agent_operator_flow_packet` and `auto_preview`.
-4. Add canonical fixtures and an independent verifier that consumes serialized
-   projection data rather than importing router implementation decisions.
+4. Add fixtures constructed by the production canonical-state builder and an
+   independent verifier that consumes serialized projection data rather than
+   importing router implementation decisions.
 5. Document the navigation/authority separation and profile guidance.
 
 ## 11. Compatibility risks
