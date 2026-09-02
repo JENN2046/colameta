@@ -2110,9 +2110,33 @@ class WorkflowOrchestrator:
                 if key in params and params.get(key) is not None:
                     return self._error_result("plan_update", "RAW_INPUT_NOT_SUPPORTED",
                                               f"plan_update apply 不接受 {key}。")
+            patch_id = params.get("patch_id")
+            if patch_id is not None and (
+                not isinstance(patch_id, str) or not patch_id.strip()
+            ):
+                return self._error_result(
+                    "plan_update",
+                    "PATCH_ID_REQUIRED",
+                    "plan_update apply 的 patch_id 必须是非空字符串。",
+                )
             try:
-                auto_apply_service = PlanPatchAutoApplyService(self.project_root)
-                auto_apply_result = auto_apply_service.auto_apply()
+                if isinstance(patch_id, str):
+                    patch_result = self._planning_bridge.apply_plan_patch(
+                        self.project_root,
+                        patch_id.strip(),
+                    )
+                    patch_ok = patch_result.get("ok") is True
+                    auto_apply_result = {
+                        "ok": patch_ok,
+                        "results": [patch_result],
+                        "applied_count": 1 if patch_ok else 0,
+                        "failed_count": 0 if patch_ok else 1,
+                        "skipped_count": 0,
+                        "changed_files": self._extract_changed_files(patch_result),
+                    }
+                else:
+                    auto_apply_service = PlanPatchAutoApplyService(self.project_root)
+                    auto_apply_result = auto_apply_service.auto_apply()
             except Exception as exc:  # pragma: no cover - defensive
                 return self._error_result("plan_update", "AUTO_APPLY_FAILED", f"应用 pending plan patch 失败：{exc}")
 
@@ -2166,7 +2190,7 @@ class WorkflowOrchestrator:
                     "tool": "manage_executor_workflow",
                     "params": {"action": "run_once_preview", "provider": "codex"},
                     "risk_level": "preview",
-                    "requires_confirmation": True,
+                    "requires_confirmation": False,
                 },
             ]
             status = "failed"

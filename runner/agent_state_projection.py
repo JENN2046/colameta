@@ -236,6 +236,47 @@ def _clear_unreachable_executor_confirmation(
         projected["unified_status"] = public_status
 
 
+def _profile_visible_plan_continuation_action(
+    response: Mapping[str, Any],
+    *,
+    source_tool: str,
+    allowed_tools: frozenset[str] | None,
+) -> dict[str, Any] | None:
+    """Map a hidden plan consumer to the bounded public workflow surface."""
+
+    if (
+        allowed_tools is None
+        or "run_mcp_workflow" not in allowed_tools
+        or "manage_plan_version" in allowed_tools
+        or response.get("selected_workflow") != "plan_update"
+    ):
+        return None
+    continuation = typed_continuation_projection(response, source_tool=source_tool)
+    if (
+        not isinstance(continuation, Mapping)
+        or continuation.get("kind") != "plan_patch"
+        or continuation.get("field_name") != "patch_id"
+    ):
+        return None
+    patch_id = continuation.get("id")
+    if not isinstance(patch_id, str) or not patch_id:
+        return None
+    return {
+        "tool": "run_mcp_workflow",
+        "action": "apply",
+        "reason": (
+            "Apply the exact plan patch through the bounded workflow surface "
+            "after its existing confirmation and context-binding gates pass."
+        ),
+        "params": {
+            "workflow": "plan_update",
+            "phase": "apply",
+            "patch_id": patch_id,
+        },
+        "requires_confirmation": True,
+    }
+
+
 def _first_action(
     response: Mapping[str, Any],
     *,
@@ -881,6 +922,12 @@ def add_agent_state_projection(
     )
     if selected is None:
         selected = _first_action(
+            projected,
+            source_tool=source_tool,
+            allowed_tools=allowed_tools,
+        )
+    if selected is None:
+        selected = _profile_visible_plan_continuation_action(
             projected,
             source_tool=source_tool,
             allowed_tools=allowed_tools,

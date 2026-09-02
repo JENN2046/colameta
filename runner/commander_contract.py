@@ -2881,12 +2881,12 @@ def _normalize_confirmation(
             break
     preview_id = _first_string(
         [source, *containers],
-        ("preview_id", "gate_preview_id", "batch_preview_id"),
+        ("preview_id", "gate_preview_id", "batch_preview_id", "patch_id"),
     )
     if preview_id is None:
         preview_id = _first_nested_string(
             [source, *containers],
-            ("preview_id", "gate_preview_id", "batch_preview_id"),
+            ("preview_id", "gate_preview_id", "batch_preview_id", "patch_id"),
         )
     if preview_id is None or not _PREVIEW_ID_RE.fullmatch(preview_id):
         raise CommanderContractError(
@@ -3350,7 +3350,7 @@ def _is_confirmation_action(action: dict[str, Any]) -> bool:
 def _confirmation_action_preview_id(arguments: Any) -> str | None:
     if not isinstance(arguments, dict):
         return None
-    for key in ("preview_id", "gate_preview_id", "batch_preview_id"):
+    for key in ("preview_id", "gate_preview_id", "batch_preview_id", "patch_id"):
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()

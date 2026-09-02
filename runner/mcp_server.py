@@ -7733,6 +7733,39 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return result
         self._attach_canonical_state_to_operation_status(result, params)
         binding = self._collect_operation_context_binding(tool_name, params)
+        identity = self._operation_context_identity(tool_name, params)
+        projected_confirmation_binding = False
+        if (
+            tool_name == "run_mcp_workflow"
+            and _normalize_run_mcp_workflow_name(params.get("workflow"))
+            == "auto_preview"
+        ):
+            primary_action = result.get("primary_next_action")
+            if isinstance(primary_action, dict):
+                primary_tool = primary_action.get("tool")
+                primary_params = primary_action.get("params")
+                if not isinstance(primary_params, dict):
+                    primary_params = primary_action.get("arguments")
+                if isinstance(primary_tool, str) and isinstance(primary_params, dict):
+                    primary_identity = self._operation_context_identity(
+                        primary_tool,
+                        primary_params,
+                    )
+                    if (
+                        primary_identity is not None
+                        and self._operation_context_required(
+                            primary_tool,
+                            primary_params,
+                        )
+                    ):
+                        identity = primary_identity
+                        binding = collect_project_context_binding(
+                            self._context_binding_project_root(params),
+                            project_name=self._context_binding_project_name(params),
+                            review_unit=primary_identity[1],
+                            workflow_intent=primary_identity[0],
+                        )
+                        projected_confirmation_binding = True
         if binding is None:
             action_raw = params.get("action")
             action = (
@@ -7782,15 +7815,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     project_name=self._context_binding_project_name(params),
                 )
             return result
-        identity = self._operation_context_identity(tool_name, params)
         if identity is None:
             return result
         result["context_binding"] = binding
         result["context_binding_contract"] = {
             "schema_version": PROJECT_CONTEXT_BINDING_SCHEMA_VERSION,
-            "confirmation_required": self._operation_context_has_matching_confirmation(
-                tool_name,
-                params,
+            "confirmation_required": (
+                projected_confirmation_binding
+                or self._operation_context_has_matching_confirmation(
+                    tool_name,
+                    params,
+                )
             ),
             "current_call_requires_context_binding": self._operation_context_required(
                 tool_name,
@@ -7927,6 +7962,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         binding: dict[str, Any],
         identity: tuple[str, str],
     ) -> None:
+        actions_to_bind: list[dict[str, Any]] = []
+        primary_action = result.get("primary_next_action")
+        if isinstance(primary_action, dict):
+            actions_to_bind.append(primary_action)
         for key in ("next_actions", "recommended_next_actions"):
             actions = result.get(key)
             if not isinstance(actions, list):
@@ -7934,19 +7973,21 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             for next_action in actions:
                 if not isinstance(next_action, dict):
                     continue
-                tool = next_action.get("tool")
-                if not isinstance(tool, str):
+                actions_to_bind.append(next_action)
+        for next_action in actions_to_bind:
+            tool = next_action.get("tool")
+            if not isinstance(tool, str):
+                continue
+            for params_key in ("params", "arguments"):
+                target_params = next_action.get(params_key)
+                if not isinstance(target_params, dict):
                     continue
-                for params_key in ("params", "arguments"):
-                    target_params = next_action.get(params_key)
-                    if not isinstance(target_params, dict):
-                        continue
-                    target_identity = self._operation_context_identity(tool, target_params)
-                    if (
-                        target_identity == identity
-                        and self._operation_context_required(tool, target_params)
-                    ):
-                        target_params.setdefault("context_binding", dict(binding))
+                target_identity = self._operation_context_identity(tool, target_params)
+                if (
+                    target_identity == identity
+                    and self._operation_context_required(tool, target_params)
+                ):
+                    target_params.setdefault("context_binding", dict(binding))
 
     def _tool_manage_git(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")

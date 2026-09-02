@@ -42,6 +42,20 @@ class _PlanPreviewManager:
         return {"ok": True, "patch_id": "patch_production_1"}
 
 
+class _ExactPlanApplyBridge:
+    def __init__(self) -> None:
+        self.applied_patch_ids: list[str] = []
+
+    def apply_plan_patch(self, project_root: str, patch_id: str) -> dict:
+        assert project_root
+        self.applied_patch_ids.append(patch_id)
+        return {
+            "ok": True,
+            "patch_id": patch_id,
+            "changed_files": [".colameta/plan.json"],
+        }
+
+
 def test_registry_classifies_the_complete_runtime_catalog(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
     registry = build_capability_routing_registry(tool.name for tool in server.tool_defs)
@@ -376,6 +390,81 @@ def test_auto_preview_plan_route_preserves_production_patch_handle(tmp_path) -> 
         "apply_preview_status",
         "apply_preview",
     ]
+
+
+def test_commander_plan_preview_maps_hidden_consumer_to_public_workflow(tmp_path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Test"],
+        check=True,
+    )
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "fixture"], check=True)
+
+    apply_bridge = _ExactPlanApplyBridge()
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    server._create_mcp_workflow_router = lambda: MCPWorkflowRouter(  # type: ignore[method-assign]
+        str(tmp_path),
+        plan_workflow_manager=_PlanPreviewManager(),  # type: ignore[arg-type]
+        planning_bridge=apply_bridge,  # type: ignore[arg-type]
+        agent_profile_id="web_gpt_commander",
+    )
+
+    response = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Update the implementation plan",
+            "name": "R2",
+            "description": "Bounded follow-up",
+        },
+    )
+
+    assert response["ok"] is True
+    assert response["data"]["outcome"] == "confirmation_required"
+    facts = response["data"]["facts"]
+    assert facts["continuation"]["kind"] == "plan_patch"
+    assert facts["continuation"]["field_name"] == "patch_id"
+    assert facts["continuation"]["id"] == "patch_production_1"
+    next_action = response["data"]["next_action"]
+    assert next_action["tool"] == "run_mcp_workflow"
+    assert next_action["arguments"]["workflow"] == "plan_update"
+    assert next_action["arguments"]["phase"] == "apply"
+    assert next_action["arguments"]["patch_id"] == "patch_production_1"
+    assert next_action["arguments"]["context_binding"] == response["data"][
+        "context_binding"
+    ]
+    assert response["data"]["confirmation"]["preview_id"] == "patch_production_1"
+    assert "manage_plan_version" not in json.dumps(response, sort_keys=True)
+
+    tampered_arguments = dict(next_action["arguments"])
+    tampered_arguments["context_binding"] = {
+        **next_action["arguments"]["context_binding"],
+        "head": "0" * 40,
+    }
+    blocked = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        tampered_arguments,
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["error_code"] == "PROJECT_CONTEXT_MISMATCH"
+    assert apply_bridge.applied_patch_ids == []
+
+    applied = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        next_action["arguments"],
+    )
+
+    assert applied["ok"] is True
+    assert applied["data"]["outcome"] == "completed"
+    assert ".colameta/plan.json" in applied["data"]["facts"]["changed_files"]
+    assert apply_bridge.applied_patch_ids == ["patch_production_1"]
 
 
 def test_projection_preserves_old_fields_and_grants_no_authority() -> None:

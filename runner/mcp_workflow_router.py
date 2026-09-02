@@ -1,4 +1,5 @@
 import os
+from dataclasses import asdict, is_dataclass
 from typing import Any, Callable
 
 from runner.agent_state_projection import add_agent_state_projection
@@ -131,6 +132,11 @@ class MCPWorkflowRouter:
         return response
 
     def _core_output_to_legacy_response(self, output: CoreOutput) -> dict[str, Any]:
+        legacy_result = (
+            asdict(output.result)
+            if is_dataclass(output.result) and not isinstance(output.result, type)
+            else output.result
+        )
         out: dict[str, Any] = {
             "ok": output.ok,
             "workflow": output.workflow,
@@ -143,7 +149,7 @@ class MCPWorkflowRouter:
             "requires_confirmation": output.requires_confirmation,
             "blockers": output.blockers,
             "warnings": output.warnings,
-            "result": output.result,
+            "result": legacy_result,
         }
         if output.phase is not None:
             out["phase"] = output.phase

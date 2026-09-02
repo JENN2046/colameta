@@ -135,6 +135,13 @@ Typed continuation 的动作名采用真实消费者 contract：`patch_id` 对�
 `executes`、`executed`、`executing` 与 `execution`。这些词形不会恢复宽泛 substring
 匹配，显式的“不要执行/不要启动 executor”否定规则仍优先阻断 executor route。
 
+Commander 收到成功的 plan preview 时仍保留原 `patch_id` typed handle。若底层
+`manage_plan_version` 不在当前物理 tool surface，projection 会把确认动作映射为可达的
+`run_mcp_workflow(workflow=plan_update, phase=apply, patch_id=...)`；该映射只是导航，
+不会绕过既有 confirmation、context binding 或 plan scope gate。传入的
+`patch_id` 会约束该路径只消费同一个 typed plan patch；未传 `patch_id` 的既有
+auto-apply 调用保持原语义。
+
 支持的 Agent guidance profiles 包括：
 
 - `web_gpt_commander`

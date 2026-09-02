@@ -24,6 +24,11 @@ Branch: `codex/ai-ux-tool-routing-r1`
 - whole-token goal routing preserves the audited executor word family
   (`exec`, `execute`, `executes`, `executed`, `executing`, `execution`) while
   retaining the explicit executor-negation veto;
+- Commander plan previews retain their `patch_id` evidence and map the hidden
+  plan consumer to the visible, bounded `run_mcp_workflow/plan_update/apply`
+  continuation without changing its confirmation or context-binding gates;
+  the mapped apply consumes that exact patch, while the pre-existing no-ID
+  auto-apply behavior remains available to existing callers;
 - `analyze_project_state`, `get_agent_operator_flow_packet` and
   `run_mcp_workflow(auto_preview)` emit the additive
   `colameta.agent_state_projection.v1` projection;
@@ -98,9 +103,10 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `72 passed`.
+Dedicated R1 tests after review hardening: `73 passed`.
 The three previously affected operator-flow production regressions plus the R1
-suite pass together: `75 passed`.
+suite pass together: `76 passed`.
+The plan-continuation production-path focus passes: `30 passed`.
 
 ## Compatibility validation
 
@@ -110,7 +116,9 @@ suite pass together: `75 passed`.
   hardening: `1671 passed`;
 - functional MVP, thin loop, stage parallel, review manifest, validation,
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
-- full suite after the profile-reachability repair: `4781 passed`, `22 failed`,
+- relevant routing/Commander set: `1512 passed`, `1 failed`; the one failing
+  canonical-conclusion node reproduces unchanged at the pre-repair commit;
+- full suite after the Commander plan-continuation repair: `4806 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached

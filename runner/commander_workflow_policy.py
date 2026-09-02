@@ -62,6 +62,7 @@ _PROJECT_SELECTION_PUBLIC_ERROR_CODES = frozenset(
 )
 _ACTION_CONTAINER_KEYS = frozenset(
     {
+        "primary_next_action",
         "next_action",
         "next_actions",
         "recommended_next_action",
