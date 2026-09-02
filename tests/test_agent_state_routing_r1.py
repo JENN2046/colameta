@@ -98,6 +98,23 @@ def test_profile_guidance_preserves_commander_physical_surface() -> None:
     )
 
 
+def test_source_observer_guidance_contains_only_read_only_tools() -> None:
+    guidance = profile_guidance("source_observer")
+    recommended = guidance["primary_tools"] + guidance["advanced_tools"]
+
+    assert "manage_files" not in recommended
+    assert {
+        "get_repo_overview",
+        "get_source_file",
+        "search_source",
+        "get_runtime_version_status",
+    } <= set(recommended)
+    assert all(
+        tool_routing_metadata(tool)["side_effect_level"] == "READ_ONLY"
+        for tool in recommended
+    )
+
+
 @pytest.mark.parametrize(
     "profile_id",
     [
@@ -374,6 +391,27 @@ def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None
     assert result["agent_state"]["goal"].startswith("Inspect project state")
     assert result["routing"]["selected_workflow"] == "project_status"
     assert verify_agent_projection(result) == []
+
+
+def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_path) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        agent_profile_id="web_gpt_commander",
+    ).handle("auto_preview", {"goal": "Run the executor for this task"})
+
+    guidance = result["routing"]["profile"]
+    reachable = set(guidance["primary_tools"]) | set(guidance["advanced_tools"])
+    primary = result["primary_next_action"]
+    assert result["selected_workflow"] == "executor_preflight"
+    assert primary is None or primary["tool"] in reachable
+    assert primary is None
+    assert result["why_no_unique_action"]
+
+    local_result = MCPWorkflowRouter(
+        str(tmp_path),
+        agent_profile_id="local_codex_commander",
+    ).handle("auto_preview", {"goal": "Run the executor for this task"})
+    assert local_result["primary_next_action"]["tool"] == "manage_executor_workflow"
 
 
 def test_auto_preview_projects_nested_production_state_instead_of_workflow_envelope(tmp_path) -> None:

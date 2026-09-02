@@ -127,10 +127,38 @@ def _is_same_source_refresh(action: Mapping[str, Any], source_tool: str) -> bool
     return tool == source_tool and action_name == "refresh_project_state"
 
 
-def _first_action(response: Mapping[str, Any], *, source_tool: str) -> Any:
+def _profile_allowed_tools(profile_id: str | None) -> frozenset[str] | None:
+    if profile_id is None:
+        return None
+    guidance = profile_guidance(profile_id)
+    return frozenset(
+        tool
+        for key in ("primary_tools", "advanced_tools")
+        for tool in guidance.get(key, [])
+        if isinstance(tool, str) and tool
+    )
+
+
+def _action_reachable(
+    action: Mapping[str, Any],
+    allowed_tools: frozenset[str] | None,
+) -> bool:
+    return allowed_tools is None or action.get("tool") in allowed_tools
+
+
+def _first_action(
+    response: Mapping[str, Any],
+    *,
+    source_tool: str,
+    allowed_tools: frozenset[str] | None,
+) -> Any:
     for source in _projection_sources(response):
         direct = source.get("primary_next_action")
-        if isinstance(direct, Mapping) and not _is_same_source_refresh(direct, source_tool):
+        if (
+            isinstance(direct, Mapping)
+            and not _is_same_source_refresh(direct, source_tool)
+            and _action_reachable(direct, allowed_tools)
+        ):
             return direct
         for key in ("recommended_next_actions", "next_actions", "recommended_next_steps"):
             actions = source.get(key)
@@ -140,6 +168,7 @@ def _first_action(response: Mapping[str, Any], *, source_tool: str) -> Any:
                         isinstance(action, Mapping)
                         and isinstance(action.get("tool"), str)
                         and not _is_same_source_refresh(action, source_tool)
+                        and _action_reachable(action, allowed_tools)
                     ):
                         return action
         for key in ("recommended_next_action", "next_action", "safe_next_action"):
@@ -148,6 +177,7 @@ def _first_action(response: Mapping[str, Any], *, source_tool: str) -> Any:
                 isinstance(next_action, Mapping)
                 and isinstance(next_action.get("tool"), str)
                 and not _is_same_source_refresh(next_action, source_tool)
+                and _action_reachable(next_action, allowed_tools)
             ):
                 return next_action
     return None
@@ -695,14 +725,28 @@ def add_agent_state_projection(
     goal: str | None = None,
     primary_action: Mapping[str, Any] | None = None,
     error_origin: str | None = None,
+    enforce_profile_reachability: bool = False,
 ) -> dict[str, Any]:
     projected = dict(response)
-    selected = primary_action if primary_action is not None else _first_action(
-        projected,
-        source_tool=source_tool,
+    allowed_tools = (
+        _profile_allowed_tools(profile_id) if enforce_profile_reachability else None
+    )
+    selected = (
+        primary_action
+        if isinstance(primary_action, Mapping)
+        and _action_reachable(primary_action, allowed_tools)
+        else None
     )
     if selected is None:
+        selected = _first_action(
+            projected,
+            source_tool=source_tool,
+            allowed_tools=allowed_tools,
+        )
+    if selected is None:
         selected = select_primary_action_from_state(projected, intent=goal)
+    if isinstance(selected, Mapping) and not _action_reachable(selected, allowed_tools):
+        selected = None
     normalized_action = normalize_agent_action(selected, source_tool=source_tool)
     projected["agent_projection_schema_version"] = AGENT_PROJECTION_SCHEMA_VERSION
     projected["agent_state"] = _agent_state(

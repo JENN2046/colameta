@@ -246,8 +246,16 @@ PROFILE_GUIDANCE: dict[str, dict[str, Any]] = {
     "source_observer": {
         "preferred_first_entrypoint": "analyze_project_state",
         "primary_tools": ["analyze_project_state"],
-        "advanced_tools": ["manage_files", "get_runtime_version_status"],
-        "tools_not_normally_recommended": sorted(LEGACY_OR_INTERNAL_TOOLS),
+        "advanced_tools": [
+            "get_repo_overview",
+            "get_source_file",
+            "search_source",
+            "get_runtime_version_status",
+        ],
+        "tools_not_normally_recommended": sorted(
+            LEGACY_OR_INTERNAL_TOOLS
+            - {"get_repo_overview", "get_source_file", "search_source"}
+        ),
         "read_write_expectation": "read only; no managed workflow adoption or state transition",
     },
 }

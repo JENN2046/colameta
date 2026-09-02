@@ -50,6 +50,11 @@ registration or authority gates:
 - same-source `refresh_project_state` fallbacks cannot become a primary action;
 - seven exact commit-scoped legacy/governance commands are classified as
   `WRITE_OR_TRANSITION` rather than inferred as read-only from their names.
+- `auto_preview` filters its projected primary action through the active
+  profile's reachable tools, while established operator-flow packets retain
+  their own route-specific contracts;
+- `source_observer` guidance contains only read-only tools and never advertises
+  the mixed read/write `manage_files` surface.
 
 ## Independent Agent UX verification
 
@@ -69,7 +74,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `46 passed`.
+Dedicated R1 tests after review hardening: `48 passed`.
+The three previously affected operator-flow production regressions plus the R1
+suite pass together: `51 passed`.
 
 ## Compatibility validation
 
@@ -79,7 +86,8 @@ Dedicated R1 tests after review hardening: `46 passed`.
   hardening: `1671 passed`;
 - functional MVP, thin loop, stage parallel, review manifest, validation,
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
-- full suite: `4766 passed`, `22 failed`, `2 skipped`, `213 subtests passed`.
+- full suite after the profile-reachability repair: `4781 passed`, `22 failed`,
+  `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached
 worktree at the implementation base. Every one reproduced there:

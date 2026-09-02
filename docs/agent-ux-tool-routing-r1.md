@@ -117,6 +117,14 @@ side-effect level。高层投影直接消费这个 registry，因此它不是只
 
 当前 Commander 已经通过既有注册机制物理暴露 9 个工具。R1 保留该机制，不做
 动态注册重写，也不删除 Owner/advanced/compatibility catalog 中的工具。
+`auto_preview` 会用当前 profile 的 primary/advanced guidance 过滤
+`primary_next_action`；如果现有 workflow 只能给出 profile 不可达的底层工具，
+它返回 `null`，不会建议 Agent 调用不可见工具。这个约束只应用于
+`auto_preview` 的 canonical routing projection，不会重写既有 operator-flow
+packet 自身的 route contract。
+
+`source_observer` 的推荐表只包含 read-only 工具；混合读写的 `manage_files`
+不会作为其 advanced tool 出现。
 
 ## Progressive disclosure
 

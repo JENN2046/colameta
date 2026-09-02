@@ -118,6 +118,7 @@ class MCPWorkflowRouter:
                     else None
                 ),
                 goal=goal if isinstance(goal, str) else None,
+                enforce_profile_reachability=True,
             )
             response["classified_intent"] = {
                 "user_request": goal if isinstance(goal, str) else None,
