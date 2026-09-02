@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from runner.canonical_project_state import build_canonical_project_state
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.mcp_server import COMMANDER_EXPOSED_TOOLS, MCPPlanningBridgeServer
 from runner.mcp_workflow_router import MCPWorkflowRouter
+from runner.project_registry import ProjectRegistry
 from tests.agent_ux_independent_verifier import (
     verify_agent_projection,
     verify_authority_expectation,
@@ -249,6 +251,70 @@ def test_patch_handle_precedes_generic_core_preview_ids() -> None:
     assert continuation["id"] == "patch_1"
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_action"),
+    [
+        (
+            {
+                "tool": "run_mcp_workflow",
+                "params": {
+                    "workflow": "git_commit",
+                    "phase": "commit",
+                    "preview_id": "preview_git",
+                },
+            },
+            "commit",
+        ),
+        (
+            {
+                "tool": "manage_git_commit",
+                "params": {"action": "commit", "preview_id": "preview_git"},
+            },
+            "commit",
+        ),
+        (
+            {
+                "tool": "manage_executor_workflow",
+                "params": {"action": "run_once", "preview_id": "preview_once"},
+            },
+            "run_once",
+        ),
+        (
+            {
+                "tool": "manage_executor_workflow",
+                "params": {"action": "run_bounded", "preview_id": "preview_bounded"},
+            },
+            "run_bounded",
+        ),
+    ],
+)
+def test_preview_continuation_derives_the_workflow_specific_consuming_action(
+    action: dict,
+    expected_action: str,
+) -> None:
+    preview_id = action["params"]["preview_id"]
+    continuation = typed_continuation_projection(
+        {"preview_ids": [preview_id], "next_actions": [action]},
+        source_tool="run_mcp_workflow",
+    )
+
+    assert continuation is not None
+    assert continuation["field_name"] == "preview_id"
+    assert continuation["id"] == preview_id
+    assert continuation["allowed_next_actions"] == [expected_action]
+
+
+def test_context_free_preview_handle_does_not_invent_a_consuming_action() -> None:
+    continuation = typed_continuation_projection(
+        {"preview_id": "preview_unknown"},
+        source_tool="run_mcp_workflow",
+    )
+
+    assert continuation is not None
+    assert continuation["allowed_next_actions"] == []
+    assert continuation["why_no_allowed_next_action"]
+
+
 def test_auto_preview_plan_route_preserves_production_patch_handle(tmp_path) -> None:
     result = MCPWorkflowRouter(
         str(tmp_path),
@@ -378,6 +444,76 @@ def test_analyze_project_state_exposes_the_canonical_projection(tmp_path) -> Non
     assert result["agent_state"]["profile_id"] == "web_gpt_commander"
     assert result["blocked_next_actions"]["exhaustive"] is False
     assert verify_agent_projection(result) == []
+
+
+def test_registered_project_analysis_publishes_copyable_project_bound_action(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(project), "config", "user.name", "Test"], check=True)
+    (project / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(project), "commit", "-qm", "fixture"], check=True)
+
+    server = MCPPlanningBridgeServer(
+        str(project),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = server.project_registry.register_project(
+        str(project),
+        project_name="demo-project",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+
+    response = server.call_tool_for_agent(
+        "analyze_project_state",
+        {"project_name": "demo-project", "include_reports": False},
+    )
+
+    assert response["ok"] is True
+    public_action = response["data"]["next_action"]
+    assert public_action["arguments"]["project_name"] == "demo-project"
+    projected_action = response["data"]["facts"]["primary_next_action"]
+    assert projected_action["params"]["project_name"] == "demo-project"
+    assert projected_action["required_arguments"]["project_name"] == "demo-project"
+
+    followup = server.call_tool_for_agent(
+        public_action["tool"],
+        public_action["arguments"],
+    )
+    assert followup.get("error_code") != "PROJECT_NAME_REQUIRED"
+
+
+def test_project_binding_preserves_copyable_action_arguments() -> None:
+    projected = add_agent_state_projection(
+        {
+            "recommended_next_actions": [
+                {
+                    "tool": "run_mcp_workflow",
+                    "copyable_tool_call": {
+                        "tool": "run_mcp_workflow",
+                        "arguments": {"workflow": "source_onboarding", "phase": "preview"},
+                    }
+                }
+            ]
+        },
+        source_tool="analyze_project_state",
+        project_name="demo-project",
+    )
+
+    primary = projected["primary_next_action"]
+    assert primary["required_arguments"] == {
+        "workflow": "source_onboarding",
+        "phase": "preview",
+        "project_name": "demo-project",
+    }
 
 
 def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None:

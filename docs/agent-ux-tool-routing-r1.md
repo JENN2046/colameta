@@ -76,6 +76,14 @@ R1 统一的是 handle 的解释信息，不是 handle 本身。投影继续区�
 typed handle 同时存在时，投影优先保留 `patch_id` 等精确类型，不把它降级成
 generic `preview_id`。
 
+对于 generic `preview_id`，`allowed_next_actions` 从生产 next-action 的实际
+`action` 或 workflow `phase` 派生，例如 `commit`、`run_once`、`run_bounded`。
+只有 handle、没有消费上下文时返回空列表和原因，不猜测 `status/apply`。
+
+当入口已解析出注册项目时，canonical action 的 `params` / `arguments` 和
+`required_arguments` 都携带同一个 `project_name`。Agent 复制该 action 后仍会
+走原来的 registry route；这只是上下文绑定，不授予额外 authority。
+
 ## Recovery classes
 
 ColaMeta 控制的高层错误可以投影为：

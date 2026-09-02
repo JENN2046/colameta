@@ -67,6 +67,18 @@ def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
                 findings.append("generic continuation_id is forbidden")
             if continuation.get("does_not_grant_authority") is not True:
                 findings.append("continuation is not explicitly navigation-only")
+            allowed_actions = continuation.get("allowed_next_actions")
+            if not isinstance(allowed_actions, list) or any(
+                not isinstance(action, str) or not action
+                for action in allowed_actions
+            ):
+                findings.append("continuation allowed actions are malformed")
+            if (
+                continuation.get("kind") == "preview"
+                and allowed_actions == []
+                and not continuation.get("why_no_allowed_next_action")
+            ):
+                findings.append("context-free preview lacks a fail-closed explanation")
 
     routing = packet.get("routing")
     if not isinstance(routing, Mapping) or routing.get("routing_metadata_grants_no_authority") is not True:

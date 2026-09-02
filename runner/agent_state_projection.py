@@ -16,7 +16,7 @@ _HANDLE_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("gate_preview_id", "gate_preview", ("status", "apply")),
     ("batch_preview_id", "batch_preview", ("status", "execute")),
     ("patch_id", "plan_patch", ("status", "apply")),
-    ("preview_id", "preview", ("status", "apply")),
+    ("preview_id", "preview", ()),
 )
 
 _HARD_STOPS = (
@@ -81,14 +81,67 @@ def _first_text(sources: list[Mapping[str, Any]], *keys: str) -> str | None:
     return None
 
 
+def _project_bound_action(
+    action: Mapping[str, Any],
+    project_name: str,
+) -> dict[str, Any]:
+    bound = dict(action)
+    argument_field_found = False
+    copyable_arguments: dict[str, Any] | None = None
+    for field in ("arguments", "params", "required_arguments"):
+        value = bound.get(field)
+        if isinstance(value, Mapping):
+            arguments = dict(value)
+            arguments.setdefault("project_name", project_name)
+            bound[field] = arguments
+            if field in {"arguments", "params"}:
+                argument_field_found = True
+    copyable = bound.get("copyable_tool_call")
+    if isinstance(copyable, Mapping):
+        copyable_bound = dict(copyable)
+        copyable_arguments = _as_dict(copyable_bound.get("arguments"))
+        copyable_arguments.setdefault("project_name", project_name)
+        copyable_bound["arguments"] = copyable_arguments
+        bound["copyable_tool_call"] = copyable_bound
+    if not argument_field_found:
+        bound["arguments"] = copyable_arguments or {"project_name": project_name}
+    return bound
+
+
+def _bind_top_level_actions_to_project(
+    response: dict[str, Any],
+    project_name: str | None,
+) -> None:
+    if not project_name:
+        return
+    for key in ("primary_next_action", "recommended_next_action", "next_action", "safe_next_action"):
+        action = response.get(key)
+        if isinstance(action, Mapping):
+            response[key] = _project_bound_action(action, project_name)
+    for key in ("recommended_next_actions", "next_actions", "recommended_next_steps"):
+        actions = response.get(key)
+        if isinstance(actions, list):
+            response[key] = [
+                _project_bound_action(action, project_name)
+                if isinstance(action, Mapping)
+                else action
+                for action in actions
+            ]
+
+
 def normalize_agent_action(
     action: Any,
     *,
     source_tool: str,
+    project_name: str | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(action, Mapping):
         return None
-    normalized = dict(action)
+    normalized = (
+        _project_bound_action(action, project_name)
+        if project_name
+        else dict(action)
+    )
     arguments = _as_dict(normalized.get("arguments"))
     if not arguments:
         arguments = _as_dict(normalized.get("params"))
@@ -107,7 +160,12 @@ def normalize_agent_action(
                 break
     normalized.setdefault("action", action_name if isinstance(action_name, str) else "inspect")
     normalized.setdefault("reason", "Follow the first bounded action selected from current project state.")
-    normalized.setdefault("required_arguments", arguments)
+    required_arguments = _as_dict(normalized.get("required_arguments"))
+    if not required_arguments:
+        required_arguments = dict(arguments)
+    elif project_name:
+        required_arguments.setdefault("project_name", project_name)
+    normalized["required_arguments"] = required_arguments
     normalized.setdefault("optional_arguments", {})
     normalized.setdefault("source_tool", source_tool)
     normalized.setdefault("routing", tool_routing_metadata(tool))
@@ -386,6 +444,38 @@ def select_primary_action_from_state(
     }
 
 
+def _preview_handle_from_action(
+    value: Mapping[str, Any],
+) -> tuple[str, str, tuple[str, ...], str, str | None] | None:
+    arguments = _as_dict(value.get("arguments"))
+    if not arguments:
+        arguments = _as_dict(value.get("params"))
+    if not arguments:
+        arguments = _as_dict(value.get("required_arguments"))
+    if not arguments:
+        arguments = _as_dict(_as_dict(value.get("copyable_tool_call")).get("arguments"))
+    preview_id = arguments.get("preview_id") or value.get("preview_id")
+    if not isinstance(preview_id, str) or not preview_id:
+        return None
+    tool = value.get("tool") or _as_dict(value.get("copyable_tool_call")).get("tool")
+    action = (
+        arguments.get("phase")
+        if tool == "run_mcp_workflow"
+        else arguments.get("action")
+    )
+    if not isinstance(action, str) or not action:
+        action = arguments.get("action") or arguments.get("phase")
+    actions = (action,) if isinstance(action, str) and action else ()
+    expires_at = value.get("expires_at")
+    return (
+        "preview_id",
+        "preview",
+        actions,
+        preview_id,
+        expires_at if isinstance(expires_at, str) else None,
+    )
+
+
 def _walk_for_handle(value: Any, depth: int = 0) -> tuple[str, str, tuple[str, ...], str, str | None] | None:
     if depth > 5:
         return None
@@ -397,10 +487,15 @@ def _walk_for_handle(value: Any, depth: int = 0) -> tuple[str, str, tuple[str, .
         return None
     if isinstance(value, Mapping):
         for field_name, kind, actions in _HANDLE_SPECS:
+            if field_name == "preview_id":
+                continue
             candidate = value.get(field_name)
             if isinstance(candidate, str) and candidate:
                 expires_at = value.get("expires_at")
                 return field_name, kind, actions, candidate, expires_at if isinstance(expires_at, str) else None
+        action_handle = _preview_handle_from_action(value)
+        if action_handle is not None:
+            return action_handle
         for key in (
             "primary_next_action",
             "next_action",
@@ -417,9 +512,19 @@ def _walk_for_handle(value: Any, depth: int = 0) -> tuple[str, str, tuple[str, .
                 found = _walk_for_handle(value[key], depth + 1)
                 if found is not None:
                     return found
+        preview_id = value.get("preview_id")
+        if isinstance(preview_id, str) and preview_id:
+            expires_at = value.get("expires_at")
+            return (
+                "preview_id",
+                "preview",
+                (),
+                preview_id,
+                expires_at if isinstance(expires_at, str) else None,
+            )
         preview_ids = value.get("preview_ids")
         if isinstance(preview_ids, list) and len(preview_ids) == 1 and isinstance(preview_ids[0], str):
-            return "preview_id", "preview", ("status", "apply"), preview_ids[0], None
+            return "preview_id", "preview", (), preview_ids[0], None
     return None
 
 
@@ -440,6 +545,10 @@ def typed_continuation_projection(response: Mapping[str, Any], *, source_tool: s
     }
     if expires_at is not None:
         continuation["expires_at"] = expires_at
+    if not actions:
+        continuation["why_no_allowed_next_action"] = (
+            "The preview handle alone does not prove which workflow action may consume it."
+        )
     return continuation
 
 
@@ -728,6 +837,7 @@ def add_agent_state_projection(
     enforce_profile_reachability: bool = False,
 ) -> dict[str, Any]:
     projected = dict(response)
+    _bind_top_level_actions_to_project(projected, project_name)
     allowed_tools = (
         _profile_allowed_tools(profile_id) if enforce_profile_reachability else None
     )
@@ -747,7 +857,11 @@ def add_agent_state_projection(
         selected = select_primary_action_from_state(projected, intent=goal)
     if isinstance(selected, Mapping) and not _action_reachable(selected, allowed_tools):
         selected = None
-    normalized_action = normalize_agent_action(selected, source_tool=source_tool)
+    normalized_action = normalize_agent_action(
+        selected,
+        source_tool=source_tool,
+        project_name=project_name,
+    )
     projected["agent_projection_schema_version"] = AGENT_PROJECTION_SCHEMA_VERSION
     projected["agent_state"] = _agent_state(
         projected,

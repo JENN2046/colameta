@@ -58,6 +58,12 @@ registration or authority gates:
 - ASCII routing keywords remain whole-token matched, while audited common
   inflections such as `editing`, `patching`, and `committing` retain their
   intended preview routes.
+- a known registered `project_name` is carried into the canonical action's
+  concrete arguments and `required_arguments`, so copying the action preserves
+  service-mode routing;
+- generic preview continuations derive their consuming action from the typed
+  production next action (`commit`, `run_once`, `run_bounded`, and so on); a
+  context-free preview advertises no invented action.
 
 ## Independent Agent UX verification
 
@@ -77,9 +83,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `52 passed`.
+Dedicated R1 tests after review hardening: `59 passed`.
 The three previously affected operator-flow production regressions plus the R1
-suite pass together: `55 passed`.
+suite pass together: `62 passed`.
 
 ## Compatibility validation
 
