@@ -150,4 +150,6 @@ packet 自身的 route contract。
 action；Router 会选择下一条可用建议，或者返回 `null`，从而避免刷新自循环。
 英文 routing keyword 采用 whole-token 匹配，并显式接纳常见词形变化，例如
 `editing`、`patching`、`committed` 和 `committing`；短词不会因为出现在
-`expired` 等无关单词内部而误触发路由。
+`expired` 等无关单词内部而误触发路由。下划线按 token 分隔符处理，因此
+`plan_update`、`git_commit`、`small_project_patch` 和 `executor_preflight`
+等 canonical workflow 名称仍可直接路由。

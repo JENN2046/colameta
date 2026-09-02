@@ -109,7 +109,7 @@ def _goal_keyword_matches(goal: str, keyword: str) -> bool:
         forms = (keyword, *_GOAL_KEYWORD_INFLECTIONS.get(keyword, ()))
         alternatives = "|".join(re.escape(form) for form in forms)
         return re.search(
-            rf"(?<![A-Za-z0-9_])(?:{alternatives})(?![A-Za-z0-9_])",
+            rf"(?<![A-Za-z0-9])(?:{alternatives})(?![A-Za-z0-9])",
             goal,
         ) is not None
     return keyword in goal

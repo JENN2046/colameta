@@ -569,6 +569,25 @@ def test_auto_preview_preserves_common_inflected_routing_keywords(
     assert result["selected_workflow"] == expected_workflow
 
 
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("plan_update", "plan_update"),
+        ("git_commit", "git_commit"),
+        ("small_project_patch", "small_project_patch"),
+        ("executor_preflight", "executor_preflight"),
+    ],
+)
+def test_auto_preview_treats_underscores_as_canonical_name_separators(
+    tmp_path,
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    result = MCPWorkflowRouter(str(tmp_path)).handle("auto_preview", {"goal": goal})
+
+    assert result["selected_workflow"] == expected_workflow
+
+
 def test_auto_preview_projects_nested_production_state_instead_of_workflow_envelope(tmp_path) -> None:
     state = {
         "ok": True,

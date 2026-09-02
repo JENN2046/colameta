@@ -57,7 +57,8 @@ registration or authority gates:
   the mixed read/write `manage_files` surface.
 - ASCII routing keywords remain whole-token matched, while audited common
   inflections such as `editing`, `patching`, and `committing` retain their
-  intended preview routes.
+  intended preview routes; underscores are separators so canonical names such
+  as `git_commit` and `executor_preflight` remain directly routable.
 - a known registered `project_name` is carried into the canonical action's
   concrete arguments and `required_arguments`, so copying the action preserves
   service-mode routing;
@@ -83,9 +84,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `59 passed`.
+Dedicated R1 tests after review hardening: `63 passed`.
 The three previously affected operator-flow production regressions plus the R1
-suite pass together: `62 passed`.
+suite pass together: `66 passed`.
 
 ## Compatibility validation
 
