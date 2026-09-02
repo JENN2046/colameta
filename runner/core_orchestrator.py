@@ -57,6 +57,7 @@ _GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
     "commit": frozenset({"commits", "committed", "committing", "commiting"}),
     "continuation": frozenset({"continuations"}),
     "edit": frozenset({"edits", "edited", "editing"}),
+    "exec": frozenset({"execute", "executes", "executed", "executing", "execution"}),
     "executor": frozenset({"executors"}),
     "extend": frozenset({"extends", "extended", "extending"}),
     "heading": frozenset({"headings"}),

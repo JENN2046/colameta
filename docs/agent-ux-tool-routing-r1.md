@@ -131,6 +131,10 @@ Typed continuation 的动作名采用真实消费者 contract：`patch_id` 对�
 `_preview` 的既有 getter 若服务端固定要求 `mcp:read`，routing registry 同样标记为
 `READ_ONLY`，不会仅凭名称误报为 `PREVIEW`。
 
+`auto_preview` 的完整 token 路由保留明确的 executor 词族：`exec`、`execute`、
+`executes`、`executed`、`executing` 与 `execution`。这些词形不会恢复宽泛 substring
+匹配，显式的“不要执行/不要启动 executor”否定规则仍优先阻断 executor route。
+
 支持的 Agent guidance profiles 包括：
 
 - `web_gpt_commander`

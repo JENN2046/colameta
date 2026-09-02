@@ -21,6 +21,9 @@ Branch: `codex/ai-ux-tool-routing-r1`
   exact `manage_plan_version` consumer actions;
 - audited `get_*_preview` evidence readers remain `READ_ONLY` despite the
   generic preview-name fallback;
+- whole-token goal routing preserves the audited executor word family
+  (`exec`, `execute`, `executes`, `executed`, `executing`, `execution`) while
+  retaining the explicit executor-negation veto;
 - `analyze_project_state`, `get_agent_operator_flow_packet` and
   `run_mcp_workflow(auto_preview)` emit the additive
   `colameta.agent_state_projection.v1` projection;
@@ -95,9 +98,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `67 passed`.
+Dedicated R1 tests after review hardening: `72 passed`.
 The three previously affected operator-flow production regressions plus the R1
-suite pass together: `70 passed`.
+suite pass together: `75 passed`.
 
 ## Compatibility validation
 

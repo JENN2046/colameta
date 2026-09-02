@@ -684,6 +684,11 @@ def test_registered_project_auto_preview_preserves_serving_commander_profile(
         ("Patching the code", "small_project_patch"),
         ("Committing the current changes", "git_commit"),
         ("Commiting the current changes", "git_commit"),
+        ("Execute the bounded task", "executor_preflight"),
+        ("The agent executes this task", "executor_preflight"),
+        ("The task executed through Codex", "executor_preflight"),
+        ("Executing the bounded task", "executor_preflight"),
+        ("Start execution for this task", "executor_preflight"),
     ],
 )
 def test_auto_preview_preserves_common_inflected_routing_keywords(
