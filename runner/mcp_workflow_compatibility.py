@@ -505,6 +505,11 @@ class MCPWorkflowCompatibilityService:
             result["continuation"] = typed_continuation_projection(
                 result,
                 source_tool="run_mcp_workflow",
+                profile_id=(
+                    "web_gpt_commander"
+                    if self._host.mcp_exposure_profile == self._commander_exposure_profile
+                    else "local_codex_commander"
+                ),
             )
         return self._host._attach_operation_context_binding(
             result,

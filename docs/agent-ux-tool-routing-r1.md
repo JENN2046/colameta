@@ -85,10 +85,15 @@ generic `preview_id`。
 明确指定 `consumer_tool: manage_workflow_run` 和 `allowed_next_actions: [get]`，与
 真实只读消费者 contract 一致。
 
+该 workflow-record continuation 只会在 active profile 能调用
+`manage_workflow_run` 时发布。Local Codex profile 保留该只读 advanced consumer；
+Web GPT Commander 仍可记录 workflow，但会省略无法通过九工具公开面消费的
+continuation，不会向客户端发布脱敏后不可执行的 `<internal-tool>` 消费者。
+
 无 operational handle 的 status-only `auto_preview` 也会在记录 outer workflow 后
-刷新原本为空的 continuation；已有 preview、patch 或 run handle 不会被 workflow
-record 取代。`run_id` continuation 只声明执行器真实支持的 `status` 动作，不再声明
-不存在的 `read`。
+按 active profile 刷新原本为空的 continuation；已有 preview、patch 或 run handle
+不会被 workflow record 取代。`run_id` continuation 只声明执行器真实支持的
+`status` 动作，不再声明不存在的 `read`。
 
 Canonical state 为 `EXECUTOR_READY_TO_RUN` 时，高层推荐使用真实支持的
 `manage_executor_workflow(action=run_once_preview, provider=codex,

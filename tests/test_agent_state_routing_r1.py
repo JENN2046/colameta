@@ -758,13 +758,13 @@ def test_same_source_refresh_fallback_yields_to_next_usable_action() -> None:
     assert projected["primary_next_action"]["action"] == "preview"
 
 
-def test_analyze_project_state_exposes_the_canonical_projection(tmp_path) -> None:
-    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+def test_local_analyze_project_state_exposes_the_canonical_projection(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
 
     result = server._tool_analyze_project_state({"include_reports": False})
 
     assert result["agent_projection_schema_version"] == "colameta.agent_state_projection.v1"
-    assert result["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert result["agent_state"]["profile_id"] == "local_codex_commander"
     assert result["blocked_next_actions"]["exhaustive"] is False
     assert isinstance(result["workflow_id"], str)
     assert result["continuation"] == {
@@ -798,6 +798,27 @@ def test_workflow_continuation_names_the_real_consumer_and_action() -> None:
     assert continuation is not None
     assert continuation["consumer_tool"] == "manage_workflow_run"
     assert continuation["allowed_next_actions"] == ["get"]
+
+
+def test_commander_omits_unreachable_workflow_record_continuation(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+
+    internal = server._tool_analyze_project_state({"include_reports": False})
+    public = server.call_tool_for_agent(
+        "analyze_project_state",
+        {"include_reports": False},
+    )
+    blocked = server.call_tool_for_agent(
+        "manage_workflow_run",
+        {"action": "get", "workflow_id": internal["workflow_id"]},
+    )
+
+    assert isinstance(internal["workflow_id"], str)
+    assert internal["continuation"] is None
+    assert public["ok"] is True
+    assert public["data"]["facts"].get("continuation") is None
+    assert blocked["ok"] is False
+    assert blocked["error_code"] == "TOOL_NOT_EXPOSED"
 
 
 def test_registered_project_analysis_publishes_copyable_project_bound_action(tmp_path) -> None:
@@ -883,7 +904,9 @@ def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None
     assert verify_agent_projection(result) == []
 
 
-def test_status_only_auto_preview_refreshes_recorded_workflow_continuation(tmp_path) -> None:
+def test_commander_status_only_auto_preview_omits_unreachable_workflow_continuation(
+    tmp_path,
+) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     server._create_mcp_workflow_router = lambda: MCPWorkflowRouter(  # type: ignore[method-assign]
         str(tmp_path),
@@ -894,17 +917,7 @@ def test_status_only_auto_preview_refreshes_recorded_workflow_continuation(tmp_p
     result = server._tool_run_mcp_workflow({"workflow": "auto_preview"})
 
     assert isinstance(result["workflow_id"], str)
-    assert result["continuation"] == {
-        "kind": "workflow_run",
-        "id": result["workflow_id"],
-        "field_name": "workflow_id",
-        "source_tool": "run_mcp_workflow",
-        "allowed_next_actions": ["get"],
-        "typed_handle_required_by_next_tool": True,
-        "continuation_is_navigation_only": True,
-        "does_not_grant_authority": True,
-        "consumer_tool": "manage_workflow_run",
-    }
+    assert result["continuation"] is None
 
 
 def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_path) -> None:

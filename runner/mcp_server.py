@@ -7259,14 +7259,15 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             and isinstance(project_record.get("project_name"), str)
             else None
         )
+        agent_profile_id = (
+            "web_gpt_commander"
+            if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+            else "local_codex_commander"
+        )
         legacy = add_agent_state_projection(
             legacy,
             source_tool="analyze_project_state",
-            profile_id=(
-                "web_gpt_commander"
-                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
-                else "local_codex_commander"
-            ),
+            profile_id=agent_profile_id,
             project_name=public_project_name,
         )
 
@@ -7278,6 +7279,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             legacy["continuation"] = typed_continuation_projection(
                 legacy,
                 source_tool="analyze_project_state",
+                profile_id=agent_profile_id,
             )
         return legacy
 

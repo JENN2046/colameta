@@ -645,7 +645,12 @@ def _walk_for_handle(value: Any, depth: int = 0) -> tuple[str, str, tuple[str, .
     return None
 
 
-def typed_continuation_projection(response: Mapping[str, Any], *, source_tool: str) -> dict[str, Any] | None:
+def typed_continuation_projection(
+    response: Mapping[str, Any],
+    *,
+    source_tool: str,
+    profile_id: str | None = None,
+) -> dict[str, Any] | None:
     found = _walk_for_handle(response)
     if found is None:
         return None
@@ -661,6 +666,9 @@ def typed_continuation_projection(response: Mapping[str, Any], *, source_tool: s
         "does_not_grant_authority": True,
     }
     if kind == "workflow_run":
+        allowed_tools = _profile_allowed_tools(profile_id)
+        if allowed_tools is not None and "manage_workflow_run" not in allowed_tools:
+            return None
         continuation["consumer_tool"] = "manage_workflow_run"
     if expires_at is not None:
         continuation["expires_at"] = expires_at
@@ -1028,7 +1036,11 @@ def add_agent_state_projection(
         projected,
         primary_action=normalized_action,
     )
-    projected["continuation"] = typed_continuation_projection(projected, source_tool=source_tool)
+    projected["continuation"] = typed_continuation_projection(
+        projected,
+        source_tool=source_tool,
+        profile_id=profile_id,
+    )
     sources = _projection_sources(projected)
     error_code = _first_text(sources, "error_code")
     detected_origin = _first_text(sources, "error_origin")

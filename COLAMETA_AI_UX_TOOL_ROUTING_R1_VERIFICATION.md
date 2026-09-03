@@ -45,6 +45,9 @@ Branch: `codex/ai-ux-tool-routing-r1`
   `workflow_id`; that continuation names the canonical
   `manage_workflow_run(action=get)` consumer instead of invented status/read
   actions;
+- workflow-record continuations are filtered against the active profile;
+  Commander records remain intact but omit the unreachable hidden consumer,
+  while Local Codex retains the real read-only `manage_workflow_run` path;
 - status-only `auto_preview` applies the same post-record refresh when no
   operational handle existed, so its outer workflow record is discoverable
   without displacing preview, patch, or run continuations;
@@ -133,7 +136,7 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `85 passed`.
+Dedicated R1 tests after review hardening: `86 passed`.
 The related workflow policy, compatibility, and review-manifest production set
 passes: `417 passed`.
 The three previously affected operator-flow production regressions plus the R1
@@ -150,7 +153,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the latest routing/recovery repair: `4819 passed`, `22 failed`,
+- full suite after the latest profile-aware continuation repair: `4820 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached

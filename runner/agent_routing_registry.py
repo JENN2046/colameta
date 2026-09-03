@@ -241,6 +241,7 @@ PROFILE_GUIDANCE: dict[str, dict[str, Any]] = {
         "advanced_tools": [
             "manage_executor_workflow",
             "manage_runner_plan",
+            "manage_workflow_run",
             "get_stage_parallel_next_action_packet",
             "get_work_item_governance_status",
         ],
