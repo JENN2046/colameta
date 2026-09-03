@@ -665,11 +665,27 @@ def typed_continuation_projection(
         "continuation_is_navigation_only": True,
         "does_not_grant_authority": True,
     }
+    allowed_tools = _profile_allowed_tools(profile_id)
     if kind == "workflow_run":
-        allowed_tools = _profile_allowed_tools(profile_id)
         if allowed_tools is not None and "manage_workflow_run" not in allowed_tools:
             return None
         continuation["consumer_tool"] = "manage_workflow_run"
+    elif kind == "plan_patch":
+        if allowed_tools is None or "manage_plan_version" in allowed_tools:
+            continuation["consumer_tool"] = "manage_plan_version"
+        elif (
+            "run_mcp_workflow" in allowed_tools
+            and _first_text(_projection_sources(response), "selected_workflow")
+            == "plan_update"
+        ):
+            # Commander-facing profiles consume the same typed patch through
+            # the bounded workflow facade.  The facade calls this operation
+            # ``phase=apply``; leaking the hidden manager's action names would
+            # make an otherwise valid continuation impossible to follow.
+            continuation["consumer_tool"] = "run_mcp_workflow"
+            continuation["allowed_next_actions"] = ["apply"]
+        else:
+            return None
     if expires_at is not None:
         continuation["expires_at"] = expires_at
     if not actions:

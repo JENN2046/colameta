@@ -18,7 +18,7 @@ Branch: `codex/ai-ux-tool-routing-r1`
   publishing or requiring confirmation of a hidden executor action;
 - registered-project projection restores the public registry identity in
   `agent_state.project`, and plan-patch continuation metadata publishes the
-  exact `manage_plan_version` consumer actions;
+  exact consumer reachable through the active profile;
 - audited `get_*_preview` evidence readers remain `READ_ONLY` despite the
   generic preview-name fallback;
 - whole-token goal routing preserves the audited executor word family
@@ -29,6 +29,11 @@ Branch: `codex/ai-ux-tool-routing-r1`
   continuation without changing its confirmation or context-binding gates;
   the mapped apply consumes that exact patch, while the pre-existing no-ID
   auto-apply behavior remains available to existing callers;
+- Web GPT Commander and Local Codex plan-patch continuation metadata uses that
+  same visible `run_mcp_workflow(plan_update/phase=apply)` route rather than
+  advertising hidden `manage_plan_version` action names; profiles with the
+  native planning manager retain its exact `apply_preview_status` /
+  `apply_preview` contract;
 - Commander Git auto-preview maps the hidden `manage_git_commit` consumer to
   `manage_git(action=commit_apply)` before operation context binding is
   projected, preserving the successful preview, its exact `preview_id`, and
@@ -136,7 +141,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `86 passed`.
+Dedicated R1 tests after review hardening: `89 passed`.
+The active-profile continuation and related Commander/workflow production set
+passes: `1696 passed`.
 The related workflow policy, compatibility, and review-manifest production set
 passes: `417 passed`.
 The three previously affected operator-flow production regressions plus the R1
@@ -153,7 +160,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the latest profile-aware continuation repair: `4820 passed`, `22 failed`,
+- full suite after the latest profile-aware continuation repair: `4822 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached

@@ -84,6 +84,16 @@ def verify_agent_projection(packet: Mapping[str, Any]) -> list[str]:
                     findings.append("workflow continuation lacks its canonical consumer tool")
                 if allowed_actions != ["get"]:
                     findings.append("workflow continuation advertises an invalid consumer action")
+            if continuation.get("kind") == "plan_patch":
+                plan_consumers = {
+                    "manage_plan_version": ["apply_preview_status", "apply_preview"],
+                    "run_mcp_workflow": ["apply"],
+                }
+                consumer_tool = continuation.get("consumer_tool")
+                if consumer_tool not in plan_consumers:
+                    findings.append("plan-patch continuation lacks a reachable consumer tool")
+                elif allowed_actions != plan_consumers[consumer_tool]:
+                    findings.append("plan-patch continuation advertises invalid consumer actions")
             if (
                 continuation.get("kind") == "executor_run"
                 and allowed_actions != ["status"]

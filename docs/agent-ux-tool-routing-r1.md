@@ -145,8 +145,13 @@ exposure profile。Commander 因而继续使用 `web_gpt_commander` reachability
 `manage_executor_workflow`。外层路由还会把已经验证的 registry identity 回填到
 `agent_state.project`，避免内部参数清理使公开 canonical state 丢失项目名称。
 
-Typed continuation 的动作名采用真实消费者 contract：`patch_id` 对应
-`manage_plan_version` 的 `apply_preview_status` 与 `apply_preview`。名称含
+Typed continuation 的动作名采用 active profile 可达的真实消费者 contract。
+具备底层 planning surface 时，`patch_id` 对应 `manage_plan_version` 的
+`apply_preview_status` 与 `apply_preview`；Web GPT Commander 与 Local Codex
+profile 未公开该 manager 时，同一个 typed handle 改为声明
+`consumer_tool: run_mcp_workflow` 和 `allowed_next_actions: [apply]`，与已经映射的
+`plan_update / phase=apply` 主动作保持一致。无法证明存在 profile-visible consumer
+时省略 continuation，不发布隐藏动作名。名称含
 `_preview` 的既有 getter 若服务端固定要求 `mcp:read`，routing registry 同样标记为
 `READ_ONLY`，不会仅凭名称误报为 `PREVIEW`。
 

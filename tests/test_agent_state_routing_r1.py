@@ -438,6 +438,53 @@ def test_auto_preview_plan_route_preserves_production_patch_handle(tmp_path) -> 
         "apply_preview_status",
         "apply_preview",
     ]
+    assert result["continuation"]["consumer_tool"] == "manage_plan_version"
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    ["web_gpt_commander", "local_codex_commander"],
+)
+def test_plan_patch_continuation_uses_the_profile_visible_workflow_consumer(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        plan_workflow_manager=_PlanPreviewManager(),  # type: ignore[arg-type]
+        agent_profile_id=profile_id,
+    ).handle(
+        "auto_preview",
+        {
+            "goal": "Update the implementation plan",
+            "name": "R2",
+            "description": "Bounded follow-up",
+        },
+    )
+
+    assert result["selected_workflow"] == "plan_update"
+    assert result["primary_next_action"]["tool"] == "run_mcp_workflow"
+    assert result["primary_next_action"]["action"] == "apply"
+    assert result["continuation"]["kind"] == "plan_patch"
+    assert result["continuation"]["field_name"] == "patch_id"
+    assert result["continuation"]["consumer_tool"] == "run_mcp_workflow"
+    assert result["continuation"]["allowed_next_actions"] == ["apply"]
+    assert verify_agent_projection(result) == []
+
+
+def test_plan_patch_continuation_retains_the_native_planner_consumer() -> None:
+    continuation = typed_continuation_projection(
+        {"selected_workflow": "plan_update", "patch_id": "patch_1"},
+        source_tool="run_mcp_workflow",
+        profile_id="planner_agent",
+    )
+
+    assert continuation is not None
+    assert continuation["consumer_tool"] == "manage_plan_version"
+    assert continuation["allowed_next_actions"] == [
+        "apply_preview_status",
+        "apply_preview",
+    ]
 
 
 def test_commander_plan_preview_maps_hidden_consumer_to_public_workflow(tmp_path) -> None:
@@ -479,6 +526,8 @@ def test_commander_plan_preview_maps_hidden_consumer_to_public_workflow(tmp_path
     assert facts["continuation"]["kind"] == "plan_patch"
     assert facts["continuation"]["field_name"] == "patch_id"
     assert facts["continuation"]["id"] == "patch_production_1"
+    assert facts["continuation"]["consumer_tool"] == "run_mcp_workflow"
+    assert facts["continuation"]["allowed_next_actions"] == ["apply"]
     next_action = response["data"]["next_action"]
     assert next_action["tool"] == "run_mcp_workflow"
     assert next_action["arguments"]["workflow"] == "plan_update"
