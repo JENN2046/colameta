@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from runner.agent_state_projection import add_agent_state_projection
+from runner.agent_routing_registry import profile_guidance
 from runner.commander_projections import CommanderProjectionService
 from runner.commander_widget import commander_widget_html
 from runner.executor_status import polling_guidance_for_profile
@@ -615,7 +617,7 @@ class MCPCommanderAppMixin:
                     {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args()},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="web_gpt_commander")},
                 ],
                 "primary_workflow": "thin_governed_loop_preview",
                 "next_payload_rule": (
@@ -634,7 +636,7 @@ class MCPCommanderAppMixin:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="local_codex_commander")},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="local_codex_commander")},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=10)},
@@ -653,7 +655,7 @@ class MCPCommanderAppMixin:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="reviewer_agent")},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="reviewer_agent")},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=20)},
                     {"tool": "list_executor_run_reports", "arguments": project_args(limit=20)},
                 ],
@@ -693,7 +695,7 @@ class MCPCommanderAppMixin:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="source_observer")},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="source_observer")},
                     {"tool": "get_runtime_version_status", "arguments": project_args()},
                 ],
                 "primary_workflow": "source_observation",
@@ -925,10 +927,31 @@ class MCPCommanderAppMixin:
                 "product_console_completion_surface": product_console_completion,
                 "service_entry_profiles_version": "service_entry_profiles.v1",
                 "project_identity": self._project_identity_for_root(project_root),
+                "agent_tool_routing": profile_guidance(profile_id),
             }
             if isinstance(project_record, dict):
                 result["advanced_context"]["project_record"] = project_record
-        return result
+        projected = add_agent_state_projection(
+            result,
+            source_tool="get_agent_operator_flow_packet",
+            profile_id=profile_id,
+            project_name=project_name,
+            goal=task_brief.strip() or None,
+            primary_action=primary_next_action,
+        )
+        blocked_items = projected["blocked_next_actions"]["items"]
+        blocked_items.extend(
+            {
+                "tool": "run_mcp_workflow",
+                "action": workflow,
+                "reason": (
+                    "This workflow is not normally recommended for the selected profile; "
+                    "that guidance does not replace the workflow's own authority checks."
+                ),
+            }
+            for workflow in forbidden_workflows
+        )
+        return projected
 
     @staticmethod
     def _resolve_agent_flow_mode(*, requested_mode: str, consumer_kind: str, task_brief: str) -> str:
@@ -1007,7 +1030,7 @@ class MCPCommanderAppMixin:
                 action_id="inspect_project_state",
                 label="Inspect project state",
                 tool="analyze_project_state",
-                arguments=dict(project_args),
+                arguments={**project_args, "profile_id": profile_id},
                 reason="Source observers need project facts and recommended reads before suggesting or changing anything.",
                 expected_output="Project mode, Git state, Runner status, executor/report summary, and safe recommended reads.",
             ), embedded_packets
@@ -1250,7 +1273,7 @@ class MCPCommanderAppMixin:
         project_state = {
             "label": "Project state",
             "tool": "analyze_project_state",
-            "arguments": dict(project_args),
+            "arguments": {**project_args, "profile_id": profile_id},
             "gate_level": "read_only",
         }
         runtime_status = {

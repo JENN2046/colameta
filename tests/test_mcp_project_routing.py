@@ -26,7 +26,7 @@ class _RecordingServer:
         self.constructed.append((project_root, kwargs))
         self.project_root = project_root
         self.service_mode = False
-        self.mcp_exposure_profile = "normal"
+        self.mcp_exposure_profile = str(kwargs.get("exposure_profile", "normal"))
         self.work_item_scope_mode = None
         self._mcp_result_artifact_store = object()
         self._commander_public_result_artifact_safety_cache = object()
@@ -167,9 +167,14 @@ def test_tool_route_factory_reads_latest_continuation_stores_on_every_create() -
     )
     first_result_store = serving_server._mcp_result_artifact_store
     first_gate_store = serving_server._gate_review_preview_store
+    _RecordingServer.constructed.clear()
 
     first_target = factory.create(context, TOOL_ROUTE_CONTINUATIONS)
 
+    assert _RecordingServer.constructed == [
+        ("/target", {"exposure_profile": "commander"})
+    ]
+    assert first_target.mcp_exposure_profile == "commander"
     assert first_target._mcp_result_artifact_store is first_result_store
     assert (
         first_target._commander_public_result_artifact_safety_cache

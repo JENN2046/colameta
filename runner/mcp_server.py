@@ -70,6 +70,10 @@ from runner.mcp_gate_review_workflow import (
     GATE_REVIEW_WORKFLOW,
     GateReviewPreviewStore,
 )
+from runner.agent_state_projection import (
+    add_agent_state_projection,
+    typed_continuation_projection,
+)
 from runner.core_orchestrator import WorkflowOrchestrator
 from runner.core_workflow_registry import SUPPORTED_CORE_WORKFLOWS, normalize_workflow_name, is_supported_core_workflow
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
@@ -380,6 +384,9 @@ NORMAL_EXPOSED_TOOLS = (
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "analyze_project_state",
+    "get_repo_overview",
+    "get_source_file",
+    "search_source",
     "review_manifest",
     "read_result_artifact",
     "run_mcp_workflow",
@@ -6175,6 +6182,13 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 self._inject_project_name_into_nested_actions(nested, project_name)
 
     def _inject_project_name_into_routed_result(self, result: dict[str, Any], project_name: str) -> None:
+        agent_state = result.get("agent_state")
+        if isinstance(agent_state, dict):
+            # The routed server receives only an internal context-binding alias,
+            # so the outer server remains the authority for the public registry
+            # identity projected to the caller.
+            agent_state["project"] = project_name
+
         workflow = result.get("workflow")
         payload_result = result.get("result")
         if workflow != "thin_governed_loop_preview" or not isinstance(payload_result, dict):
@@ -7178,6 +7192,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         return context
 
     def _tool_analyze_project_state(self, params: dict[str, Any]) -> dict[str, Any]:
+        requested_profile_id = params.get("profile_id")
+        if requested_profile_id is None or requested_profile_id == "":
+            agent_profile_id = (
+                "web_gpt_commander"
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                else "local_codex_commander"
+            )
+        else:
+            agent_profile_id, _, _ = self._select_service_entry_profile(
+                {"profile_id": requested_profile_id}
+            )
         project_root, project_record = self._resolve_read_only_project_context(params)
         routed_params = self._strip_project_name_param(params)
         include_repo_overview = self._bool_param(params.get("include_repo_overview"), default=False)
@@ -7242,8 +7267,30 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             "partial_errors": partial_errors,
         }
 
+        public_project_name = (
+            project_record.get("project_name")
+            if isinstance(project_record, dict)
+            and isinstance(project_record.get("project_name"), str)
+            else None
+        )
+        legacy = add_agent_state_projection(
+            legacy,
+            source_tool="analyze_project_state",
+            profile_id=agent_profile_id,
+            project_name=public_project_name,
+            enforce_profile_reachability=True,
+        )
+
         if project_record is None and not _CURRENT_FACTS_INTERNAL_ANALYZE.get():
             self._record_workflow_if_needed("analyze_project_state", "analyze", routed_params, legacy)
+            # Recording adds the typed workflow handle after the initial Agent
+            # projection was built. Refresh only the navigation continuation so
+            # the returned packet describes the handle it actually exposes.
+            legacy["continuation"] = typed_continuation_projection(
+                legacy,
+                source_tool="analyze_project_state",
+                profile_id=agent_profile_id,
+            )
         return legacy
 
     def _current_facts_analyze(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -7708,6 +7755,39 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             return result
         self._attach_canonical_state_to_operation_status(result, params)
         binding = self._collect_operation_context_binding(tool_name, params)
+        identity = self._operation_context_identity(tool_name, params)
+        projected_confirmation_binding = False
+        if (
+            tool_name == "run_mcp_workflow"
+            and _normalize_run_mcp_workflow_name(params.get("workflow"))
+            == "auto_preview"
+        ):
+            primary_action = result.get("primary_next_action")
+            if isinstance(primary_action, dict):
+                primary_tool = primary_action.get("tool")
+                primary_params = primary_action.get("params")
+                if not isinstance(primary_params, dict):
+                    primary_params = primary_action.get("arguments")
+                if isinstance(primary_tool, str) and isinstance(primary_params, dict):
+                    primary_identity = self._operation_context_identity(
+                        primary_tool,
+                        primary_params,
+                    )
+                    if (
+                        primary_identity is not None
+                        and self._operation_context_required(
+                            primary_tool,
+                            primary_params,
+                        )
+                    ):
+                        identity = primary_identity
+                        binding = collect_project_context_binding(
+                            self._context_binding_project_root(params),
+                            project_name=self._context_binding_project_name(params),
+                            review_unit=primary_identity[1],
+                            workflow_intent=primary_identity[0],
+                        )
+                        projected_confirmation_binding = True
         if binding is None:
             action_raw = params.get("action")
             action = (
@@ -7757,15 +7837,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                     project_name=self._context_binding_project_name(params),
                 )
             return result
-        identity = self._operation_context_identity(tool_name, params)
         if identity is None:
             return result
         result["context_binding"] = binding
         result["context_binding_contract"] = {
             "schema_version": PROJECT_CONTEXT_BINDING_SCHEMA_VERSION,
-            "confirmation_required": self._operation_context_has_matching_confirmation(
-                tool_name,
-                params,
+            "confirmation_required": (
+                projected_confirmation_binding
+                or self._operation_context_has_matching_confirmation(
+                    tool_name,
+                    params,
+                )
             ),
             "current_call_requires_context_binding": self._operation_context_required(
                 tool_name,
@@ -7902,6 +7984,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         binding: dict[str, Any],
         identity: tuple[str, str],
     ) -> None:
+        actions_to_bind: list[dict[str, Any]] = []
+        primary_action = result.get("primary_next_action")
+        if isinstance(primary_action, dict):
+            actions_to_bind.append(primary_action)
         for key in ("next_actions", "recommended_next_actions"):
             actions = result.get(key)
             if not isinstance(actions, list):
@@ -7909,19 +7995,21 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             for next_action in actions:
                 if not isinstance(next_action, dict):
                     continue
-                tool = next_action.get("tool")
-                if not isinstance(tool, str):
+                actions_to_bind.append(next_action)
+        for next_action in actions_to_bind:
+            tool = next_action.get("tool")
+            if not isinstance(tool, str):
+                continue
+            for params_key in ("params", "arguments", "required_arguments"):
+                target_params = next_action.get(params_key)
+                if not isinstance(target_params, dict):
                     continue
-                for params_key in ("params", "arguments"):
-                    target_params = next_action.get(params_key)
-                    if not isinstance(target_params, dict):
-                        continue
-                    target_identity = self._operation_context_identity(tool, target_params)
-                    if (
-                        target_identity == identity
-                        and self._operation_context_required(tool, target_params)
-                    ):
-                        target_params.setdefault("context_binding", dict(binding))
+                target_identity = self._operation_context_identity(tool, target_params)
+                if (
+                    target_identity == identity
+                    and self._operation_context_required(tool, target_params)
+                ):
+                    target_params.setdefault("context_binding", dict(binding))
 
     def _tool_manage_git(self, params: dict[str, Any]) -> dict[str, Any]:
         action_raw = params.get("action")
@@ -10102,6 +10190,11 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             project_docs_manager=MCPProjectDocsManager(self.project_root, self.source_review),
             git_history_manager=MCPGitHistoryManager(self.project_root, self.source_review),
             git_commit_manager=MCPGitCommitManager(self.project_root),
+            agent_profile_id=(
+                "web_gpt_commander"
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                else "local_codex_commander"
+            ),
         )
 
     def _operator_preview_validation(self, operation: dict[str, Any]) -> dict[str, Any]:

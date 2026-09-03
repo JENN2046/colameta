@@ -52,6 +52,25 @@ _GOAL_CLASSIFIERS: list[tuple[set[str], str]] = [
     ({"patch", "edit", "修改"}, "small_project_patch"),
 ]
 
+_GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
+    "append": frozenset({"appends", "appended", "appending"}),
+    "commit": frozenset({"commits", "committed", "committing", "commiting"}),
+    "continuation": frozenset({"continuations"}),
+    "edit": frozenset({"edits", "edited", "editing"}),
+    "exec": frozenset({"execute", "executes", "executed", "executing", "execution"}),
+    "executor": frozenset({"executors"}),
+    "extend": frozenset({"extends", "extended", "extending"}),
+    "heading": frozenset({"headings"}),
+    "patch": frozenset({"patches", "patched", "patching"}),
+    "plan": frozenset({"plans", "planned", "planning"}),
+    "repair": frozenset({"repairs", "repaired", "repairing"}),
+    "resume": frozenset({"resumes", "resumed", "resuming"}),
+    "section": frozenset({"sections"}),
+    "stage": frozenset({"stages", "staged", "staging"}),
+    "sync": frozenset({"syncs", "synced", "syncing"}),
+    "version": frozenset({"versions", "versioned", "versioning"}),
+}
+
 # ``auto_preview`` may infer a bounded route, but an explicit instruction not
 # to execute must always win over a keyword match such as "executor", "Codex",
 # or the historical short form "exec". These are deliberately narrow safety
@@ -82,6 +101,19 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
 )
+
+
+def _goal_keyword_matches(goal: str, keyword: str) -> bool:
+    """Match ASCII routing keywords and audited inflections as whole tokens."""
+
+    if keyword.isascii() and keyword.replace("_", "").isalnum():
+        forms = (keyword, *_GOAL_KEYWORD_INFLECTIONS.get(keyword, ()))
+        alternatives = "|".join(re.escape(form) for form in forms)
+        return re.search(
+            rf"(?<![A-Za-z0-9])(?:{alternatives})(?![A-Za-z0-9])",
+            goal,
+        ) is not None
+    return keyword in goal
 
 _STOP_NEEDS_PLAN_APPLY_CONFIRMATION = "needs_plan_apply_confirmation"
 _STOP_NEEDS_COMMIT_CONFIRMATION = "needs_commit_confirmation"
@@ -2073,14 +2105,60 @@ class WorkflowOrchestrator:
     def _workflow_plan_update(self, params: dict[str, Any]) -> dict[str, Any]:
         phase = str(params.get("phase", "preview")).strip().lower() or "preview"
         if phase == "apply":
+            exact_patch_error_code: str | None = None
+            exact_patch_error_message: str | None = None
             disallowed_raw_inputs = ("plan_json", "raw_plan", "patch_body", "raw_patch_body", "raw_patch", "spec_json")
             for key in disallowed_raw_inputs:
                 if key in params and params.get(key) is not None:
                     return self._error_result("plan_update", "RAW_INPUT_NOT_SUPPORTED",
                                               f"plan_update apply 不接受 {key}。")
+            patch_id = params.get("patch_id")
+            if patch_id is not None and (
+                not isinstance(patch_id, str) or not patch_id.strip()
+            ):
+                return self._error_result(
+                    "plan_update",
+                    "PATCH_ID_REQUIRED",
+                    "plan_update apply 的 patch_id 必须是非空字符串。",
+                )
             try:
-                auto_apply_service = PlanPatchAutoApplyService(self.project_root)
-                auto_apply_result = auto_apply_service.auto_apply()
+                if isinstance(patch_id, str):
+                    try:
+                        patch_result = self._planning_bridge.apply_plan_patch(
+                            self.project_root,
+                            patch_id.strip(),
+                        )
+                    except PlanningBridgeError as exc:
+                        if exc.error_code != "PATCH_NOT_FOUND":
+                            raise
+                        return self._error_result(
+                            "plan_update",
+                            exc.error_code,
+                            str(exc),
+                        )
+                    patch_ok = patch_result.get("ok") is True
+                    if not patch_ok:
+                        patch_error_code = patch_result.get("error_code")
+                        patch_error_message = patch_result.get("message")
+                        if isinstance(patch_error_code, str) and patch_error_code:
+                            exact_patch_error_code = patch_error_code
+                        if isinstance(patch_error_message, str) and patch_error_message:
+                            exact_patch_error_message = patch_error_message
+                    auto_apply_result = {
+                        "ok": patch_ok,
+                        "results": [patch_result],
+                        "applied_count": 1 if patch_ok else 0,
+                        "failed_count": 0 if patch_ok else 1,
+                        "skipped_count": 0,
+                        "changed_files": self._extract_changed_files(patch_result),
+                    }
+                    if exact_patch_error_code is not None:
+                        auto_apply_result["error_code"] = exact_patch_error_code
+                    if exact_patch_error_message is not None:
+                        auto_apply_result["message"] = exact_patch_error_message
+                else:
+                    auto_apply_service = PlanPatchAutoApplyService(self.project_root)
+                    auto_apply_result = auto_apply_service.auto_apply()
             except Exception as exc:  # pragma: no cover - defensive
                 return self._error_result("plan_update", "AUTO_APPLY_FAILED", f"应用 pending plan patch 失败：{exc}")
 
@@ -2134,7 +2212,7 @@ class WorkflowOrchestrator:
                     "tool": "manage_executor_workflow",
                     "params": {"action": "run_once_preview", "provider": "codex"},
                     "risk_level": "preview",
-                    "requires_confirmation": True,
+                    "requires_confirmation": False,
                 },
             ]
             status = "failed"
@@ -2144,8 +2222,10 @@ class WorkflowOrchestrator:
                 status = "succeeded"
             elif result_ok and failed_count > 0:
                 status = "blocked"
+            elif exact_patch_error_code is not None:
+                status = "blocked"
 
-            return self._build_core_result(
+            core_result = self._build_core_result(
                 workflow="plan_update",
                 steps=steps,
                 risk_level=STEP_RISK_WRITE if status == "succeeded" else STEP_RISK_BLOCKED,
@@ -2157,6 +2237,10 @@ class WorkflowOrchestrator:
                 warnings=warnings,
                 result=auto_apply_result,
             )
+            if exact_patch_error_code is not None:
+                core_result.error_code = exact_patch_error_code
+                core_result.message = exact_patch_error_message
+            return core_result
 
         if phase != "preview":
             return self._error_result("plan_update", "PHASE_NOT_SUPPORTED",
@@ -5147,7 +5231,7 @@ class WorkflowOrchestrator:
         for keywords, workflow in _GOAL_CLASSIFIERS:
             if workflow == "executor" and executor_explicitly_forbidden:
                 continue
-            matches = sum(1 for kw in keywords if kw in goal_lower)
+            matches = sum(1 for kw in keywords if _goal_keyword_matches(goal_lower, kw))
             if matches > 0:
                 confidence = min(0.5 + matches * 0.15, 1.0)
                 if confidence > best_confidence:

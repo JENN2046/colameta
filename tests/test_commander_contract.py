@@ -6147,6 +6147,7 @@ def test_validator_requires_error_recovery_to_equal_the_single_next_action() -> 
     [
         ("WORKING_TREE_DIRTY", "WORKTREE_DIRTY"),
         ("HEAD_CHANGED", "STALE_PREVIEW"),
+        ("PATCH_STALE", "STALE_PREVIEW"),
         ("RESULT_ARTIFACT_NOT_FOUND_OR_EXPIRED", "ARTIFACT_EXPIRED"),
         ("INVALID_RESULT_ARTIFACT_ID", "RESOURCE_URI_INVALID"),
         ("INVALID_WORKFLOW", "WORKFLOW_NOT_SUPPORTED"),

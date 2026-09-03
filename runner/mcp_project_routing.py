@@ -36,7 +36,19 @@ class ProjectRouteServerFactory:
         }:
             raise ValueError(f"Unsupported project route binding policy: {binding_policy!r}")
 
-        routed_server = self._serving_server.__class__(context.project_root)
+        constructor_kwargs: dict[str, Any] = {}
+        if binding_policy is TOOL_ROUTE_CONTINUATIONS:
+            # A project-routed public tool is still served through the same
+            # exposure surface. Preserve that profile so nested routing and
+            # Agent UX projection cannot advertise tools hidden from the
+            # caller. Operator targets intentionally remain isolated below.
+            constructor_kwargs["exposure_profile"] = (
+                self._serving_server.mcp_exposure_profile
+            )
+        routed_server = self._serving_server.__class__(
+            context.project_root,
+            **constructor_kwargs,
+        )
         if binding_policy is TOOL_ROUTE_CONTINUATIONS:
             # Read these stores for every routed server creation. The serving
             # process can replace either store at runtime.
