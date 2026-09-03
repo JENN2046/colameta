@@ -2634,6 +2634,11 @@ def build_mcp_tool_definitions(
                 "additionalProperties": False,
             },
             output_schema=common_output_schema,
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            },
         ),
         MCPToolDef(
             name="get_git_status",
@@ -2702,6 +2707,11 @@ def build_mcp_tool_definitions(
                 "additionalProperties": False,
             },
             output_schema=common_output_schema,
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            },
         ),
         MCPToolDef(
             name="search_source",
@@ -2726,6 +2736,11 @@ def build_mcp_tool_definitions(
                 "additionalProperties": False,
             },
             output_schema=common_output_schema,
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            },
         ),
         MCPToolDef(
             name="manage_files",
@@ -2998,6 +3013,17 @@ def build_mcp_tool_definitions(
                         "type": "string",
                         "enum": ["pi", "codex", "opencode"],
                         "description": "可选执行器 provider，用于评估 continuation 决策。",
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "enum": [
+                            "web_gpt_commander",
+                            "local_codex_commander",
+                            "planner_agent",
+                            "reviewer_agent",
+                            "source_observer",
+                        ],
+                        "description": "可选。跨高层入口保留调用方 persona；不提供时仍按当前物理 exposure profile 使用既有默认值。",
                     },
                     "max_files": {
                         "type": "integer",

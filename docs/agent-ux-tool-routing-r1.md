@@ -203,7 +203,15 @@ confirmation 或 commit scope gate。
 packet 自身的 route contract。
 
 `source_observer` 的推荐表只包含 read-only 工具；混合读写的 `manage_files`
-不会作为其 advanced tool 出现。
+不会作为其 advanced tool 出现。Normal/loopback surface 直接公开既有的静态
+`mcp:read` 工具 `get_repo_overview`、`get_source_file` 与 `search_source`，所以该
+profile 的每个推荐工具都可调用，不需要借用包含 write actions 的复合入口。
+
+`get_agent_operator_flow_packet` 推荐调用 `analyze_project_state` 时会在参数中保留
+所选 `profile_id`；状态分析的 additive optional 字段只影响 Agent navigation
+projection，不授予新权限。若未提供该字段，仍按原有 physical exposure profile
+选择 Web GPT 或 Local Codex 默认值。状态分析同时按所选 profile 过滤推荐动作，
+因此 `source_observer` 在 source-only checkout 中不会升级为 onboarding preview。
 
 ## Progressive disclosure
 

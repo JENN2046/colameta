@@ -384,6 +384,9 @@ NORMAL_EXPOSED_TOOLS = (
     "get_runtime_version_status",
     "get_connector_runtime_health_status",
     "analyze_project_state",
+    "get_repo_overview",
+    "get_source_file",
+    "search_source",
     "review_manifest",
     "read_result_artifact",
     "run_mcp_workflow",
@@ -7189,6 +7192,17 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         return context
 
     def _tool_analyze_project_state(self, params: dict[str, Any]) -> dict[str, Any]:
+        requested_profile_id = params.get("profile_id")
+        if requested_profile_id is None or requested_profile_id == "":
+            agent_profile_id = (
+                "web_gpt_commander"
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                else "local_codex_commander"
+            )
+        else:
+            agent_profile_id, _, _ = self._select_service_entry_profile(
+                {"profile_id": requested_profile_id}
+            )
         project_root, project_record = self._resolve_read_only_project_context(params)
         routed_params = self._strip_project_name_param(params)
         include_repo_overview = self._bool_param(params.get("include_repo_overview"), default=False)
@@ -7259,16 +7273,12 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             and isinstance(project_record.get("project_name"), str)
             else None
         )
-        agent_profile_id = (
-            "web_gpt_commander"
-            if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
-            else "local_codex_commander"
-        )
         legacy = add_agent_state_projection(
             legacy,
             source_tool="analyze_project_state",
             profile_id=agent_profile_id,
             project_name=public_project_name,
+            enforce_profile_reachability=True,
         )
 
         if project_record is None and not _CURRENT_FACTS_INTERNAL_ANALYZE.get():

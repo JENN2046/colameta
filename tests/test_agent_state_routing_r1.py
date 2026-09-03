@@ -24,7 +24,11 @@ from runner.agent_state_projection import (
 from runner.canonical_project_state import build_canonical_project_state
 from runner.continuation_snapshot import snapshot_from_fact_bundle
 from runner.core_orchestrator import WorkflowOrchestrator
-from runner.mcp_server import COMMANDER_EXPOSED_TOOLS, MCPPlanningBridgeServer
+from runner.mcp_server import (
+    COMMANDER_EXPOSED_TOOLS,
+    NORMAL_EXPOSED_TOOLS,
+    MCPPlanningBridgeServer,
+)
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_workflow_router import MCPWorkflowRouter
 from runner.planning_bridge import PlanningBridgeError
@@ -185,6 +189,82 @@ def test_source_observer_guidance_contains_only_read_only_tools() -> None:
         tool_routing_metadata(tool)["side_effect_level"] == "READ_ONLY"
         for tool in recommended
     )
+    assert set(recommended) <= set(NORMAL_EXPOSED_TOOLS)
+
+
+def test_source_observer_persona_survives_flow_packet_state_analysis(
+    tmp_path,
+) -> None:
+    project = tmp_path / "source-project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.name", "Test"],
+        check=True,
+    )
+    (project / "README.md").write_text("source only\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(project), "commit", "-qm", "fixture"], check=True)
+
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="normal",
+    )
+    server.project_registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = server.project_registry.register_project(
+        str(project),
+        project_name="source-demo",
+        project_mode="source-only",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+
+    flow = server._tool_get_agent_operator_flow_packet(
+        {"project_name": "source-demo", "profile_id": "source_observer"}
+    )
+    action = flow["primary_next_action"]
+    assert action["tool"] == "analyze_project_state"
+    assert action["arguments"] == {
+        "project_name": "source-demo",
+        "profile_id": "source_observer",
+    }
+
+    analyzed = server._tool_analyze_project_state(action["arguments"])
+
+    assert analyzed["agent_state"]["profile_id"] == "source_observer"
+    assert analyzed["primary_next_action"] is None or analyzed[
+        "primary_next_action"
+    ]["tool"] in set(profile_guidance("source_observer")["primary_tools"]) | set(
+        profile_guidance("source_observer")["advanced_tools"]
+    )
+    assert not (
+        isinstance(analyzed["primary_next_action"], dict)
+        and analyzed["primary_next_action"].get("tool") == "run_mcp_workflow"
+        and analyzed["primary_next_action"].get("action") == "source_onboarding"
+    )
+
+
+def test_analyze_project_state_schema_accepts_the_supported_personas(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+    tools = {tool.name: tool for tool in server.tool_defs}
+
+    assert tools["analyze_project_state"].input_schema["properties"]["profile_id"][
+        "enum"
+    ] == [
+        "web_gpt_commander",
+        "local_codex_commander",
+        "planner_agent",
+        "reviewer_agent",
+        "source_observer",
+    ]
 
 
 @pytest.mark.parametrize(

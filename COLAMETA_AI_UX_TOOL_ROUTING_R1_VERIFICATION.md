@@ -109,7 +109,11 @@ registration or authority gates:
   profile's reachable tools, while established operator-flow packets retain
   their own route-specific contracts;
 - `source_observer` guidance contains only read-only tools and never advertises
-  the mixed read/write `manage_files` surface.
+  the mixed read/write `manage_files` surface; its three dedicated source-read
+  tools are physically callable on the normal/loopback surface;
+- flow-packet calls carry the selected persona into `analyze_project_state`,
+  whose profile-aware reachability filter prevents a source observer from
+  promoting source-only state into an onboarding preview;
 - ASCII routing keywords remain whole-token matched, while audited common
   inflections such as `editing`, `patching`, and `committing` retain their
   intended preview routes; underscores are separators so canonical names such
@@ -141,9 +145,11 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `89 passed`.
+Dedicated R1 tests after review hardening: `91 passed`.
+The persona-propagation, exposure, submission-annotation, and runtime set
+passes: `196 passed`.
 The active-profile continuation and related Commander/workflow production set
-passes: `1696 passed`.
+passes: `1699 passed`.
 The related workflow policy, compatibility, and review-manifest production set
 passes: `417 passed`.
 The three previously affected operator-flow production regressions plus the R1
@@ -160,7 +166,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the latest profile-aware continuation repair: `4822 passed`, `22 failed`,
+- full suite after the latest persona-preservation repair: `4825 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached

@@ -617,7 +617,7 @@ class MCPCommanderAppMixin:
                     {"tool": "get_stage_parallel_closeout_packet", "arguments": project_args()},
                     {"tool": "get_apps_connector_smoke_packet", "arguments": project_args()},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="web_gpt_commander")},
                 ],
                 "primary_workflow": "thin_governed_loop_preview",
                 "next_payload_rule": (
@@ -636,7 +636,7 @@ class MCPCommanderAppMixin:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="local_codex_commander")},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="local_codex_commander")},
                     {"tool": "get_connector_runtime_health_status", "arguments": project_args()},
                     {"tool": "get_stage_parallel_group_status", "arguments": project_args()},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=10)},
@@ -655,7 +655,7 @@ class MCPCommanderAppMixin:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="reviewer_agent")},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="reviewer_agent")},
                     {"tool": "manage_workflow_run", "arguments": project_args(action="list", limit=20)},
                     {"tool": "list_executor_run_reports", "arguments": project_args(limit=20)},
                 ],
@@ -695,7 +695,7 @@ class MCPCommanderAppMixin:
                     {"tool": "list_registered_projects", "arguments": {}},
                     {"tool": "get_agent_consumer_contract", "arguments": {}},
                     {"tool": "get_agent_operator_flow_packet", "arguments": project_args(profile_id="source_observer")},
-                    {"tool": "analyze_project_state", "arguments": project_args()},
+                    {"tool": "analyze_project_state", "arguments": project_args(profile_id="source_observer")},
                     {"tool": "get_runtime_version_status", "arguments": project_args()},
                 ],
                 "primary_workflow": "source_observation",
@@ -1030,7 +1030,7 @@ class MCPCommanderAppMixin:
                 action_id="inspect_project_state",
                 label="Inspect project state",
                 tool="analyze_project_state",
-                arguments=dict(project_args),
+                arguments={**project_args, "profile_id": profile_id},
                 reason="Source observers need project facts and recommended reads before suggesting or changing anything.",
                 expected_output="Project mode, Git state, Runner status, executor/report summary, and safe recommended reads.",
             ), embedded_packets
@@ -1273,7 +1273,7 @@ class MCPCommanderAppMixin:
         project_state = {
             "label": "Project state",
             "tool": "analyze_project_state",
-            "arguments": dict(project_args),
+            "arguments": {**project_args, "profile_id": profile_id},
             "gate_level": "read_only",
         }
         runtime_status = {

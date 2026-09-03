@@ -15,14 +15,18 @@ follows:
 | MCP exposure profile | Registered | Physically visible |
 |---|---:|---:|
 | `owner` | 123 | 123 |
-| `legacy` | 123 | 103 |
-| `maintainer` | 123 | 87 |
-| `normal` | 123 | 85 |
+| `legacy` | 123 | 105 |
+| `maintainer` | 123 | 90 |
+| `normal` | 123 | 88 |
 | `commander` | 123 | 9 |
 | `authoritative_canary` | 112 | 14 |
 
 The Commander nine-tool surface is already enforced by `_PROFILE_ORDERS` and
 `COMMANDER_EXPOSED_TOOLS`; R1 must not replace that registration mechanism.
+The normal/loopback surface additively exposes the existing static-read
+`get_repo_overview`, `get_source_file`, and `search_source` tools so
+`source_observer` guidance remains physically callable. Commander remains at
+exactly nine tools.
 
 ## 2. Current domain map
 
@@ -165,6 +169,10 @@ will be accepted by an authority gate.
 - Profile guidance must not become an allowlist or scope decision.
 - Continuation metadata must never be accepted in place of the original typed
   parameter.
+- `analyze_project_state.profile_id` is an additive optional field required to
+  preserve a selected persona across high-level calls. Existing clients omit
+  it and retain the prior exposure-derived default; it changes navigation
+  projection only and does not alter scopes or gates.
 
 No Hard Stop was found. The projection can be implemented without deleting or
 renaming a tool, changing authentication, weakening a gate, migrating persisted
