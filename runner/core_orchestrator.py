@@ -2123,10 +2123,19 @@ class WorkflowOrchestrator:
                 )
             try:
                 if isinstance(patch_id, str):
-                    patch_result = self._planning_bridge.apply_plan_patch(
-                        self.project_root,
-                        patch_id.strip(),
-                    )
+                    try:
+                        patch_result = self._planning_bridge.apply_plan_patch(
+                            self.project_root,
+                            patch_id.strip(),
+                        )
+                    except PlanningBridgeError as exc:
+                        if exc.error_code != "PATCH_NOT_FOUND":
+                            raise
+                        return self._error_result(
+                            "plan_update",
+                            exc.error_code,
+                            str(exc),
+                        )
                     patch_ok = patch_result.get("ok") is True
                     if not patch_ok:
                         patch_error_code = patch_result.get("error_code")

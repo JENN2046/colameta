@@ -22,7 +22,9 @@ from runner.runner_paths import (
 
 
 class PlanningBridgeError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 @dataclass
@@ -1591,7 +1593,10 @@ class PlanningBridge:
             if os.path.exists(path):
                 payload = self._load_json(path)
                 return payload, path
-        raise PlanningBridgeError(f"找不到补丁：{patch_id}")
+        raise PlanningBridgeError(
+            f"找不到补丁：{patch_id}",
+            error_code="PATCH_NOT_FOUND",
+        )
 
     def _file_signature(self, path: str) -> dict[str, Any]:
         stat = os.stat(path)

@@ -156,6 +156,8 @@ Commander 收到成功的 plan preview 时仍保留原 `patch_id` typed handle�
 `patch_id` 会约束该路径只消费同一个 typed plan patch；未传 `patch_id` 的既有
 auto-apply 调用保持原语义。若 plan 在 preview 后变化，原始 `PATCH_STALE` 会保留在
 高层响应并映射为 `new_preview_required`，不会降级为通用内部错误。
+若 exact `patch_id` 已过期、被丢弃或不存在，生产异常路径同样会上浮为
+`PATCH_NOT_FOUND` 并要求新 preview，不会降级为 `AUTO_APPLY_FAILED`。
 
 Commander 的 Git `auto_preview` 同样不会暴露隐藏的 `manage_git_commit`。成功生成
 commit preview 后，projection 会在 context-binding 阶段之前将消费者映射为可见的
@@ -174,6 +176,13 @@ confirmation 或 commit scope gate。
 - `planner_agent`
 - `reviewer_agent`
 - `source_observer`
+
+`local_codex_commander` 的 advanced guidance 包含 source-onboarding preview 的
+真实消费者 `manage_runner_plan`；它不会把确认动作伪映射到明确不支持 apply 的
+`run_mcp_workflow(source_onboarding)`。Web GPT Commander 的物理工具面保持不变。
+
+状态路由推荐 `review_manifest` inspect 时使用其公开 schema 的
+`phase=inspect` 参数，而不是该工具拒绝的 `action=inspect`。
 
 当前 Commander 已经通过既有注册机制物理暴露 9 个工具。R1 保留该机制，不做
 动态注册重写，也不删除 Owner/advanced/compatibility catalog 中的工具。

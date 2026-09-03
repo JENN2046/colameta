@@ -27,6 +27,7 @@ from runner.core_orchestrator import WorkflowOrchestrator
 from runner.mcp_server import COMMANDER_EXPOSED_TOOLS, MCPPlanningBridgeServer
 from runner.mcp_executor_workflow import MCPExecutorWorkflowManager
 from runner.mcp_workflow_router import MCPWorkflowRouter
+from runner.planning_bridge import PlanningBridgeError
 from runner.project_registry import ProjectRegistry
 from tests.agent_ux_independent_verifier import (
     verify_agent_projection,
@@ -58,6 +59,18 @@ class _ExactPlanApplyBridge:
             "patch_id": patch_id,
             "changed_files": [".colameta/plan.json"],
         }
+
+
+class _SourceOnboardingPreviewManager:
+    def handle(self, action: str, params: dict) -> dict:
+        assert action == "source_onboarding_preview"
+        return {"ok": True, "preview_id": "onboarding_preview_1"}
+
+
+class _InvalidExactPlanApplyBridge(_ExactPlanApplyBridge):
+    def apply_plan_patch(self, project_root: str, patch_id: str) -> dict:
+        super().apply_plan_patch(project_root, patch_id)
+        raise PlanningBridgeError("malformed patch payload")
 
 
 def test_registry_classifies_the_complete_runtime_catalog(tmp_path) -> None:
@@ -198,6 +211,7 @@ def test_all_supported_profiles_have_bounded_guidance(profile_id: str) -> None:
     ("error_code", "expected_class", "should_stop", "retryable"),
     [
         ("PREVIEW_EXPIRED", "new_preview_required", False, True),
+        ("PATCH_NOT_FOUND", "new_preview_required", False, True),
         ("PATCH_STALE", "new_preview_required", False, True),
         ("CONTEXT_BINDING_MISMATCH", "context_changed", False, True),
         ("EXECUTOR_ALREADY_RUNNING", "wait_for_running_operation", False, True),
@@ -581,6 +595,67 @@ def test_exact_plan_patch_failure_preserves_stale_recovery(tmp_path) -> None:
     assert result["recovery"]["recovery_class"] == "new_preview_required"
     assert result["recovery"]["agent_should_stop"] is False
     assert stale_bridge.applied_patch_ids == ["patch_stale_1"]
+
+
+def test_missing_exact_plan_patch_requires_a_new_preview(tmp_path) -> None:
+    result = MCPWorkflowRouter(str(tmp_path)).handle(
+        "plan_update",
+        {"phase": "apply", "patch_id": "patch_missing_1"},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "PATCH_NOT_FOUND"
+    assert result["recovery"]["recovery_class"] == "new_preview_required"
+    assert result["recovery"]["agent_should_stop"] is False
+
+
+def test_non_missing_plan_error_does_not_claim_patch_not_found(tmp_path) -> None:
+    invalid_bridge = _InvalidExactPlanApplyBridge()
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        planning_bridge=invalid_bridge,  # type: ignore[arg-type]
+    ).handle(
+        "plan_update",
+        {"phase": "apply", "patch_id": "patch_invalid_1"},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "AUTO_APPLY_FAILED"
+    assert result["recovery"]["recovery_class"] == "operator_action_required"
+    assert result["recovery"]["agent_should_stop"] is True
+
+
+def test_local_profile_keeps_source_onboarding_consumer_reachable(tmp_path) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        analyze_state_fn=lambda _params: {"ok": True, "plan": {"source_only": True}},
+        plan_workflow_manager=_SourceOnboardingPreviewManager(),  # type: ignore[arg-type]
+        agent_profile_id="local_codex_commander",
+    ).handle("auto_preview", {"goal": "Adopt this source-only project"})
+
+    assert result["selected_workflow"] == "source_onboarding"
+    assert result["primary_next_action"]["tool"] == "manage_runner_plan"
+    assert result["primary_next_action"]["required_arguments"] == {
+        "action": "apply",
+        "preview_id": "onboarding_preview_1",
+    }
+    assert "manage_runner_plan" in profile_guidance("local_codex_commander")[
+        "advanced_tools"
+    ]
+
+
+def test_review_task_uses_review_manifest_phase_argument(tmp_path) -> None:
+    action = select_primary_action_from_state(
+        {"status": "REVIEW_TASK"},
+        intent="Review the current evidence",
+    )
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="owner")
+    tool = next(item for item in server.tool_defs if item.name == "review_manifest")
+
+    assert action is not None
+    assert action["required_arguments"] == {"phase": "inspect"}
+    assert "phase" in tool.input_schema["properties"]
+    assert "action" not in tool.input_schema["properties"]
 
 
 def test_projection_preserves_old_fields_and_grants_no_authority() -> None:

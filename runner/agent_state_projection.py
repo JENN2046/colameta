@@ -465,7 +465,7 @@ def select_primary_action_from_state(
             "review_manifest",
             "inspect",
             "Review work should begin with immutable manifest evidence.",
-            {"action": "inspect"},
+            {"phase": "inspect"},
         ),
         "PARALLEL_STAGE": (
             "get_stage_parallel_next_action_packet",
@@ -727,6 +727,7 @@ def recovery_projection(
             "PREVIEW_NOT_FOUND",
             "PREVIEW_STALE",
             "STALE_PREVIEW",
+            "PATCH_NOT_FOUND",
             "PATCH_STALE",
         )
     ):

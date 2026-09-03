@@ -36,6 +36,11 @@ Branch: `codex/ai-ux-tool-routing-r1`
 - exact plan-patch failures promote their original code and message; a
   `PATCH_STALE` result remains visible and deterministically projects
   `new_preview_required` instead of degrading to an unknown failure;
+- missing exact plan patches preserve `PATCH_NOT_FOUND` and the same
+  `new_preview_required` recovery instead of degrading to `AUTO_APPLY_FAILED`;
+- source-onboarding keeps its real `manage_runner_plan(action=apply)` consumer
+  reachable on the Local Codex profile, while review tasks publish the
+  schema-valid `review_manifest(phase=inspect)` argument;
 - workflow recording refreshes the returned continuation after adding its
   `workflow_id`; that continuation names the canonical
   `manage_workflow_run(action=get)` consumer instead of invented status/read
@@ -128,7 +133,9 @@ source reading, small edit, docs, plan, executor preflight/ready/running/done,
 validation pending/failed/passed, commit pending, context drift, preview expiry,
 scope failure, review, stage parallel, blocked Work Item and Stable readiness.
 
-Dedicated R1 tests after review hardening: `80 passed`.
+Dedicated R1 tests after review hardening: `85 passed`.
+The related workflow policy, compatibility, and review-manifest production set
+passes: `417 passed`.
 The three previously affected operator-flow production regressions plus the R1
 suite pass together: `78 passed`.
 The plan-continuation production-path focus passes: `31 passed`.
@@ -143,7 +150,7 @@ The plan-continuation production-path focus passes: `31 passed`.
   Stable and Work Item targeted set: `863 passed`, `29 subtests passed`;
 - relevant routing/Commander set: `1515 passed`, `1 failed`; the one failing
   canonical-conclusion node reproduces unchanged at the pre-repair commit;
-- full suite after the executor-preview action repair: `4814 passed`, `22 failed`,
+- full suite after the latest routing/recovery repair: `4819 passed`, `22 failed`,
   `2 skipped`, `213 subtests passed`.
 
 All 22 full-suite failing nodes were replayed against an untouched detached
