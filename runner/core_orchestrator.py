@@ -216,14 +216,19 @@ _GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
     r"(?:(?:this|the|current)\s+)?"
     r"(?:task|request|operation|workflow|run|session))?"
 )
+_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
+    r"(?:^|[,;:]\s*|\b(?:but|however|yet)\s+)"
+)
 _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        rf"\bno\s+writes?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"no\s+writes?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
         rf"(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\bno\s+mutations?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"no\s+mutations?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
         rf"(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),

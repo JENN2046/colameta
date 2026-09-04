@@ -572,3 +572,37 @@ def test_chinese_commit_prohibition_does_not_create_a_commit_preview() -> None:
     assert result.selected_workflow == "project_status"
     assert result.preview_ids == []
     assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Update the docs to explain when there are no writes.", "docs"),
+        (
+            "Edit code handling a state where there are no mutations.",
+            "small_project_patch",
+        ),
+    ],
+)
+def test_no_write_subject_matter_is_not_a_global_veto(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect current state; no writes.",
+        "Inspect current state, no mutations.",
+        "Update the docs, but no writes during this task.",
+        "Update the docs; no mutations throughout this workflow.",
+    ],
+)
+def test_no_write_directive_clauses_remain_global_vetoes(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
