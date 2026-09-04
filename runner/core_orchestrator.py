@@ -127,12 +127,25 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 _READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"(?:^|[,;:]\s*)read[-\s]only(?=\s*(?:[.!?]|$))",
+        r"(?:^|[,;:]\s*)read[-\s]only(?=\s*(?:[:.!?]|$))",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\bread[-\s]only\s+"
-        r"(?:action|operation|workflow|route|request|response|inspection)\b",
+        r"\b(?:keep|make|treat)\s+"
+        r"(?:(?:this|the|current|next)\s+)?"
+        r"(?:task|request|action|operation|workflow|route|response|inspection)\s+"
+        r"read[-\s]only\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:perform|conduct|run)\s+(?:(?:a|an|the)\s+)?"
+        r"read[-\s]only\s+(?:inspection|review|check|operation|workflow)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:choose|select|report|return|provide|recommend)\b"
+        r"[^,.!?;\n]{0,96}\bread[-\s]only\s+"
+        r"(?:action|route|response|workflow|operation)\b",
         re.IGNORECASE,
     ),
     re.compile(r"(?:^|[,;:]\s*)inspect\s+only\b", re.IGNORECASE),

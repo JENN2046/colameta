@@ -154,6 +154,8 @@ def test_comma_delimited_positive_instruction_survives_a_negation(
         ("Edit README to document read-only mode.", "docs"),
         ("Update the docs with a read-only configuration example.", "docs"),
         ("Edit source code to support read-only mode.", "small_project_patch"),
+        ("Update the docs for a read-only inspection workflow.", "docs"),
+        ("Edit code handling a read-only operation.", "small_project_patch"),
     ],
 )
 def test_read_only_subject_matter_is_not_a_global_routing_veto(
@@ -235,6 +237,8 @@ def test_read_only_subject_matter_does_not_veto_docs_routing(goal: str) -> None:
         "Inspect the current project state; read-only.",
         "Read only: inspect the current project state.",
         "Inspect the current project state and keep this task read-only.",
+        "Inspect the current project state and report the next read-only action.",
+        "Perform a read-only inspection of the current project.",
     ],
 )
 def test_read_only_directives_still_request_project_status(goal: str) -> None:
