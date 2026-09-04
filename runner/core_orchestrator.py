@@ -229,7 +229,19 @@ _GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
     r"(?:task|request|operation|workflow|run|session))?"
 )
 _GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
-    r"(?:^|[,.!?;:]\s*|\r?\n\s*|\b(?:but|however|yet)\s+)"
+    r"(?:^|[,.!?;:]\s*|\r?\n\s*|\b(?:but|however|yet|and)\s+)"
+    r"(?:(?:please|kindly)\s+)?"
+)
+# A complete global object remains a veto when another prohibited action
+# follows. Do not accept arbitrary trailing text: it may narrow the object
+# (e.g. "files under tests" or "project configuration").
+_GLOBAL_WRITE_DIRECTIVE_END_PATTERN = (
+    rf"(?=\s*(?:[,.!?;]|$)|\s+(?:and|or|nor)\s+"
+    rf"(?:(?:please|kindly)\s+)?(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+)?"
+    rf"(?:{_PROHIBITED_ROUTING_ACTION_PATTERN}"
+    rf"|committing|pushing|merging|writing|mutating|editing|patching|updating"
+    rf"|modifying|changing|staging|repairing|extending|executing|running"
+    rf"|writes?|mutations?)\b)"
 )
 _CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
     r"(?:^|[，。！？；：]\s*|\r?\n\s*|(?:但是|然而|不过|但|却)\s*)"
@@ -238,13 +250,13 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
         rf"no\s+writes?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
-        rf"(?=\s*(?:[,.!?;]|$))",
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
         re.IGNORECASE,
     ),
     re.compile(
         rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
         rf"no\s+mutations?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
-        rf"(?=\s*(?:[,.!?;]|$))",
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
         re.IGNORECASE,
     ),
     re.compile(
@@ -252,7 +264,16 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
         rf"(?:write(?:\s+(?:to|into))?|mutate)"
         rf"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
-        rf"\s+anything)?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"\s+anything){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:write|mutate)"
+        rf"{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        # Without an explicit global object, coordination can introduce a
+        # shared selective object: "do not write or update tests".
         rf"(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
@@ -265,7 +286,7 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
         rf"(?:files?|project|working\s+tree))?"
         rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
-        rf"(?=\s*(?:[,.!?;]|$))",
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
         re.IGNORECASE,
     ),
     re.compile(
@@ -291,12 +312,17 @@ _WITHOUT_GLOBAL_WRITE_VETO_PATTERN = re.compile(
     rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
     rf"(?:files?|project|working\s+tree))?"
     rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
-    rf"(?=\s*(?:[,.!?;]|$))",
+    rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
     re.IGNORECASE,
 )
-_SUBJECT_MATTER_BEFORE_WITHOUT_PATTERN = re.compile(
+_ROUTING_SUBJECT_MATTER_PATTERN = re.compile(
     r"\b(?:to\s+(?:explain|describe|document)|explaining|describing|"
     r"documenting|handling|when|where|why|how|that)\b",
+    re.IGNORECASE,
+)
+_COORDINATED_ROUTING_SUBJECT_PATTERN = re.compile(
+    r"\b(?:to\s+(?:explain|describe|document)|explaining|describing|"
+    r"documenting|handling)\b",
     re.IGNORECASE,
 )
 _MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
@@ -311,17 +337,34 @@ def _without_global_write_veto(goal: str) -> bool:
             default=-1,
         )
         clause_prefix = goal[clause_start + 1 : match.start()]
-        if _SUBJECT_MATTER_BEFORE_WITHOUT_PATTERN.search(clause_prefix) is None:
+        if _ROUTING_SUBJECT_MATTER_PATTERN.search(clause_prefix) is None:
             return True
     return False
+
+
+def _global_write_veto(goal: str) -> bool:
+    for pattern in _GLOBAL_WRITE_VETO_PATTERNS:
+        for match in pattern.finditer(goal):
+            if match.group().split(maxsplit=1)[0].lower() == "and":
+                # Bare coordination can also occur inside a description, such
+                # as "explain why dry runs inspect and do not modify files".
+                # Punctuation starts a new directive clause, so a preceding
+                # documentation subject must not veto "..., and do not ...".
+                clause_start = max(
+                    (goal.rfind(separator, 0, match.start()) for separator in ",.!?;:\n"),
+                    default=-1,
+                )
+                prefix = goal[clause_start + 1 : match.start()]
+                if _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None:
+                    continue
+            return True
+    return _without_global_write_veto(goal)
 
 
 def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
     """Return positive routing text and bounded prohibition facts."""
 
-    global_write_veto = any(
-        pattern.search(goal) is not None for pattern in _GLOBAL_WRITE_VETO_PATTERNS
-    ) or _without_global_write_veto(goal)
+    global_write_veto = _global_write_veto(goal)
     positive_goal = goal
     for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
         positive_goal = pattern.sub(" ", positive_goal)

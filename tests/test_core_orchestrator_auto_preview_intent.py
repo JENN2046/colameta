@@ -1050,3 +1050,83 @@ def test_without_edit_patch_update_subject_matter_is_not_a_global_veto(
     )
 
     assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs, and do not modify any files.",
+        "Update the docs and do not modify any files.",
+        "Update the docs. Please do not modify any files.",
+        "Update the docs, and please do not modify any files.",
+        "Update the docs. Kindly do not edit any files.",
+        "Please do not patch the project; update the docs.",
+        "Update the docs, but do not modify any files or commit.",
+        "Update the docs, but do not modify any files and commit.",
+        "Update the docs, but do not modify any files nor commit.",
+        "Update the docs, but do not modify any files or push or merge.",
+        "Update the docs, but do not modify any files and do not commit.",
+        "Update the docs, but do not modify any files and update the docs instead.",
+        "Update the docs without modifying any files or committing.",
+        "Update the docs without editing any files and pushing.",
+        "Update the docs, and please no writes or mutations.",
+        "Update the docs. Please do not write any files or commit.",
+        "Update the docs to explain dry runs, and do not modify any files.",
+        "Update the docs to explain dry runs. Please do not modify any files.",
+        "Update docs when ready and do not modify any files.",
+        "Update docs that need examples and do not modify any files.",
+    ],
+)
+def test_global_veto_clause_boundaries_block_preview_and_confirmation(goal: str) -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("global veto must prevent document preview calls")
+
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "project_status"
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "plan": {"source_only": True},
+            "recommended_next_actions": [
+                {"action": "docs_update.apply", "risk_level": "write", "requires_confirmation": True},
+            ],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {"goal": goal, "file": "README.md", "heading": "Usage", "new_content": "Not authorized"}
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.changed_files == []
+    assert result.next_actions == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs to explain why dry runs inspect state and do not modify any files.",
+        "Update the docs to describe workflows that inspect state and never edit any files.",
+        "Update the docs to explain how dry runs inspect state and please do not modify any files.",
+        "Update the docs to describe workflows that do not modify any files or commit.",
+        "Update the docs to explain how dry runs work without modifying any files or committing.",
+        "Do not modify tests or commit; update the docs instead.",
+        "Do not modify any files under tests; update the docs instead.",
+        "Update the docs, but do not modify the project configuration or commit.",
+        "Update the docs, and please do not edit tests.",
+        "Update the docs. Kindly do not patch README.",
+    ],
+)
+def test_veto_clause_boundaries_preserve_selective_and_subject_matter_requests(goal: str) -> None:
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize("verb", ["write", "mutate"])
+@pytest.mark.parametrize("action", ["update", "patch"])
+def test_coordinated_verbs_with_shared_selective_object_remain_routable(
+    verb: str, action: str,
+) -> None:
+    goal = f"Do not {verb} or {action} tests; update the plan instead."
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "plan"

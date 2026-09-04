@@ -111,6 +111,10 @@ Global file/project prohibitions such as “do not edit any files”, “do not 
 the project”, and “do not update the working tree” also veto mutation previews,
 as do equivalent “without editing/patching/updating” instructions. A prohibition
 limited to tests or project configuration does not veto unrelated document work.
+These global vetoes also accept coordinated or polite directives (`and do not`,
+`Please do not`, `Kindly do not`) and retain their force before a trailing
+prohibited action such as `or commit`. Embedded descriptions such as “explain
+why dry runs inspect state and do not modify files” remain documentation work.
 
 If you want to start a controlled optimization round:
 

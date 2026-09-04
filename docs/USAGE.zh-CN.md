@@ -99,6 +99,9 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 “do not edit any files”、“do not patch the project”、“do not update the working tree”
 等作用于全部文件或项目的禁止语句，以及相应的 “without editing/patching/updating” 表达，也会阻止修改预览。
 仅限测试或项目配置的禁止语句，不会否决无关的文档工作。
+全局禁止语句也支持 `and do not`、`Please do not`、`Kindly do not` 等连接或礼貌前缀，
+并在后接 `or commit` 等并列禁止动作时保持有效。描述 dry run 行为的从句
+（如 “explain why dry runs inspect state and do not modify files”）仍可进入文档流程。
 
 如果要开一轮受控优化：
 
