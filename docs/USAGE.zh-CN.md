@@ -102,6 +102,7 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 全局禁止语句也支持 `and do not`、`Please do not`、`Kindly do not` 等连接或礼貌前缀，
 并在后接 `or commit` 等并列禁止动作时保持有效。描述 dry run 行为的从句
 （如 “explain why dry runs inspect state and do not modify files”）仍可进入文档流程。
+禁止子句也可由换行结束，无需在行末添加标点。
 
 如果要开一轮受控优化：
 

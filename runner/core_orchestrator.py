@@ -236,7 +236,7 @@ _GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
 # follows. Do not accept arbitrary trailing text: it may narrow the object
 # (e.g. "files under tests" or "project configuration").
 _GLOBAL_WRITE_DIRECTIVE_END_PATTERN = (
-    rf"(?=\s*(?:[,.!?;]|$)|\s+(?:and|or|nor)\s+"
+    rf"(?=\s*(?:[,.!?;\r\n]|$)|\s+(?:and|or|nor)\s+"
     rf"(?:(?:please|kindly)\s+)?(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+)?"
     rf"(?:{_PROHIBITED_ROUTING_ACTION_PATTERN}"
     rf"|committing|pushing|merging|writing|mutating|editing|patching|updating"
@@ -274,7 +274,7 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
         # Without an explicit global object, coordination can introduce a
         # shared selective object: "do not write or update tests".
-        rf"(?=\s*(?:[,.!?;]|$))",
+        rf"(?=\s*(?:[,.!?;\r\n]|$))",
         re.IGNORECASE,
     ),
     re.compile(

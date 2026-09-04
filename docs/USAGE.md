@@ -115,6 +115,7 @@ These global vetoes also accept coordinated or polite directives (`and do not`,
 `Please do not`, `Kindly do not`) and retain their force before a trailing
 prohibited action such as `or commit`. Embedded descriptions such as “explain
 why dry runs inspect state and do not modify files” remain documentation work.
+A newline can end a prohibition clause even when the line has no punctuation.
 
 If you want to start a controlled optimization round:
 

@@ -1075,6 +1075,9 @@ def test_without_edit_patch_update_subject_matter_is_not_a_global_veto(
         "Update the docs to explain dry runs. Please do not modify any files.",
         "Update docs when ready and do not modify any files.",
         "Update docs that need examples and do not modify any files.",
+        "Update the docs.\nDo not modify any files\nDo not commit.",
+        "Please do not write\nUpdate the docs.",
+        "Update the docs, but no writes\nDo not commit.",
     ],
 )
 def test_global_veto_clause_boundaries_block_preview_and_confirmation(goal: str) -> None:
