@@ -464,3 +464,42 @@ def test_negated_read_only_directive_does_not_veto_positive_work(goal: str) -> N
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect current state; do not run executor, stage any changes.",
+        "Inspect current state; do not edit any files, patch any tests.",
+        "Inspect current state; do not commit, push, or merge.",
+        "Inspect current state; do not update any docs, commit any changes, or run executor.",
+    ],
+)
+def test_comma_separated_prohibited_action_lists_remain_negated(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_comma_separated_prohibition_does_not_create_a_commit_preview() -> None:
+    class RejectCommitManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("prohibited action list must not enter commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=RejectCommitManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Inspect current state; do not run executor, stage any changes.",
+            "message": "This message must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False

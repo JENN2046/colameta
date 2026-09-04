@@ -102,6 +102,16 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+_PROHIBITED_ROUTING_ACTION_PATTERN = (
+    r"(?:"
+    r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
+    r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
+    r"|sync|append|update|revise|add|create|document|plan|repair|extend|version"
+    r"|commit|stage|patch|edit|change|modify|make\s+changes?|inspect|review"
+    r"|push|merge|replace\s+stable|release|write|mutate"
+    r")"
+)
+
 # Remove bounded prohibited-action clauses before keyword classification.  This
 # is intentionally not a general natural-language parser: it only prevents
 # explicit English safety vetoes from becoming positive routing evidence.
@@ -118,13 +128,21 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\s+"
-        r"(?:"
-        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
-        r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
-        r"|sync|append|plan|repair|extend|version|commit|stage|patch|edit"
-        r"|push|merge|replace\s+stable|release|write|mutate"
-        r")\b(?:(?!"
+        rf"\b(?:do\s+not|don't|dont|never)\s+"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b[^,.!?;\n]*"
+        rf"(?:,\s*(?:"
+        rf"(?:and|or)\s+{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
+        rf"|{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?="
+        rf"[^,.!?;\n]*\bany\b"
+        rf"|[^.!?;\n]*,\s*(?:and|or)\s+"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
+        rf")"
+        rf")[^,.!?;\n]*)+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:do\s+not|don't|dont|never)\s+"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?:(?!"
         r"\b(?:but|however|yet)\b"
         r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
         r"repair|extend|inspect|review)\b[^,.!?;\n]{0,80}\binstead\b)"
