@@ -241,3 +241,36 @@ def test_read_only_directives_still_request_project_status(goal: str) -> None:
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == "project_status"
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Do not forget to update the docs.", "docs"),
+        ("Do not overlook the plan update.", "plan"),
+        ("Never forget to edit the requested file.", "small_project_patch"),
+    ],
+)
+def test_positive_do_not_forget_idioms_retain_routing_evidence(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Do not write tests; update the plan instead.", "plan"),
+        ("Do not mutate README; update the docs instead.", "docs"),
+    ],
+)
+def test_selective_write_prohibition_does_not_become_a_global_veto(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow

@@ -107,8 +107,12 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 # explicit English safety vetoes from becoming positive routing evidence.
 _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\b"
-        r"(?:(?!\b(?:but|however|yet)\b)[^,.!?;\n])*",
+        r"\b(?:do\s+not|don't|dont|never)\s+"
+        r"(?:"
+        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|execute)"
+        r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
+        r"|commit|push|merge|replace\s+stable|release|write|mutate"
+        r")\b(?:(?!\b(?:but|however|yet)\b)[^,.!?;\n])*",
         re.IGNORECASE,
     ),
     re.compile(
@@ -132,10 +136,12 @@ _READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(r"(?:^|[,;:]\s*)inspect\s+only\b", re.IGNORECASE),
-    re.compile(r"\bno\s+writes?\b", re.IGNORECASE),
-    re.compile(r"\bno\s+mutations?\b", re.IGNORECASE),
+    re.compile(r"\bno\s+writes?(?=\s*(?:[,.!?;]|$))", re.IGNORECASE),
+    re.compile(r"\bno\s+mutations?(?=\s*(?:[,.!?;]|$))", re.IGNORECASE),
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\s+(?:write|mutate)\b",
+        r"\b(?:do\s+not|don't|dont|never)\s+(?:write|mutate)"
+        r"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
+        r"\s+anything)?(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
 )
