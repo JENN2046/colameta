@@ -222,10 +222,10 @@ _GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
     r"(?:task|request|operation|workflow|run|session))?"
 )
 _GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
-    r"(?:^|[,;:]\s*|\b(?:but|however|yet)\s+)"
+    r"(?:^|[,.!?;:]\s*|\r?\n\s*|\b(?:but|however|yet)\s+)"
 )
 _CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
-    r"(?:^|[，；：]\s*|(?:但是|然而|不过|但|却)\s*)"
+    r"(?:^|[，。！？；：]\s*|\r?\n\s*|(?:但是|然而|不过|但|却)\s*)"
 )
 _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(

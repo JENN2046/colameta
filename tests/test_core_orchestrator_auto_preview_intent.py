@@ -851,3 +851,56 @@ def test_filtered_status_goal_does_not_enter_source_onboarding() -> None:
     assert result.selected_workflow == "project_status"
     assert result.preview_ids == []
     assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs. Do not modify any files.",
+        "Update the docs! Must not write to the project.",
+        "Update the docs? No writes during this task.",
+        "Update the docs.\nDo not change the working tree.",
+        "更新文档。不要修改任何文件。",
+        "更新文档。\n不得更改项目。",
+    ],
+)
+def test_sentence_delimited_no_write_directive_vetoes_mutating_routes(
+    goal: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_sentence_delimited_no_write_does_not_create_a_docs_preview() -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("sentence-delimited veto must not enter docs preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Update the docs. Do not modify any files.",
+            "file": "docs/operations.md",
+            "heading": "Operations",
+            "new_content": "This content must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+def test_sentence_delimited_subject_matter_is_not_a_global_veto() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "Update the docs. Explain why dry runs do not write any files."
+    )
+
+    assert classified["selected_workflow"] == "docs"
