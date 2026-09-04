@@ -107,7 +107,7 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 # explicit English safety vetoes from becoming positive routing evidence.
 _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\b[^.!?;\n]*",
+        r"\b(?:do\s+not|don't|dont|never)\b[^,.!?;\n]*",
         re.IGNORECASE,
     ),
     re.compile(

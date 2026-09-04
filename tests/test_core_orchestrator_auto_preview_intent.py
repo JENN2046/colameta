@@ -125,3 +125,20 @@ def test_prohibited_action_terms_are_not_positive_routing_evidence(goal: str) ->
     )
 
     assert classified["selected_workflow"] == "project_status"
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Do not run executor, update the plan.", "plan"),
+        ("Don't commit, update the docs.", "docs"),
+        ("Do not commit, edit the requested file.", "small_project_patch"),
+    ],
+)
+def test_comma_delimited_positive_instruction_survives_a_negation(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow
