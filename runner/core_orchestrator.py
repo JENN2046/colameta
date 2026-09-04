@@ -71,13 +71,17 @@ _GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
     "version": frozenset({"versions", "versioned", "versioning"}),
 }
 
+_ENGLISH_NEGATION_PREFIX_PATTERN = (
+    r"(?:do\s+not|don't|dont|never|must\s+not|cannot|can't|cant)"
+)
+
 # ``auto_preview`` may infer a bounded route, but an explicit instruction not
 # to execute must always win over a keyword match such as "executor", "Codex",
 # or the historical short form "exec". These are deliberately narrow safety
 # vetoes for executor routing, not a general natural-language parser.
 _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never|without)\s+"
+        rf"\b(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}|without)\s+"
         r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
         r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
         r"use|using|execute|executing)\s+)?"
@@ -117,7 +121,7 @@ _PROHIBITED_ROUTING_ACTION_PATTERN = (
 # explicit English safety vetoes from becoming positive routing evidence.
 _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\s+(?:"
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
         r"(?:keep|make|treat)\s+"
         r"(?:(?:this|the|current|next)\s+)?"
         r"(?:task|request|action|operation|workflow|route|response|inspection)\s+"
@@ -128,7 +132,7 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?:do\s+not|don't|dont|never)\s+"
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
         rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b[^,.!?;\n]*"
         rf"(?:,\s*(?:"
         rf"(?:and|or)\s+{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
@@ -141,7 +145,7 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?:do\s+not|don't|dont|never)\s+"
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
         rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?:(?!"
         r"\b(?:but|however|yet)\b"
         r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
@@ -219,6 +223,9 @@ _GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
 _GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
     r"(?:^|[,;:]\s*|\b(?:but|however|yet)\s+)"
 )
+_CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
+    r"(?:^|[，；：]\s*|(?:但是|然而|不过|但|却)\s*)"
+)
 _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
@@ -233,14 +240,14 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?:do\s+not|don't|dont|never)\s+(?:write|mutate)"
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:write|mutate)"
         rf"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
         rf"\s+anything)?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
         rf"(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?:do\s+not|don't|dont|never)\s+(?:"
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
         rf"(?:change|modify)\s+(?:(?:any|the)\s+)?"
         rf"(?:files?|project|working\s+tree|anything)"
         rf"|make\s+(?:any\s+)?changes?"
@@ -248,6 +255,18 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"(?:files?|project|working\s+tree))?"
         rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
         rf"(?=\s*(?:[,.!?;]|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        r"(?:不要|别|禁止|不得|无需|不需要|不可|不应)\s*(?:"
+        r"(?:修改|更改|改动|写入|变更)\s*(?:任何|任意|所有)?\s*"
+        r"(?:文件|项目|工作树|代码)"
+        r"|(?:做|进行|产生)\s*(?:任何|任意)?\s*"
+        r"(?:更改|修改|改动|变更)"
+        r")"
+        r"(?:\s*(?:在)?(?:本次|当前|此)(?:任务|操作|工作流|会话)(?:中|期间|内))?"
+        r"(?=\s*(?:[，。！？；,.!?;]|$))",
         re.IGNORECASE,
     ),
 )

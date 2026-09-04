@@ -606,3 +606,95 @@ def test_no_write_directive_clauses_remain_global_vetoes(goal: str) -> None:
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == "project_status"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect current state; must not commit.",
+        "Inspect current state; cannot commit.",
+        "Inspect current state; can't commit.",
+        "Inspect current state; cant stage changes.",
+    ],
+)
+def test_modal_negative_routing_directives_are_not_positive_evidence(
+    goal: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_modal_commit_prohibition_does_not_create_a_commit_preview() -> None:
+    class RejectCommitManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("modal commit veto must not enter commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=RejectCommitManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Inspect current state; must not commit.",
+            "message": "This message must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "更新文档，但不要修改任何文件。",
+        "更新文档；不得更改项目。",
+        "更新文档，不过不可写入代码。",
+        "更新文档，但不要做任何更改。",
+    ],
+)
+def test_chinese_global_no_write_directive_vetoes_mutating_routes(
+    goal: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_chinese_global_no_write_directive_does_not_create_a_docs_preview() -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("Chinese no-write intent must not enter docs preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "更新文档，但不要修改任何文件。",
+            "file": "docs/operations.md",
+            "heading": "操作",
+            "new_content": "不得进入预览。",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+def test_chinese_no_write_subject_matter_is_not_a_global_veto() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "更新文档，说明不要修改任何文件的场景。"
+    )
+
+    assert classified["selected_workflow"] == "docs"
