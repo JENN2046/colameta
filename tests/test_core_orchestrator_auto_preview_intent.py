@@ -966,3 +966,87 @@ def test_read_only_subject_after_sentence_boundary_remains_routable(
     )
 
     assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize("verb", ["edit", "patch", "update"])
+@pytest.mark.parametrize(
+    "prohibition",
+    [
+        ", but do not {verb} any files.",
+        ". Must not {verb} the project during this task.",
+        "\nDo not {verb} the working tree.",
+    ],
+)
+def test_global_edit_patch_update_prohibition_blocks_docs_preview(
+    verb: str, prohibition: str,
+) -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("global mutation veto must not enter docs preview")
+
+    goal = "Update the docs" + prohibition.format(verb=verb)
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "project_status"
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [
+                {
+                    "action": "docs_update.apply",
+                    "requires_confirmation": True,
+                    "risk_level": "write",
+                },
+            ],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": goal,
+            "file": "README.md",
+            "heading": "Usage",
+            "new_content": "This content must not be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.changed_files == []
+    assert result.requires_confirmation is False
+    assert result.next_actions == []
+
+
+@pytest.mark.parametrize("verb", ["editing", "patching", "updating"])
+def test_without_edit_patch_update_global_scope_vetoes_docs(verb: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        f"Update the docs without {verb} any files."
+    )
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+@pytest.mark.parametrize("verb", ["edit", "patch", "update"])
+@pytest.mark.parametrize(
+    "goal_template",
+    [
+        "Update the docs, but do not {verb} tests.",
+        "Update the docs, but do not {verb} the project configuration.",
+        "Update the docs to explain why dry runs do not {verb} any files.",
+    ],
+)
+def test_selective_edit_patch_update_prohibition_is_not_a_global_veto(
+    verb: str, goal_template: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal_template.format(verb=verb))
+
+    assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize("verb", ["editing", "patching", "updating"])
+def test_without_edit_patch_update_subject_matter_is_not_a_global_veto(
+    verb: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        f"Update the docs to explain how dry runs work without {verb} any files."
+    )
+
+    assert classified["selected_workflow"] == "docs"

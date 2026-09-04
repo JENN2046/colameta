@@ -96,6 +96,9 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 否定动作列表会在正向转折处停止匹配：例如 “Do not commit but update the docs, and edit the README”
 仍选择文档流程。独立的 “Read-only.” 声明在句号或换行后同样生效，阻止文档、计划、提交和补丁预览；
 把 “read-only mode” 作为文档修改主题描述，不等同于声明本次任务只读。
+“do not edit any files”、“do not patch the project”、“do not update the working tree”
+等作用于全部文件或项目的禁止语句，以及相应的 “without editing/patching/updating” 表达，也会阻止修改预览。
+仅限测试或项目配置的禁止语句，不会否决无关的文档工作。
 
 如果要开一轮受控优化：
 

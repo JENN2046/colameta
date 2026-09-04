@@ -107,6 +107,10 @@ the docs, and edit the README” still selects the documentation workflow.
 A standalone “Read-only.” directive also applies after a sentence boundary
 or newline; it prevents document, plan, commit, and patch previews. Describing
 “read-only mode” as the subject of a documentation change is not such a directive.
+Global file/project prohibitions such as “do not edit any files”, “do not patch
+the project”, and “do not update the working tree” also veto mutation previews,
+as do equivalent “without editing/patching/updating” instructions. A prohibition
+limited to tests or project configuration does not veto unrelated document work.
 
 If you want to start a controlled optimization round:
 

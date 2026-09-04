@@ -259,7 +259,7 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
         rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
-        rf"(?:change|modify)\s+(?:(?:any|the)\s+)?"
+        rf"(?:change|modify|edit|patch|update)\s+(?:(?:any|the)\s+)?"
         rf"(?:files?|project|working\s+tree|anything)"
         rf"|make\s+(?:any\s+)?changes?"
         rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
@@ -283,7 +283,7 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 _WITHOUT_GLOBAL_WRITE_VETO_PATTERN = re.compile(
     rf"\bwithout\s+(?:"
-    rf"(?:modifying|changing|mutating)\s+"
+    rf"(?:modifying|changing|mutating|editing|patching|updating)\s+"
     rf"(?:(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|anything)"
     rf"|writing(?:\s+(?:to|into))?\s+"
     rf"(?:(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|anything)"
