@@ -107,7 +107,8 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 # explicit English safety vetoes from becoming positive routing evidence.
 _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\b[^,.!?;\n]*",
+        r"\b(?:do\s+not|don't|dont|never)\b"
+        r"(?:(?!\b(?:but|however|yet)\b)[^,.!?;\n])*",
         re.IGNORECASE,
     ),
     re.compile(
@@ -121,8 +122,16 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 _READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bread[-\s]only\b", re.IGNORECASE),
-    re.compile(r"\binspect\s+only\b", re.IGNORECASE),
+    re.compile(
+        r"(?:^|[,;:]\s*)read[-\s]only(?=\s*(?:[.!?]|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bread[-\s]only\s+"
+        r"(?:action|operation|workflow|route|request|response|inspection)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:^|[,;:]\s*)inspect\s+only\b", re.IGNORECASE),
     re.compile(r"\bno\s+writes?\b", re.IGNORECASE),
     re.compile(r"\bno\s+mutations?\b", re.IGNORECASE),
     re.compile(

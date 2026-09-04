@@ -133,6 +133,9 @@ def test_prohibited_action_terms_are_not_positive_routing_evidence(goal: str) ->
         ("Do not run executor, update the plan.", "plan"),
         ("Don't commit, update the docs.", "docs"),
         ("Do not commit, edit the requested file.", "small_project_patch"),
+        ("Do not run executor but update the plan.", "plan"),
+        ("Don't commit; however update the docs.", "docs"),
+        ("Do not commit yet edit the requested file.", "small_project_patch"),
     ],
 )
 def test_comma_delimited_positive_instruction_survives_a_negation(
@@ -142,3 +145,64 @@ def test_comma_delimited_positive_instruction_survives_a_negation(
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Edit README to document read-only mode.", "docs"),
+        ("Update the docs with a read-only configuration example.", "docs"),
+        ("Edit source code to support read-only mode.", "small_project_patch"),
+    ],
+)
+def test_read_only_subject_matter_is_not_a_global_routing_veto(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Do not run executor but update the plan.", "plan"),
+        ("Don't commit; however, update the docs.", "docs"),
+        ("Never launch Codex yet edit the requested file.", "small_project_patch"),
+    ],
+)
+def test_contrast_delimited_positive_instruction_survives_a_negation(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Edit README to document read-only mode.",
+        "Update the docs with a read-only configuration example.",
+    ],
+)
+def test_read_only_subject_matter_does_not_veto_docs_routing(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect the current project state; read-only.",
+        "Read only: inspect the current project state.",
+        "Inspect the current project state and keep this task read-only.",
+    ],
+)
+def test_read_only_directives_still_request_project_status(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
