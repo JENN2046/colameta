@@ -278,3 +278,61 @@ def test_selective_write_prohibition_does_not_become_a_global_veto(
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs, but do not change any files.",
+        "Update the docs but do not modify files.",
+        "Update the docs, but don't make changes.",
+        "Update the docs; never make any changes to the working tree.",
+    ],
+)
+def test_global_no_change_wording_vetoes_mutating_routes(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_global_no_change_wording_does_not_create_a_docs_preview() -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("global no-change intent must not enter docs preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Update the docs, but do not change any files.",
+            "file": "docs/operations.md",
+            "heading": "Operations",
+            "new_content": "This content must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Do not change tests; update the plan instead.", "plan"),
+        ("Do not modify tests; update the docs instead.", "docs"),
+        ("Do not make changes to tests; update the plan instead.", "plan"),
+    ],
+)
+def test_object_scoped_no_change_wording_is_not_a_global_veto(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow

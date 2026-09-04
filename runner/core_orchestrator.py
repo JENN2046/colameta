@@ -157,6 +157,16 @@ _READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\s+anything)?(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:do\s+not|don't|dont|never)\s+(?:"
+        r"(?:change|modify)\s+(?:(?:any|the)\s+)?"
+        r"(?:files?|project|working\s+tree|anything)"
+        r"|make\s+(?:any\s+)?changes?"
+        r"(?:\s+to\s+(?:(?:any|the)\s+)?"
+        r"(?:files?|project|working\s+tree))?"
+        r")(?=\s*(?:[,.!?;]|$))",
+        re.IGNORECASE,
+    ),
 )
 _MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
     {"docs", "plan", "git_commit", "small_project_patch"}
