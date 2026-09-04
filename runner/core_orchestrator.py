@@ -241,7 +241,8 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
         rf"(?:write(?:\s+(?:to|into))?|mutate)"
         rf"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
         rf"\s+anything)?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
@@ -249,7 +250,8 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
         rf"(?:change|modify)\s+(?:(?:any|the)\s+)?"
         rf"(?:files?|project|working\s+tree|anything)"
         rf"|make\s+(?:any\s+)?changes?"
@@ -272,25 +274,56 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
 )
+_WITHOUT_GLOBAL_WRITE_VETO_PATTERN = re.compile(
+    rf"\bwithout\s+(?:"
+    rf"(?:modifying|changing|mutating)\s+"
+    rf"(?:(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|anything)"
+    rf"|writing(?:\s+(?:to|into))?\s+"
+    rf"(?:(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|anything)"
+    rf"|making\s+(?:any\s+)?changes?"
+    rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
+    rf"(?:files?|project|working\s+tree))?"
+    rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+    rf"(?=\s*(?:[,.!?;]|$))",
+    re.IGNORECASE,
+)
+_SUBJECT_MATTER_BEFORE_WITHOUT_PATTERN = re.compile(
+    r"\b(?:to\s+(?:explain|describe|document)|explaining|describing|"
+    r"documenting|handling|when|where|why|how|that)\b",
+    re.IGNORECASE,
+)
 _MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
     {"docs", "plan", "git_commit", "small_project_patch"}
 )
 
 
-def _positive_routing_evidence(goal: str) -> tuple[str, bool]:
-    """Return positive routing text and whether it requests read-only routing."""
+def _without_global_write_veto(goal: str) -> bool:
+    for match in _WITHOUT_GLOBAL_WRITE_VETO_PATTERN.finditer(goal):
+        clause_start = max(
+            (goal.rfind(separator, 0, match.start()) for separator in ".!?;\n"),
+            default=-1,
+        )
+        clause_prefix = goal[clause_start + 1 : match.start()]
+        if _SUBJECT_MATTER_BEFORE_WITHOUT_PATTERN.search(clause_prefix) is None:
+            return True
+    return False
+
+
+def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
+    """Return positive routing text and bounded prohibition facts."""
 
     global_write_veto = any(
         pattern.search(goal) is not None for pattern in _GLOBAL_WRITE_VETO_PATTERNS
-    )
+    ) or _without_global_write_veto(goal)
     positive_goal = goal
     for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
         positive_goal = pattern.sub(" ", positive_goal)
+    prohibited_action_filtered = positive_goal != goal
     read_only_requested = global_write_veto or any(
         pattern.search(positive_goal) is not None
         for pattern in _READ_ONLY_DIRECTIVE_PATTERNS
     )
-    return positive_goal, read_only_requested
+    return positive_goal, read_only_requested, prohibited_action_filtered
 
 
 def _goal_keyword_matches(goal: str, keyword: str) -> bool:
@@ -4850,8 +4883,12 @@ class WorkflowOrchestrator:
         auto_preview_params["_selected_workflow"] = selected_workflow
         auto_preview_params["_selection_reason"] = selection_reason
         auto_preview_params["_confidence"] = confidence
-        _, read_only_requested = _positive_routing_evidence(goal)
-        auto_preview_params["_read_only_intent"] = read_only_requested
+        _, read_only_requested, prohibited_action_filtered = (
+            _positive_routing_evidence(goal)
+        )
+        auto_preview_params["_read_only_intent"] = read_only_requested or (
+            selected_workflow == "project_status" and prohibited_action_filtered
+        )
 
         if selected_workflow == "docs":
             return self._auto_preview_docs(auto_preview_params)
@@ -5442,8 +5479,9 @@ class WorkflowOrchestrator:
         if not goal_lower:
             return {"selected_workflow": "project_status", "confidence": 1.0, "reason": "empty goal"}
 
-        positive_goal, read_only_requested = _positive_routing_evidence(goal_lower)
-        prohibited_action_filtered = positive_goal != goal_lower
+        positive_goal, read_only_requested, prohibited_action_filtered = (
+            _positive_routing_evidence(goal_lower)
+        )
 
         executor_explicitly_forbidden = any(
             pattern.search(goal_lower) is not None

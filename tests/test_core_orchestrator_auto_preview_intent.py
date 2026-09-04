@@ -754,7 +754,14 @@ def test_prepositional_global_no_write_directive_vetoes_mutating_routes(
     assert classified["selected_workflow"] == "project_status"
 
 
-def test_prepositional_global_no_write_does_not_create_a_docs_preview() -> None:
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs, but do not write to any files.",
+        "Update the docs without modifying any files.",
+    ],
+)
+def test_global_no_write_does_not_create_a_docs_preview(goal: str) -> None:
     class RejectDocsManager:
         def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
             raise AssertionError("prepositional no-write intent must not enter docs preview")
@@ -768,12 +775,78 @@ def test_prepositional_global_no_write_does_not_create_a_docs_preview() -> None:
         project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
     )._workflow_auto_preview(
         {
-            "goal": "Update the docs, but do not write to any files.",
+            "goal": goal,
             "file": "docs/operations.md",
             "heading": "Operations",
             "new_content": "This content must never be previewed.",
         }
     )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        (
+            "Update the docs to explain why dry runs do not write any files.",
+            "docs",
+        ),
+        (
+            "Edit code handling workflows that do not mutate the project.",
+            "small_project_patch",
+        ),
+    ],
+)
+def test_embedded_write_predicates_are_not_global_directives(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs without modifying any files.",
+        "Update the docs without changing the project.",
+        "Update the docs without making any changes.",
+    ],
+)
+def test_without_global_write_directive_vetoes_mutating_routes(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_without_write_subject_matter_is_not_a_global_veto() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "Update the docs to explain how dry runs work without modifying any files."
+    )
+
+    assert classified["selected_workflow"] == "docs"
+
+
+def test_filtered_status_goal_does_not_enter_source_onboarding() -> None:
+    class RejectOnboardingOrchestrator(WorkflowOrchestrator):
+        def _workflow_source_onboarding(
+            self,
+            _params: dict[str, object],
+        ) -> dict[str, object]:
+            raise AssertionError("filtered status goal must not enter source onboarding")
+
+    result = RejectOnboardingOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "plan": {"source_only": True},
+            "recommended_next_actions": [],
+        },
+    )._workflow_auto_preview({"goal": "Inspect state; no commit."})
 
     assert result.selected_workflow == "project_status"
     assert result.preview_ids == []
