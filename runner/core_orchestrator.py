@@ -133,7 +133,7 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         rf"(?:,\s*(?:"
         rf"(?:and|or)\s+{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
         rf"|{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?="
-        rf"[^,.!?;\n]*\bany\b"
+        rf"\s+any\b"
         rf"|[^.!?;\n]*,\s*(?:and|or)\s+"
         rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
         rf")"
@@ -147,6 +147,18 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
         r"repair|extend|inspect|review)\b[^,.!?;\n]{0,80}\binstead\b)"
         r")[^,.!?;\n])*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:不要|别|禁止|不得|无需|不需要|不可|不应)\s*"
+        r"(?:(?:更新|编辑|创建|处理|使用|启动|运行|调用|触发)\s*)?"
+        r"(?:文档|同步|追加|修复|扩展|版本|提交|执行器|执行|修改)"
+        r"(?:(?!但|但是|然而|不过|却)[^，。！？；,.!?;\n])*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"不\s*(?:同步|追加|修复|扩展|提交|修改|执行)"
+        r"(?:(?!但|但是|然而|不过|却)[^，。！？；,.!?;\n])*",
         re.IGNORECASE,
     ),
     re.compile(
@@ -199,23 +211,38 @@ _READ_ONLY_DIRECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"(?:^|[,;:]\s*)inspect\s+only\b", re.IGNORECASE),
 )
+_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
+    r"(?:\s+(?:during|throughout|within|for|in)\s+"
+    r"(?:(?:this|the|current)\s+)?"
+    r"(?:task|request|operation|workflow|run|session))?"
+)
 _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bno\s+writes?(?=\s*(?:[,.!?;]|$))", re.IGNORECASE),
-    re.compile(r"\bno\s+mutations?(?=\s*(?:[,.!?;]|$))", re.IGNORECASE),
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\s+(?:write|mutate)"
-        r"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
-        r"\s+anything)?(?=\s*(?:[,.!?;]|$))",
+        rf"\bno\s+writes?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:do\s+not|don't|dont|never)\s+(?:"
-        r"(?:change|modify)\s+(?:(?:any|the)\s+)?"
-        r"(?:files?|project|working\s+tree|anything)"
-        r"|make\s+(?:any\s+)?changes?"
-        r"(?:\s+to\s+(?:(?:any|the)\s+)?"
-        r"(?:files?|project|working\s+tree))?"
-        r")(?=\s*(?:[,.!?;]|$))",
+        rf"\bno\s+mutations?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"(?=\s*(?:[,.!?;]|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:do\s+not|don't|dont|never)\s+(?:write|mutate)"
+        rf"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
+        rf"\s+anything)?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"(?=\s*(?:[,.!?;]|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:do\s+not|don't|dont|never)\s+(?:"
+        rf"(?:change|modify)\s+(?:(?:any|the)\s+)?"
+        rf"(?:files?|project|working\s+tree|anything)"
+        rf"|make\s+(?:any\s+)?changes?"
+        rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
+        rf"(?:files?|project|working\s+tree))?"
+        rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"(?=\s*(?:[,.!?;]|$))",
         re.IGNORECASE,
     ),
 )

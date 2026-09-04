@@ -503,3 +503,72 @@ def test_comma_separated_prohibition_does_not_create_a_commit_preview() -> None:
     assert result.selected_workflow == "project_status"
     assert result.preview_ids == []
     assert result.requires_confirmation is False
+
+
+def test_positive_comma_clause_with_any_remains_routable() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "Do not run executor, update the plan with any required changes."
+    )
+
+    assert classified["selected_workflow"] == "plan"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs, but do not modify any files during this task.",
+        "Update the docs, but do not change the project throughout this workflow.",
+        "Update the docs, but no writes during this session.",
+    ],
+)
+def test_qualified_global_no_write_directive_vetoes_mutating_routes(
+    goal: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "检查当前状态，不要同步文档。",
+        "检查当前状态，不要追加文档。",
+        "检查当前状态，不要修复版本。",
+        "检查当前状态，不要扩展版本。",
+        "检查当前状态，不要提交任何更改。",
+        "只查看状态，不要修改代码。",
+        "检查当前状态，不要执行任务。",
+        "检查当前状态，不要更新文档。",
+    ],
+)
+def test_chinese_negated_routing_actions_are_not_positive_evidence(
+    goal: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_chinese_commit_prohibition_does_not_create_a_commit_preview() -> None:
+    class RejectCommitManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("Chinese commit veto must not enter commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=RejectCommitManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "检查当前状态，不要提交任何更改。",
+            "message": "此消息不得进入预览。",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
