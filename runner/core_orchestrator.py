@@ -140,7 +140,7 @@ _READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 _MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
-    {"docs", "plan", "git_commit", "executor", "small_project_patch"}
+    {"docs", "plan", "git_commit", "small_project_patch"}
 )
 
 

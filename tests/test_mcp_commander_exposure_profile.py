@@ -480,6 +480,9 @@ def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
     assert "primary_next_action" in packet
     assert "authority" in packet
     assert "routing" in packet
+    assert "advanced_actions" in packet
+    assert "tool_surface_guidance" in packet
+    assert "flow_usage_rule" in packet
     assert packet["advanced_context_artifact"]["kind"] == "result_artifact"
     artifact_id = packet["advanced_context_artifact"]["artifact_id"]
     first_page = server._mcp_result_artifact_store.read_page(artifact_id, 1)

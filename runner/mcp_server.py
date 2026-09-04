@@ -4743,37 +4743,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             # Owner-only advanced tools do not use commander_response.v1.  Keep
             # their existing public-safe envelope, replace only the oversized
             # optional context, and retain the Agent navigation contract.
-            preserved_keys = {
-                "ok",
-                "source",
-                "scope",
-                "read_only",
-                "side_effects",
-                "flow_packet_version",
-                "project_name",
-                "profile_id",
-                "selected_profile",
-                "current_state",
-                "primary_next_action",
-                "persona_safe_next_tool",
-                "requires_confirmation_before_preview",
-                "requires_confirmation_before_write_or_run",
-                "forbidden_workflows",
-                "copyable_tool_call",
-                "authority_boundary",
-                "agent_projection_schema_version",
-                "agent_state",
-                "authority",
-                "routing",
-                "blocked_next_actions",
-                "continuation",
-                "recovery",
-                "hard_stops",
-            }
             bounded_data = {
                 key: copy.deepcopy(value)
                 for key, value in projected_data.items()
-                if key in preserved_keys
+                if key != "advanced_context"
             }
             bounded_data["advanced_context_status"] = "packaged"
             bounded_data["advanced_context_artifact"] = {

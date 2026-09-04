@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from runner.core_orchestrator import WorkflowOrchestrator
+from runner.mcp_workflow_router import MCPWorkflowRouter
 
 
 LIVE_FIXTURES = json.loads(
@@ -162,6 +163,40 @@ def test_read_only_subject_matter_is_not_a_global_routing_veto(
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == expected_workflow
+
+
+def test_read_only_executor_inspection_keeps_the_executor_preflight_route() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "Perform a read-only inspection of the executor."
+    )
+
+    assert classified["selected_workflow"] == "executor"
+
+
+def test_read_only_executor_inspection_runs_only_the_bounded_preflight(
+    tmp_path,
+) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        agent_profile_id="web_gpt_commander",
+    ).handle(
+        "auto_preview",
+        {"goal": "Perform a read-only inspection of the executor."},
+    )
+
+    assert result["selected_workflow"] == "executor_preflight"
+    assert result["changed_files"] == []
+    assert result["preview_ids"] == []
+    assert result["requires_confirmation"] is False
+    assert {step["risk_level"] for step in result["steps"]} == {"info"}
+
+
+def test_executor_run_negation_still_overrides_read_only_executor_words() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "Inspect the executor read-only; do not run executor."
+    )
+
+    assert classified["selected_workflow"] == "project_status"
 
 
 @pytest.mark.parametrize(
