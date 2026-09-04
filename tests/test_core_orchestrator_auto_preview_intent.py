@@ -698,3 +698,83 @@ def test_chinese_no_write_subject_matter_is_not_a_global_veto() -> None:
     )
 
     assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect status; don't make a commit.",
+        "Inspect status; do not make the commit.",
+        "Inspect status; must not make a commit.",
+        "Inspect status; cannot make a commit.",
+    ],
+)
+def test_auxiliary_commit_prohibitions_are_not_positive_evidence(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_auxiliary_commit_prohibition_does_not_create_a_commit_preview() -> None:
+    class RejectCommitManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("auxiliary commit veto must not enter commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=RejectCommitManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Inspect status; don't make a commit.",
+            "message": "This message must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs, but do not write to any files.",
+        "Update the docs, but must not write into the project.",
+    ],
+)
+def test_prepositional_global_no_write_directive_vetoes_mutating_routes(
+    goal: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_prepositional_global_no_write_does_not_create_a_docs_preview() -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("prepositional no-write intent must not enter docs preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Update the docs, but do not write to any files.",
+            "file": "docs/operations.md",
+            "heading": "Operations",
+            "new_content": "This content must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False

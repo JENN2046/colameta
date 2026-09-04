@@ -111,7 +111,8 @@ _PROHIBITED_ROUTING_ACTION_PATTERN = (
     r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
     r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
     r"|sync|append|update|revise|add|create|document|plan|repair|extend|version"
-    r"|commit|stage|patch|edit|change|modify|make\s+changes?|inspect|review"
+    r"|commit|stage|patch|edit|change|modify"
+    r"|make\s+(?:(?:a|the)\s+)?commit|make\s+changes?|inspect|review"
     r"|push|merge|replace\s+stable|release|write|mutate"
     r")"
 )
@@ -240,7 +241,8 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:write|mutate)"
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
+        rf"(?:write(?:\s+(?:to|into))?|mutate)"
         rf"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
         rf"\s+anything)?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
         rf"(?=\s*(?:[,.!?;]|$))",
