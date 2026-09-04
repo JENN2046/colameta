@@ -336,3 +336,66 @@ def test_object_scoped_no_change_wording_is_not_a_global_veto(
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect the current state; no commit.",
+        "Inspect the current state; no pushing.",
+        "Inspect the current state; no stable replacement.",
+        "Inspect the current state; no run executor.",
+    ],
+)
+def test_no_action_shorthand_is_not_positive_routing_evidence(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_no_commit_shorthand_does_not_create_a_commit_preview() -> None:
+    class RejectCommitManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("no-commit intent must not enter commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=RejectCommitManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Inspect the current state; no commit.",
+            "message": "This message must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+def test_no_action_shorthand_preserves_an_unrelated_positive_clause() -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        "No commit; update the docs instead."
+    )
+
+    assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_workflow"),
+    [
+        ("Do not write tests and update the plan instead.", "plan"),
+        ("Do not mutate tests and update the docs instead.", "docs"),
+    ],
+)
+def test_and_instead_positive_clause_survives_a_selective_prohibition(
+    goal: str,
+    expected_workflow: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == expected_workflow

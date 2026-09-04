@@ -112,7 +112,11 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|execute)"
         r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
         r"|commit|push|merge|replace\s+stable|release|write|mutate"
-        r")\b(?:(?!\b(?:but|however|yet)\b)[^,.!?;\n])*",
+        r")\b(?:(?!"
+        r"\b(?:but|however|yet)\b"
+        r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
+        r"repair|extend|inspect|review)\b[^,.!?;\n]{0,80}\binstead\b)"
+        r")[^,.!?;\n])*",
         re.IGNORECASE,
     ),
     re.compile(
@@ -122,6 +126,15 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:executor|codex|opencode|pi|execution|execute|committing|commit|"
         r"pushing|push|merging|merge|replacing\s+stable|stable\s+replacement|"
         r"releasing|release|writing|writes?|mutating|mutations?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bno\s+(?:"
+        r"commit(?:ting)?|push(?:ing)?|merg(?:e|ing)|releas(?:e|ing)|"
+        r"stable\s+replacement|replac(?:e|ing)\s+stable|"
+        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|execute)"
+        r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))"
+        r")\b",
         re.IGNORECASE,
     ),
 )
