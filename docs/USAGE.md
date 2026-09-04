@@ -102,6 +102,11 @@ When using `run_mcp_workflow workflow=auto_preview`, an explicit instruction
 such as “do not start/run the executor” is a hard routing constraint. ColaMeta
 uses the read-only project-status route instead of executor preflight, unless
 the request independently identifies a more specific non-executor workflow.
+Negated action lists stop at a positive contrast: “Do not commit but update
+the docs, and edit the README” still selects the documentation workflow.
+A standalone “Read-only.” directive also applies after a sentence boundary
+or newline; it prevents document, plan, commit, and patch previews. Describing
+“read-only mode” as the subject of a documentation change is not such a directive.
 
 If you want to start a controlled optimization round:
 

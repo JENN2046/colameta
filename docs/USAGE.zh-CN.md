@@ -93,6 +93,9 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 
 使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
 除非请求还明确命中了更具体的非执行器 workflow，ColaMeta 会走只读的项目状态路径，不进入 executor preflight。
+否定动作列表会在正向转折处停止匹配：例如 “Do not commit but update the docs, and edit the README”
+仍选择文档流程。独立的 “Read-only.” 声明在句号或换行后同样生效，阻止文档、计划、提交和补丁预览；
+把 “read-only mode” 作为文档修改主题描述，不等同于声明本次任务只读。
 
 如果要开一轮受控优化：
 

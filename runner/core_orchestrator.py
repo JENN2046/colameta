@@ -117,6 +117,17 @@ _PROHIBITED_ROUTING_ACTION_PATTERN = (
     r")"
 )
 
+# Every clause/list scan must stop at the same positive-instruction boundary,
+# including lookahead used to recognize comma-separated prohibitions.
+_ROUTING_CONTRAST_PATTERN = (
+    r"\b(?:but|however|yet)\b"
+    r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
+    r"repair|extend|inspect|review)\b[^,.!?;\n]{0,80}\binstead\b)"
+)
+_NEGATED_ROUTING_CLAUSE_BODY_PATTERN = (
+    rf"(?:(?!{_ROUTING_CONTRAST_PATTERN})[^,.!?;\n])*"
+)
+
 # Remove bounded prohibited-action clauses before keyword classification.  This
 # is intentionally not a general natural-language parser: it only prevents
 # explicit English safety vetoes from becoming positive routing evidence.
@@ -134,24 +145,20 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(
         rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
-        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b[^,.!?;\n]*"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b{_NEGATED_ROUTING_CLAUSE_BODY_PATTERN}"
         rf"(?:,\s*(?:"
         rf"(?:and|or)\s+{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
         rf"|{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?="
         rf"\s+any\b"
-        rf"|[^.!?;\n]*,\s*(?:and|or)\s+"
+        rf"|(?:(?!{_ROUTING_CONTRAST_PATTERN})[^.!?;\n])*,\s*(?:and|or)\s+"
         rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
         rf")"
-        rf")[^,.!?;\n]*)+",
+        rf"){_NEGATED_ROUTING_CLAUSE_BODY_PATTERN})+",
         re.IGNORECASE,
     ),
     re.compile(
         rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
-        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?:(?!"
-        r"\b(?:but|however|yet)\b"
-        r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
-        r"repair|extend|inspect|review)\b[^,.!?;\n]{0,80}\binstead\b)"
-        r")[^,.!?;\n])*",
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b{_NEGATED_ROUTING_CLAUSE_BODY_PATTERN}",
         re.IGNORECASE,
     ),
     re.compile(
@@ -193,7 +200,7 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 _READ_ONLY_DIRECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"(?:^|[,;:]\s*)read[-\s]only(?=\s*(?:[:.!?]|$))",
+        r"(?:^|[,.!?;:\r\n]\s*)read[-\s]only(?=\s*(?:[:.!?]|$))",
         re.IGNORECASE,
     ),
     re.compile(

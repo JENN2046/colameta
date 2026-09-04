@@ -904,3 +904,65 @@ def test_sentence_delimited_subject_matter_is_not_a_global_veto() -> None:
     )
 
     assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize("contrast", ["but", "however", "yet"])
+@pytest.mark.parametrize(
+    "goal_template",
+    [
+        "Do not commit {contrast} update the docs, and edit the README.",
+        "Do not commit, push {contrast} update the docs, and edit the README.",
+        "Do not commit, push, or merge {contrast} update the docs, and edit the README.",
+    ],
+)
+def test_prohibited_list_stops_before_positive_contrast(
+    contrast: str, goal_template: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        goal_template.format(contrast=contrast)
+    )
+
+    assert classified["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize("separator", [". ", "! ", "? ", "\n", ".\n", "\r\n"])
+def test_standalone_read_only_sentence_never_enters_docs_preview(
+    separator: str,
+) -> None:
+    class RejectDocsManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("standalone read-only directive must veto docs preview")
+
+    goal = f"Update the docs{separator}Read-only."
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "project_status"
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "plan": {"source_only": True},
+            "recommended_next_actions": [],
+        },
+        project_docs_manager=RejectDocsManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": goal,
+            "file": "README.md",
+            "heading": "Usage",
+            "new_content": "This must not be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize("separator", [". ", "\n"])
+def test_read_only_subject_after_sentence_boundary_remains_routable(
+    separator: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        f"Update the docs{separator}Read-only mode needs a configuration example."
+    )
+
+    assert classified["selected_workflow"] == "docs"
