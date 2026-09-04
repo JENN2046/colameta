@@ -1935,6 +1935,35 @@ def _raw_error_code(result: dict[str, Any]) -> str | None:
             nested_code = _first_string([error], ("error_code", "code"))
             if nested_code is not None:
                 return nested_code
+    # Successful aggregate responses may retain diagnostic error codes inside
+    # partial-error/history facts.  Those are evidence, not the outcome of the
+    # current call, and must not turn a successful public projection into a
+    # failed response.  Nested result errors remain authoritative when the
+    # direct envelope itself reports failure or a failing/blocking status.
+    statuses = _direct_status_values(direct_containers)
+    if (
+        _result_ok(direct_containers) is True
+        and not statuses & (_FAILED_STATUS_VALUES | _BLOCKED_STATUS_VALUES)
+    ):
+        for container in direct_containers:
+            for key in ("result", "unified_status"):
+                nested = container.get(key)
+                if not isinstance(nested, dict):
+                    continue
+                nested_containers = _result_containers(nested)
+                nested_statuses = _direct_status_values(nested_containers)
+                if (
+                    _result_ok(nested_containers) is False
+                    or nested_statuses
+                    & (_FAILED_STATUS_VALUES | _BLOCKED_STATUS_VALUES)
+                ):
+                    nested_code = _first_nested_string(
+                        nested,
+                        ("error_code",),
+                    )
+                    if nested_code is not None:
+                        return nested_code
+        return None
     for container in direct_containers:
         for key in ("result", "unified_status"):
             nested = container.get(key)

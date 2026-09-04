@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 from runner.mcp_server import (
     COMMANDER_EXPOSED_TOOLS,
@@ -10,6 +12,7 @@ from runner.mcp_server import (
     MCPPlanningBridgeServer,
 )
 from runner.mcp_private_operator import OperatorSettingsStore
+from runner.project_registry import ProjectRegistry
 from runner.mcp_commander_public import (
     COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
     COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
@@ -18,6 +21,10 @@ from runner.mcp_commander_public import (
 GIT_HEAD = "c" * 40
 PLAN_SHA256 = "b" * 64
 MANIFEST_SHA256 = "d" * 64
+LIVE_ACCEPTANCE_FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "agent_routing_r1_live_acceptance.json")
+    .read_text(encoding="utf-8")
+)
 
 
 def _base_context_binding() -> dict[str, object]:
@@ -408,6 +415,83 @@ def test_owner_profile_live_call_failure_log_is_bounded_and_public_error_is_exac
         "principal_denial_reason=SUBJECT_MISMATCH"
     ]
     assert "must-not-appear" not in logs[0]
+
+
+def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.email", "fixture@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.name", "Fixture"],
+        check=True,
+    )
+    (project / "README.md").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "commit", "-qm", "fixture"],
+        check=True,
+    )
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    server.project_registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = server.project_registry.register_project(
+        str(project),
+        project_name="colameta-self-dev",
+        project_mode="managed",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+    real_json_char_count = server._json_char_count
+
+    def force_advanced_context_overflow(value):
+        data = value.get("data") if isinstance(value, dict) else None
+        if isinstance(data, dict) and "advanced_context" in data:
+            return 60_001
+        return real_json_char_count(value)
+
+    monkeypatch.setattr(server, "_json_char_count", force_advanced_context_overflow)
+
+    result = server.call_tool_for_agent(
+        "get_agent_operator_flow_packet",
+        dict(LIVE_ACCEPTANCE_FIXTURES["operator_flow_default_advanced_context"]),
+        auth_context=_owner_auth(),
+    )
+
+    assert result["ok"] is True
+    assert result.get("error_code") != "PUBLIC_PROJECTION_FAILED"
+    packet = result["data"]
+    assert packet["result_packaged"] is True
+    assert packet["advanced_context_status"] == "packaged"
+    assert packet["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert "primary_next_action" in packet
+    assert "authority" in packet
+    assert "routing" in packet
+    assert packet["advanced_context_artifact"]["kind"] == "result_artifact"
+    artifact_id = packet["advanced_context_artifact"]["artifact_id"]
+    first_page = server._mcp_result_artifact_store.read_page(artifact_id, 1)
+    assert first_page is not None
+    artifact_pages = [first_page.content]
+    for page_number in range(2, first_page.page_count + 1):
+        page = server._mcp_result_artifact_store.read_page(artifact_id, page_number)
+        assert page is not None
+        artifact_pages.append(page.content)
+    public_artifact = "".join(artifact_pages)
+    assert str(project) not in public_artifact
+    assert '"advanced_context"' in public_artifact
 
 
 def test_owner_profile_live_principal_denial_log_distinguishes_safe_reason_only(

@@ -102,6 +102,50 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+# Remove bounded prohibited-action clauses before keyword classification.  This
+# is intentionally not a general natural-language parser: it only prevents
+# explicit English safety vetoes from becoming positive routing evidence.
+_NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:do\s+not|don't|dont|never)\b[^.!?;\n]*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwithout\s+(?:(?:starting|running|launching|invoking|calling|"
+        r"triggering|dispatching|resuming|using|executing)\s+)?"
+        r"(?:(?:the|any|a|an)\s+)?"
+        r"(?:executor|codex|opencode|pi|execution|execute|committing|commit|"
+        r"pushing|push|merging|merge|replacing\s+stable|stable\s+replacement|"
+        r"releasing|release|writing|writes?|mutating|mutations?)\b",
+        re.IGNORECASE,
+    ),
+)
+_READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bread[-\s]only\b", re.IGNORECASE),
+    re.compile(r"\binspect\s+only\b", re.IGNORECASE),
+    re.compile(r"\bno\s+writes?\b", re.IGNORECASE),
+    re.compile(r"\bno\s+mutations?\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:do\s+not|don't|dont|never)\s+(?:write|mutate)\b",
+        re.IGNORECASE,
+    ),
+)
+_MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
+    {"docs", "plan", "git_commit", "executor", "small_project_patch"}
+)
+
+
+def _positive_routing_evidence(goal: str) -> tuple[str, bool]:
+    """Return positive routing text and whether it requests read-only routing."""
+
+    read_only_requested = any(
+        pattern.search(goal) is not None for pattern in _READ_ONLY_INTENT_PATTERNS
+    )
+    positive_goal = goal
+    for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
+        positive_goal = pattern.sub(" ", positive_goal)
+    return positive_goal, read_only_requested
+
 
 def _goal_keyword_matches(goal: str, keyword: str) -> bool:
     """Match ASCII routing keywords and audited inflections as whole tokens."""
@@ -329,6 +373,21 @@ class WorkflowOrchestrator:
         action: str = "run_workflow",
     ) -> CoreOutput:
         result_facts = normalize_result_facts(core_result)
+        if (
+            core_result.workflow == "auto_preview"
+            and core_result.selected_workflow == "project_status"
+            and core_result.requires_confirmation is False
+            and not any(
+                action.get("requires_confirmation") is True
+                for action in core_result.next_actions
+                if isinstance(action, dict)
+            )
+        ):
+            # A read-only state result can contain nested project facts that
+            # resemble a preview payload.  They are not confirmation authority;
+            # the auto-preview route's own bounded action set is authoritative.
+            result_facts.requires_confirmation = False
+            result_facts.confirmation = None
         unified_status = create_status_from_normalized_result(
             workflow=core_result.workflow,
             status=core_result.status,
@@ -4645,6 +4704,8 @@ class WorkflowOrchestrator:
         auto_preview_params["_selected_workflow"] = selected_workflow
         auto_preview_params["_selection_reason"] = selection_reason
         auto_preview_params["_confidence"] = confidence
+        _, read_only_requested = _positive_routing_evidence(goal)
+        auto_preview_params["_read_only_intent"] = read_only_requested
 
         if selected_workflow == "docs":
             return self._auto_preview_docs(auto_preview_params)
@@ -4719,7 +4780,8 @@ class WorkflowOrchestrator:
                 if plan_info.get("source_only"):
                     is_source_only = True
 
-        if is_source_only:
+        read_only_intent = params.get("_read_only_intent") is True
+        if is_source_only and not read_only_intent:
             onboarding_params = {
                 "phase": "preview",
                 "goal": params.get("goal"),
@@ -4770,6 +4832,21 @@ class WorkflowOrchestrator:
             raw = state.get("recommended_next_actions", [])
             if isinstance(raw, list):
                 next_actions = raw
+        if read_only_intent:
+            next_actions = [
+                action
+                for action in next_actions
+                if isinstance(action, dict)
+                and action.get("requires_confirmation") is not True
+                and str(action.get("risk_level") or "info").lower()
+                in {"none", "info", "read", "read_only"}
+            ]
+            # Keep the nested analyze-state evidence consistent with the
+            # read-only route.  Otherwise result normalization can rediscover
+            # a confirmation-required mutation recommendation that this route
+            # deliberately filtered from its public next actions.
+            state = dict(state)
+            state["recommended_next_actions"] = list(next_actions)
 
         return self._auto_preview_result(
             selected_workflow="project_status",
@@ -5219,6 +5296,9 @@ class WorkflowOrchestrator:
         if not goal_lower:
             return {"selected_workflow": "project_status", "confidence": 1.0, "reason": "empty goal"}
 
+        positive_goal, read_only_requested = _positive_routing_evidence(goal_lower)
+        prohibited_action_filtered = positive_goal != goal_lower
+
         executor_explicitly_forbidden = any(
             pattern.search(goal_lower) is not None
             for pattern in _EXECUTOR_NEGATION_PATTERNS
@@ -5229,9 +5309,11 @@ class WorkflowOrchestrator:
         best_reason = ""
 
         for keywords, workflow in _GOAL_CLASSIFIERS:
+            if read_only_requested and workflow in _MUTATING_AUTO_PREVIEW_WORKFLOWS:
+                continue
             if workflow == "executor" and executor_explicitly_forbidden:
                 continue
-            matches = sum(1 for kw in keywords if _goal_keyword_matches(goal_lower, kw))
+            matches = sum(1 for kw in keywords if _goal_keyword_matches(positive_goal, kw))
             if matches > 0:
                 confidence = min(0.5 + matches * 0.15, 1.0)
                 if confidence > best_confidence:
@@ -5240,14 +5322,25 @@ class WorkflowOrchestrator:
                     best_reason = f"matched {matches} keyword(s) in {workflow} classifier"
 
         if best_workflow == "project_status":
-            if executor_explicitly_forbidden:
+            if (
+                read_only_requested
+                or prohibited_action_filtered
+                or executor_explicitly_forbidden
+            ):
+                if executor_explicitly_forbidden:
+                    reason = (
+                        "goal explicitly forbids executor execution; "
+                        "defaulted to read-only project_status"
+                    )
+                else:
+                    reason = (
+                        "goal requests read-only routing or filters prohibited actions; "
+                        "defaulted to project_status"
+                    )
                 return {
                     "selected_workflow": best_workflow,
                     "confidence": 0.8,
-                    "reason": (
-                        "goal explicitly forbids executor execution; "
-                        "defaulted to read-only project_status"
-                    ),
+                    "reason": reason,
                 }
             return {
                 "selected_workflow": best_workflow,

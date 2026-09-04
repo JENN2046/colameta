@@ -2546,8 +2546,10 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self,
         tool_name: str,
         structured_tool_result: dict[str, Any],
+        *,
+        already_public_sanitized: bool = False,
     ) -> dict[str, Any] | None:
-        if _COMMANDER_PUBLIC_REQUEST.get():
+        if _COMMANDER_PUBLIC_REQUEST.get() and not already_public_sanitized:
             public_payload = self._commander_public_projector().sanitize_for_artifact(
                 structured_tool_result
             )
@@ -4691,6 +4693,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         artifact_fields = self._store_packaged_result_artifact(
             tool_name,
             safe_artifact_payload,
+            already_public_sanitized=True,
         )
         if artifact_fields is None:
             return projector.project_tool_result(
@@ -4723,6 +4726,74 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
                 exact_review_manifest_page_binding
             ),
         )
+        if tool_name == "get_agent_operator_flow_packet":
+            projected_data = (
+                projected.get("data") if isinstance(projected, dict) else None
+            )
+            if not isinstance(projected_data, dict):
+                return projector.project_tool_result(
+                    {
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "PUBLIC_PROJECTION_FAILED",
+                        "message": "大结果的公共安全摘要构建失败。",
+                    },
+                    params,
+                )
+            # Owner-only advanced tools do not use commander_response.v1.  Keep
+            # their existing public-safe envelope, replace only the oversized
+            # optional context, and retain the Agent navigation contract.
+            preserved_keys = {
+                "ok",
+                "source",
+                "scope",
+                "read_only",
+                "side_effects",
+                "flow_packet_version",
+                "project_name",
+                "profile_id",
+                "selected_profile",
+                "current_state",
+                "primary_next_action",
+                "persona_safe_next_tool",
+                "requires_confirmation_before_preview",
+                "requires_confirmation_before_write_or_run",
+                "forbidden_workflows",
+                "copyable_tool_call",
+                "authority_boundary",
+                "agent_projection_schema_version",
+                "agent_state",
+                "authority",
+                "routing",
+                "blocked_next_actions",
+                "continuation",
+                "recovery",
+                "hard_stops",
+            }
+            bounded_data = {
+                key: copy.deepcopy(value)
+                for key, value in projected_data.items()
+                if key in preserved_keys
+            }
+            bounded_data["advanced_context_status"] = "packaged"
+            bounded_data["advanced_context_artifact"] = {
+                "kind": "result_artifact",
+                **artifact_fields,
+            }
+            bounded_data["result_packaged"] = True
+            packaged_result = copy.deepcopy(projected)
+            packaged_result["data"] = bounded_data
+            if self._json_char_count(packaged_result) > target_chars:
+                return projector.project_tool_result(
+                    {
+                        "ok": False,
+                        "tool": tool_name,
+                        "error_code": "PUBLIC_PROJECTION_FAILED",
+                        "message": "大结果的公共安全摘要仍超过返回上限。",
+                    },
+                    params,
+                )
+            return packaged_result
         contract = projected.get("data") if isinstance(projected, dict) else None
         if not isinstance(contract, dict):
             return projector.project_tool_result(

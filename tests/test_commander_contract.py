@@ -6195,6 +6195,56 @@ def test_nested_core_result_error_uses_the_same_public_mapping() -> None:
     validate_commander_response(response)
 
 
+def test_successful_aggregate_partial_error_is_diagnostic_not_call_failure() -> None:
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "status": "succeeded",
+            "workflow": "auto_preview",
+            "selected_workflow": "project_status",
+            "context_binding": _operation_context_binding(),
+            "result": {
+                "ok": True,
+                "partial_errors": [
+                    {
+                        "name": "project_operation_lock",
+                        "error_code": "CONTEXT_ERROR",
+                        "message": "project_operation_lock_unavailable",
+                    }
+                ],
+            },
+        },
+        params={"workflow": "auto_preview"},
+    )
+
+    assert response["outcome"] == "completed"
+    assert response["error"] is None
+    validate_commander_response(response)
+
+
+def test_successful_outer_envelope_does_not_hide_a_failed_nested_result() -> None:
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "status": "succeeded",
+            "context_binding": _operation_context_binding(),
+            "result": {
+                "ok": False,
+                "status": "failed",
+                "error_code": "PATH_NOT_ALLOWED",
+                "message": "路径不在允许范围内。",
+            },
+        },
+        params={"workflow": "auto_preview"},
+    )
+
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "SCOPE_VIOLATION"
+    validate_commander_response(response)
+
+
 def test_unknown_internal_error_and_exception_text_are_not_exposed() -> None:
     raw_result = {
         "ok": False,

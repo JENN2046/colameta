@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from runner.core_orchestrator import WorkflowOrchestrator
+
+
+LIVE_FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "agent_routing_r1_live_acceptance.json")
+    .read_text(encoding="utf-8")
+)
 
 
 @pytest.mark.parametrize(
@@ -64,3 +73,55 @@ def test_auto_preview_uses_read_only_project_status_when_executor_is_forbidden()
             "warnings": [],
         }
     ]
+
+
+def test_exact_live_negative_intent_never_starts_a_mutating_route() -> None:
+    commit_calls: list[tuple[str, dict[str, object]]] = []
+
+    class CommitManager:
+        def handle(self, action: str, params: dict[str, object]) -> dict[str, object]:
+            commit_calls.append((action, params))
+            raise AssertionError("negative intent must not touch commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=CommitManager(),
+    )._workflow_auto_preview({"goal": LIVE_FIXTURES["negative_intent"]})
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.changed_files == []
+    assert commit_calls == []
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "do not commit",
+        "don't commit",
+        "do not push",
+        "don't push",
+        "do not run executor",
+        "do not run",
+        "do not merge",
+        "do not replace Stable",
+        "do not release",
+        "without committing",
+        "without pushing",
+        "read only",
+        "read-only",
+        "inspect only",
+        "no writes",
+        "no mutation",
+    ],
+)
+def test_prohibited_action_terms_are_not_positive_routing_evidence(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        f"Inspect the current project state; {goal}."
+    )
+
+    assert classified["selected_workflow"] == "project_status"
