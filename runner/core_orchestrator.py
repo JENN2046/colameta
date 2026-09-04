@@ -107,11 +107,23 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 # explicit English safety vetoes from becoming positive routing evidence.
 _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
+        r"\b(?:do\s+not|don't|dont|never)\s+(?:"
+        r"(?:keep|make|treat)\s+"
+        r"(?:(?:this|the|current|next)\s+)?"
+        r"(?:task|request|action|operation|workflow|route|response|inspection)\s+"
+        r"read[-\s]only"
+        r"|(?:perform|conduct|run)\s+(?:(?:a|an|the)\s+)?"
+        r"read[-\s]only\s+(?:inspection|review|check|operation|workflow)"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:do\s+not|don't|dont|never)\s+"
         r"(?:"
-        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|execute)"
+        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
         r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
-        r"|commit|push|merge|replace\s+stable|release|write|mutate"
+        r"|sync|append|plan|repair|extend|version|commit|stage|patch|edit"
+        r"|push|merge|replace\s+stable|release|write|mutate"
         r")\b(?:(?!"
         r"\b(?:but|however|yet)\b"
         r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
@@ -124,21 +136,27 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"triggering|dispatching|resuming|using|executing)\s+)?"
         r"(?:(?:the|any|a|an)\s+)?"
         r"(?:executor|codex|opencode|pi|execution|execute|committing|commit|"
+        r"syncing|sync|appending|append|planning|plan|repairing|repair|"
+        r"extending|extend|versioning|version|staging|stage|patching|patch|"
+        r"editing|edit|exec|"
         r"pushing|push|merging|merge|replacing\s+stable|stable\s+replacement|"
         r"releasing|release|writing|writes?|mutating|mutations?)\b",
         re.IGNORECASE,
     ),
     re.compile(
         r"\bno\s+(?:"
-        r"commit(?:ting)?|push(?:ing)?|merg(?:e|ing)|releas(?:e|ing)|"
+        r"sync(?:ing)?|append(?:ing)?|plann?ing|plan|repair(?:ing)?|"
+        r"extend(?:ing)?|version(?:ing)?|commit(?:ting)?|stag(?:e|ing)|"
+        r"patch(?:es|ing)?|"
+        r"edit(?:s|ing)?|push(?:ing)?|merg(?:e|ing)|releas(?:e|ing)|"
         r"stable\s+replacement|replac(?:e|ing)\s+stable|"
-        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|execute)"
+        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
         r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))"
         r")\b",
         re.IGNORECASE,
     ),
 )
-_READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+_READ_ONLY_DIRECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?:^|[,;:]\s*)read[-\s]only(?=\s*(?:[:.!?]|$))",
         re.IGNORECASE,
@@ -162,6 +180,8 @@ _READ_ONLY_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(r"(?:^|[,;:]\s*)inspect\s+only\b", re.IGNORECASE),
+)
+_GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bno\s+writes?(?=\s*(?:[,.!?;]|$))", re.IGNORECASE),
     re.compile(r"\bno\s+mutations?(?=\s*(?:[,.!?;]|$))", re.IGNORECASE),
     re.compile(
@@ -189,12 +209,16 @@ _MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
 def _positive_routing_evidence(goal: str) -> tuple[str, bool]:
     """Return positive routing text and whether it requests read-only routing."""
 
-    read_only_requested = any(
-        pattern.search(goal) is not None for pattern in _READ_ONLY_INTENT_PATTERNS
+    global_write_veto = any(
+        pattern.search(goal) is not None for pattern in _GLOBAL_WRITE_VETO_PATTERNS
     )
     positive_goal = goal
     for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
         positive_goal = pattern.sub(" ", positive_goal)
+    read_only_requested = global_write_veto or any(
+        pattern.search(positive_goal) is not None
+        for pattern in _READ_ONLY_DIRECTIVE_PATTERNS
+    )
     return positive_goal, read_only_requested
 
 

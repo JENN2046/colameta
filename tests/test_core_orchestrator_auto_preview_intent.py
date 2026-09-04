@@ -399,3 +399,68 @@ def test_and_instead_positive_clause_survives_a_selective_prohibition(
     classified = WorkflowOrchestrator._classify_goal(goal)
 
     assert classified["selected_workflow"] == expected_workflow
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "sync",
+        "append",
+        "plan",
+        "repair",
+        "extend",
+        "version",
+        "commit",
+        "stage",
+        "patch",
+        "edit",
+        "resume",
+        "exec",
+        "execute",
+    ],
+)
+def test_every_routable_action_verb_is_stripped_from_a_negated_clause(
+    action: str,
+) -> None:
+    classified = WorkflowOrchestrator._classify_goal(
+        f"Inspect current state; do not {action} changes."
+    )
+
+    assert classified["selected_workflow"] == "project_status"
+
+
+def test_negated_stage_does_not_create_a_commit_preview() -> None:
+    class RejectCommitManager:
+        def handle(self, _action: str, _params: dict[str, object]) -> dict[str, object]:
+            raise AssertionError("negated stage intent must not enter commit preview")
+
+    result = WorkflowOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {
+            "ok": True,
+            "recommended_next_actions": [],
+        },
+        git_commit_manager=RejectCommitManager(),  # type: ignore[arg-type]
+    )._workflow_auto_preview(
+        {
+            "goal": "Inspect current state; do not stage changes.",
+            "message": "This message must never be previewed.",
+        }
+    )
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Do not keep this task read-only; update the docs.",
+        "Do not perform a read-only inspection; update the docs.",
+    ],
+)
+def test_negated_read_only_directive_does_not_veto_positive_work(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+
+    assert classified["selected_workflow"] == "docs"
