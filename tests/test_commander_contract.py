@@ -6195,6 +6195,199 @@ def test_nested_core_result_error_uses_the_same_public_mapping() -> None:
     validate_commander_response(response)
 
 
+def test_successful_aggregate_partial_error_is_diagnostic_not_call_failure() -> None:
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "status": "succeeded",
+            "workflow": "auto_preview",
+            "selected_workflow": "project_status",
+            "context_binding": _operation_context_binding(),
+            "result": {
+                "ok": True,
+                "partial_errors": [
+                    {
+                        "name": "project_operation_lock",
+                        "error_code": "CONTEXT_ERROR",
+                        "message": "project_operation_lock_unavailable",
+                    }
+                ],
+            },
+        },
+        params={"workflow": "auto_preview"},
+    )
+
+    assert response["outcome"] == "completed"
+    assert response["error"] is None
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize("nested_key", ["result", "unified_status"])
+@pytest.mark.parametrize("in_data", [False, True])
+@pytest.mark.parametrize("nested_in_data", [False, True])
+@pytest.mark.parametrize("code", ["CONFIRMATION_REQUIRED", "EXECUTOR_RUNNING"])
+def test_successful_envelope_preserves_nested_nonterminal_public_response(
+    nested_key, in_data, nested_in_data, code,
+) -> None:
+    confirming = code == "CONFIRMATION_REQUIRED"
+    nested = {
+        "ok": True,
+        "status": "confirmation_required" if confirming else "running",
+        "error_code": code,
+    }
+    if nested_in_data:
+        nested = {"ok": True, "data": nested}
+    envelope = {
+        "ok": True,
+        "status": "succeeded",
+        "context_binding": _operation_context_binding(),
+        "preview_id": PREVIEW_ID,
+        "batch_preview_id": PREVIEW_ID,
+        nested_key: nested,
+    }
+    raw = {"ok": True, "data": envelope} if in_data else envelope
+    tool = "manage_git" if confirming else "run_mcp_workflow"
+    params = (
+        {"action": "commit_preview", "project_name": "colameta"}
+        if confirming else
+        {"workflow": "agent_dispatch", "phase": "run", "project_name": "colameta"}
+    )
+    response = build_commander_response(tool_name=tool, raw_result=raw, params=params)
+
+    assert response["outcome"] == ("confirmation_required" if confirming else "in_progress")
+    assert response["next_action"]["tool"] == tool
+    arguments = response["next_action"]["arguments"]
+    if confirming:
+        assert arguments["action"] == "commit_apply"
+        assert arguments["preview_id"] == PREVIEW_ID
+        assert response["confirmation"]["context_binding"] == _operation_context_binding()
+    else:
+        assert arguments["phase"] == "status"
+        assert arguments["batch_preview_id"] == PREVIEW_ID
+        assert response["confirmation"] is None
+    assert response["error"] is None
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize("diagnostic_key", ["partial_errors", "history", "diagnostics"])
+@pytest.mark.parametrize("code", ["CONTEXT_ERROR", "CONFIRMATION_REQUIRED", "EXECUTOR_RUNNING"])
+def test_nested_diagnostic_codes_do_not_change_successful_public_outcome(diagnostic_key, code):
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "status": "succeeded",
+            "context_binding": _operation_context_binding(),
+            "result": {
+                "ok": True,
+                diagnostic_key: [{"ok": False, "status": "failed", "error_code": code}],
+            },
+        },
+        params={"workflow": "project_status"},
+    )
+    assert response["outcome"] == "completed"
+    assert response["error"] is None
+    assert response["confirmation"] is None
+    validate_commander_response(response)
+
+
+@pytest.mark.parametrize("nested_key", ["result", "unified_status"])
+@pytest.mark.parametrize("error_object", [False, True])
+def test_current_nested_code_wins_over_earlier_history(nested_key, error_object):
+    current = (
+        {"error": {"code": "EXECUTOR_RUNNING"}}
+        if error_object else {"error_code": "EXECUTOR_RUNNING"}
+    )
+    raw = {
+        "ok": True,
+        "status": "succeeded",
+        "context_binding": _operation_context_binding(),
+        "batch_preview_id": PREVIEW_ID,
+        nested_key: {
+            "ok": True,
+            "history": [{"error_code": "CONTEXT_ERROR"}],
+            "result": {"ok": True, "data": current},
+        },
+    }
+    response = build_commander_response(
+        tool_name="run_mcp_workflow", raw_result=raw,
+        params={"workflow": "agent_dispatch", "phase": "run", "project_name": "colameta"},
+    )
+    assert response["outcome"] == "in_progress"
+    assert response["next_action"]["arguments"]["phase"] == "status"
+    assert response["error"] is None
+    validate_commander_response(response)
+
+    # The directly reported failure still has precedence over nested activity.
+    raw["error_code"] = "PATH_NOT_ALLOWED"
+    blocked = build_commander_response(
+        tool_name="run_mcp_workflow", raw_result=raw,
+        params={"workflow": "agent_dispatch", "phase": "run", "project_name": "colameta"},
+    )
+    assert blocked["outcome"] == "blocked"
+    assert blocked["error"]["code"] == "SCOPE_VIOLATION"
+    validate_commander_response(blocked)
+
+
+def test_nested_failure_with_partial_errors_still_produces_failed_public_response():
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "context_binding": _operation_context_binding(),
+            "result": {
+                "ok": False,
+                "status": "failed",
+                "partial_errors": [{"error_code": "CONTEXT_ERROR"}],
+            },
+        },
+        params={"workflow": "project_status"},
+    )
+    assert response["outcome"] == "failed"
+    assert response["error"] is not None
+    validate_commander_response(response)
+
+
+def test_deep_nested_failure_is_not_hidden_by_successful_intermediate_result():
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "context_binding": _operation_context_binding(),
+            "result": {"ok": True, "result": {
+                "ok": False, "status": "failed", "error_code": "PATH_NOT_ALLOWED",
+            }},
+        },
+        params={"workflow": "project_status"},
+    )
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "SCOPE_VIOLATION"
+    validate_commander_response(response)
+
+
+def test_successful_outer_envelope_does_not_hide_a_failed_nested_result() -> None:
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "status": "succeeded",
+            "context_binding": _operation_context_binding(),
+            "result": {
+                "ok": False,
+                "status": "failed",
+                "error_code": "PATH_NOT_ALLOWED",
+                "message": "路径不在允许范围内。",
+            },
+        },
+        params={"workflow": "auto_preview"},
+    )
+
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "SCOPE_VIOLATION"
+    validate_commander_response(response)
+
+
 def test_unknown_internal_error_and_exception_text_are_not_exposed() -> None:
     raw_result = {
         "ok": False,

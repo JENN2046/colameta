@@ -52,6 +52,12 @@
 consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint；不要把它们当成
 私人 App 默认公开工具。
 
+聚合调用成功不代表嵌套操作已经结束。权威 `result`/`unified_status` 及其 `data` 包装中
+仍报告 `CONFIRMATION_REQUIRED` 或 `EXECUTOR_RUNNING` 时，Commander 会保留确认或轮询动作。
+单独出现在历史、部分错误诊断中的状态码，不会把成功聚合结果变成未完成操作。
+当 `without modifying/changing...` 描述示例工具或工作流的行为时，它仍属于文档主题；
+独立的 `without` 子句仍会阻止文档预览。
+
 ### Functional MVP 执行器流程
 
 ChatGPT Commander 可以直接启动并追踪现有异步执行器，不需要理解仅 Local Codex 可见的工具名、
@@ -93,6 +99,29 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 
 使用 `run_mcp_workflow workflow=auto_preview` 时，像“不要启动/运行执行器”这样的明确否定是硬路由约束。
 除非请求还明确命中了更具体的非执行器 workflow，ColaMeta 会走只读的项目状态路径，不进入 executor preflight。
+否定动作列表会在正向转折处停止匹配：例如 “Do not commit but update the docs, and edit the README”
+仍选择文档流程。独立的 “Read-only.” 声明在句号或换行后同样生效，阻止文档、计划、提交和补丁预览；
+把 “read-only mode” 作为文档修改主题描述，不等同于声明本次任务只读。
+同样，“Update the docs to recommend a read-only action for reviewers” 请求的是文档修改；
+独立的任务指令，例如 “but only perform a read-only inspection”，仍会阻止修改预览。
+“do not edit any files”、“do not patch the project”、“do not update the working tree”
+等作用于全部文件或项目的禁止语句，以及相应的 “without editing/patching/updating” 表达，也会阻止修改预览。
+仅限测试或项目配置的禁止语句，不会否决无关的文档工作。
+全局禁止语句也支持 `and do not`、`Please do not`、`Kindly do not` 等连接或礼貌前缀，
+并在后接 `or commit` 等并列禁止动作时保持有效。描述 dry run 行为的从句
+（如 “explain why dry runs inspect state and do not modify files”）仍可进入文档流程。
+显式任务主语同样有效：“but you must not modify any files”和“we cannot change the project”
+仍是全局约束，包括接在介绍其他主题的文档请求之后。
+中英文禁止子句也可由换行（LF、CRLF 或 CR）结束，无需在行末添加标点，后接另一条禁令也保持有效。
+独立的 “Inspect only.” 在句号、感叹号、问号或换行后同样生效。
+中文全局禁止语句支持 `并且`、`并` 连接，例如“更新文档，并且不要修改任何文件。”；
+局部禁止语句和嵌入的行为描述仍保持各自的作用范围。
+executor 路由会区分 `must not`、`cannot`、`do not`、`without`、`no executor` 等英文否定的语境：
+如 “inspect workflows that do not run executor” 或 “inspect workflows with no executor”
+中的描述保留只读 executor preflight；“you must not run executor”等真正的任务禁令，
+包括描述之后另起的禁止子句，仍会否决该路由。这一区分不授予执行器运行权限。
+“inspect how executor is configured without running executor during this inspection”
+中的后置约束同样阻止 executor preflight；询问配置方式不会把本次检查的禁止约束变成描述内容。
 
 如果要开一轮受控优化：
 
@@ -160,6 +189,11 @@ dev repo: /home/jenn/src/colameta-dev
 `primary_next_action`、该动作的 gate level，以及给聪明 agent 继续判断的
 `advanced_actions`。这个 packet 本身只读，不创建 preview artifact、不启动 executor、不
 merge、不 commit、不 push、不替换 stable。
+在已认证的 owner surface 中，超限的 `advanced_context` 会转为 `advanced_context_artifact`。
+通过 `read_result_artifact` 或 `resources/read` 读取各页；结果仍绑定真实来源工具、SHA-256 和
+过期时间。打包不会扩大 owner 专属结果的访问范围。
+初始描述符的 `expires_at` 与分页一致，通过 `call_tool_for_agent` 和 JSON-RPC `tools/call`
+返回或重复执行公共投影时都会保留；仅校验通过的 owner artifact 描述符享有此字段保留规则。
 
 需要一句话私人 App 服务决策时，看 `render_commander_app` 面板内嵌的 readiness。advanced
 endpoint 可直接读 `get_commander_app_manifest(project_name=...)`，Web `/api/v2/status` 则提供

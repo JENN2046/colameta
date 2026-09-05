@@ -50,6 +50,15 @@ deployment can legitimately still expose seven. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
 
+A successful aggregate wrapper does not complete a nested operation that still
+reports `CONFIRMATION_REQUIRED` or `EXECUTOR_RUNNING`. Commander preserves the
+confirmation or polling action from authoritative `result`/`unified_status`
+envelopes, including their `data` wrappers. Historical and partial-error codes
+alone do not turn a successful aggregate into an unfinished operation.
+When `without modifying/changing...` describes an example tool or workflow's
+behavior, it remains documentation subject matter; a standalone `without`
+clause still vetoes the document preview.
+
 ### Functional MVP executor flow
 
 ChatGPT Commander can start and follow the existing asynchronous executor
@@ -102,6 +111,40 @@ When using `run_mcp_workflow workflow=auto_preview`, an explicit instruction
 such as “do not start/run the executor” is a hard routing constraint. ColaMeta
 uses the read-only project-status route instead of executor preflight, unless
 the request independently identifies a more specific non-executor workflow.
+Negated action lists stop at a positive contrast: “Do not commit but update
+the docs, and edit the README” still selects the documentation workflow.
+A standalone “Read-only.” directive also applies after a sentence boundary
+or newline; it prevents document, plan, commit, and patch previews. Describing
+“read-only mode” as the subject of a documentation change is not such a directive.
+Likewise, “Update the docs to recommend a read-only action for reviewers”
+requests a document change. A separate task instruction such as “but only
+perform a read-only inspection” still prevents mutation previews.
+Global file/project prohibitions such as “do not edit any files”, “do not patch
+the project”, and “do not update the working tree” also veto mutation previews,
+as do equivalent “without editing/patching/updating” instructions. A prohibition
+limited to tests or project configuration does not veto unrelated document work.
+These global vetoes also accept coordinated or polite directives (`and do not`,
+`Please do not`, `Kindly do not`) and retain their force before a trailing
+prohibited action such as `or commit`. Embedded descriptions such as “explain
+why dry runs inspect state and do not modify files” remain documentation work.
+Explicit task subjects also apply: “but you must not modify any files” and
+“we cannot change the project” are global constraints, including after a
+documentation request that explains another topic.
+A newline (LF, CRLF, or CR) can end an English or Chinese prohibition clause
+even when the line has no punctuation, including before another prohibition.
+“Inspect only.” also applies after a period, exclamation mark, question mark,
+or newline. Chinese global prohibitions accept `并且` and `并` as coordinating
+boundaries, as in “更新文档，并且不要修改任何文件。”; selective prohibitions and
+embedded descriptions retain their narrower scope.
+For executor routing, English negatives such as `must not`, `cannot`, `do not`,
+`without`, and `no executor` in a descriptive predicate (for example,
+“inspect workflows that do not run executor” or “inspect workflows with no
+executor”) retain the read-only executor preflight. Actual task prohibitions such as
+“you must not run executor” still veto that route, including a separate directive
+following a description. This distinction does not authorize executor execution.
+An inspection constraint such as “inspect how executor is configured without
+running executor during this inspection” also vetoes executor preflight; a
+question about configuration does not turn that constraint into subject matter.
 
 If you want to start a controlled optimization round:
 
@@ -192,6 +235,13 @@ are filtered by profile: Reviewer and Source Observer profiles see read and
 evidence routes by default, not executor, commit, push, or stable promotion
 entry points. The packet itself is read-only; it does not create preview
 artifacts, start executors, merge, commit, push, or replace stable.
+On the authenticated owner surface, an oversized `advanced_context` is returned
+as `advanced_context_artifact`. Read its pages through `read_result_artifact`
+or `resources/read`; the producer identity, SHA-256, and expiry remain bound
+to that evidence. Packaging does not widen access to owner-only results.
+The initial descriptor includes the same `expires_at` as its pages, through
+both `call_tool_for_agent` and JSON-RPC `tools/call`, including repeated public
+projection. Only a validated owner artifact descriptor preserves this field.
 
 For ChatGPT Apps connector closeout, read `apps_connector_closeout` from the
 same surfaces. It is a read-only smoke packet for:

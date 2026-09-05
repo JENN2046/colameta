@@ -1,0 +1,11 @@
+{
+  "negative_intent": "Inspect the current project state and choose the single bounded next action. Do not mutate files, do not run executor, do not commit, push, merge, replace Stable, or release.",
+  "plain_project_status": "Inspect the current project state and report the next read-only action.",
+  "operator_flow_default_advanced_context": {
+    "project_name": "colameta-self-dev",
+    "profile_id": "web_gpt_commander",
+    "task_mode": "auto",
+    "task_brief": "Inspect current project state only; no preview, no executor, no commit, push, merge, Stable replacement, or release.",
+    "include_advanced_context": true
+  }
+}

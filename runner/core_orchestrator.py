@@ -71,24 +71,32 @@ _GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
     "version": frozenset({"versions", "versioned", "versioning"}),
 }
 
+_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN = r"(?:must\s+not|should\s+not|cannot|can't|cant)"
+_ENGLISH_NEGATION_PREFIX_PATTERN = (
+    rf"(?:do\s+not|don't|dont|never|{_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN})"
+)
+_EXECUTOR_NEGATED_TARGET_PATTERN = (
+    r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
+    r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
+    r"use|using|execute|executing)\s+)?"
+    r"(?:(?:the|any|a|an)\s+)?"
+    r"(?:executor|codex|opencode|pi|execution|execute)\b"
+)
+_EXECUTOR_ENGLISH_NEGATION_PATTERN = re.compile(
+    rf"\b(?:(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}|without)\s+"
+    rf"{_EXECUTOR_NEGATED_TARGET_PATTERN}"
+    rf"|no\s+(?:executor|codex|opencode|pi|execution)\b)",
+    re.IGNORECASE,
+)
+_EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN = re.compile(
+    r"\s*(?:(?:please|kindly|you|we)\s+)*", re.IGNORECASE,
+)
+
 # ``auto_preview`` may infer a bounded route, but an explicit instruction not
 # to execute must always win over a keyword match such as "executor", "Codex",
 # or the historical short form "exec". These are deliberately narrow safety
 # vetoes for executor routing, not a general natural-language parser.
 _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        r"\b(?:do\s+not|don't|dont|never|without)\s+"
-        r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
-        r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
-        r"use|using|execute|executing)\s+)?"
-        r"(?:(?:the|any|a|an)\s+)?"
-        r"(?:executor|codex|opencode|pi|execution|execute)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bno\s+(?:executor|codex|opencode|pi|execution)\b",
-        re.IGNORECASE,
-    ),
     re.compile(
         r"(?:不要|别|不需要|无需|禁止|不得)\s*"
         r"(?:启动|运行|执行|调用|触发|调度|恢复|使用)?\s*"
@@ -101,6 +109,445 @@ _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
 )
+
+_PROHIBITED_ROUTING_ACTION_PATTERN = (
+    r"(?:"
+    r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
+    r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))?"
+    r"|sync|append|update|revise|add|create|document|plan|repair|extend|version"
+    r"|commit|stage|patch|edit|change|modify"
+    r"|make\s+(?:(?:a|the)\s+)?commit|make\s+changes?|inspect|review"
+    r"|push|merge|replace\s+stable|release|write|mutate"
+    r")"
+)
+
+# Every clause/list scan must stop at the same positive-instruction boundary,
+# including lookahead used to recognize comma-separated prohibitions.
+_ROUTING_CONTRAST_PATTERN = (
+    r"\b(?:but|however|yet)\b"
+    r"|\band\s+(?=(?:update|edit|patch|revise|add|create|append|sync|"
+    r"repair|extend|inspect|review)\b[^,.!?;\n]{0,80}\binstead\b)"
+)
+_NEGATED_ROUTING_CLAUSE_BODY_PATTERN = (
+    rf"(?:(?!{_ROUTING_CONTRAST_PATTERN})[^,.!?;\n])*"
+)
+
+# Remove bounded prohibited-action clauses before keyword classification.  This
+# is intentionally not a general natural-language parser: it only prevents
+# explicit English safety vetoes from becoming positive routing evidence.
+_NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
+        r"(?:keep|make|treat)\s+"
+        r"(?:(?:this|the|current|next)\s+)?"
+        r"(?:task|request|action|operation|workflow|route|response|inspection)\s+"
+        r"read[-\s]only"
+        r"|(?:perform|conduct|run)\s+(?:(?:a|an|the)\s+)?"
+        r"read[-\s]only\s+(?:inspection|review|check|operation|workflow)"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b{_NEGATED_ROUTING_CLAUSE_BODY_PATTERN}"
+        rf"(?:,\s*(?:"
+        rf"(?:and|or)\s+{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
+        rf"|{_PROHIBITED_ROUTING_ACTION_PATTERN}\b(?="
+        rf"\s+any\b"
+        rf"|(?:(?!{_ROUTING_CONTRAST_PATTERN})[^.!?;\n])*,\s*(?:and|or)\s+"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b"
+        rf")"
+        rf"){_NEGATED_ROUTING_CLAUSE_BODY_PATTERN})+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
+        rf"{_PROHIBITED_ROUTING_ACTION_PATTERN}\b{_NEGATED_ROUTING_CLAUSE_BODY_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:不要|别|禁止|不得|无需|不需要|不可|不应)\s*"
+        r"(?:(?:更新|编辑|创建|处理|使用|启动|运行|调用|触发)\s*)?"
+        r"(?:文档|同步|追加|修复|扩展|版本|提交|执行器|执行|修改)"
+        r"(?:(?!但|但是|然而|不过|却)[^，。！？；,.!?;\n])*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"不\s*(?:同步|追加|修复|扩展|提交|修改|执行)"
+        r"(?:(?!但|但是|然而|不过|却)[^，。！？；,.!?;\n])*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwithout\s+(?:(?:starting|running|launching|invoking|calling|"
+        r"triggering|dispatching|resuming|using|executing)\s+)?"
+        r"(?:(?:the|any|a|an)\s+)?"
+        r"(?:executor|codex|opencode|pi|execution|execute|committing|commit|"
+        r"syncing|sync|appending|append|planning|plan|repairing|repair|"
+        r"extending|extend|versioning|version|staging|stage|patching|patch|"
+        r"editing|edit|exec|"
+        r"pushing|push|merging|merge|replacing\s+stable|stable\s+replacement|"
+        r"releasing|release|writing|writes?|mutating|mutations?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bno\s+(?:"
+        r"sync(?:ing)?|append(?:ing)?|plann?ing|plan|repair(?:ing)?|"
+        r"extend(?:ing)?|version(?:ing)?|commit(?:ting)?|stag(?:e|ing)|"
+        r"patch(?:es|ing)?|"
+        r"edit(?:s|ing)?|push(?:ing)?|merg(?:e|ing)|releas(?:e|ing)|"
+        r"stable\s+replacement|replac(?:e|ing)\s+stable|"
+        r"(?:start|run|launch|invoke|call|trigger|dispatch|resume|use|exec|execute)"
+        r"(?:\s+(?:(?:the|any|a|an)\s+)?(?:executor|codex|opencode|pi))"
+        r")\b",
+        re.IGNORECASE,
+    ),
+)
+_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN = (
+    r"(?:^|[,.!?;:\r\n]\s*|\b(?:and|but|however|yet|then)\s+)"
+    r"(?:for\s+(?:(?:this|the|current|next)\s+)?"
+    r"(?:task|request|operation|workflow|response)\s+)?"
+    r"(?:(?:please|kindly)\s+)?"
+    r"(?:(?:can|could|would|will)\s+you\s+|"
+    r"(?:you|we)\s+(?:(?:must|should)\s+|need\s+to\s+)?)?"
+    r"(?:(?:please|kindly)\s+)?"
+    r"(?:(?:only|just)\s+)?"
+)
+_READ_ONLY_DIRECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?:^|[,.!?;:\r\n]\s*)read[-\s]only(?=\s*(?:[:.!?]|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN}(?:keep|make|treat)\s+"
+        r"(?:(?:this|the|current|next)\s+)?"
+        r"(?:task|request|action|operation|workflow|route|response|inspection)\s+"
+        r"read[-\s]only\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN}"
+        r"(?:perform|conduct|run)\s+(?:(?:a|an|the)\s+)?"
+        r"read[-\s]only\s+(?:inspection|review|check|operation|workflow)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN}"
+        r"(?:choose|select|report|return|provide|recommend)\b"
+        r"[^,.!?;\n]{0,96}\bread[-\s]only\s+"
+        r"(?:action|route|response|workflow|operation)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:^|[,.!?;:\r\n]\s*)inspect\s+only\b", re.IGNORECASE),
+)
+_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
+    r"(?:\s+(?:during|throughout|within|for|in)\s+"
+    r"(?:(?:this|the|current)\s+)?"
+    r"(?:task|request|operation|workflow|run|session))?"
+)
+_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
+    r"(?:^|[,.!?;:]\s*|\r?\n\s*|\b(?:but|however|yet|and)\s+)"
+    r"(?:(?:please|kindly)\s+)?"
+    r"(?:(?:you|we)\s+)?(?:(?:please|kindly)\s+)?"
+)
+# A complete global object remains a veto when another prohibited action
+# follows. Do not accept arbitrary trailing text: it may narrow the object
+# (e.g. "files under tests" or "project configuration").
+_GLOBAL_WRITE_DIRECTIVE_END_PATTERN = (
+    rf"(?=\s*(?:[,.!?;\r\n]|$)|\s+(?:and|or|nor)\s+"
+    rf"(?:(?:please|kindly)\s+)?(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+)?"
+    rf"(?:{_PROHIBITED_ROUTING_ACTION_PATTERN}"
+    rf"|committing|pushing|merging|writing|mutating|editing|patching|updating"
+    rf"|modifying|changing|staging|repairing|extending|executing|running"
+    rf"|writes?|mutations?)\b)"
+)
+_CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
+    r"(?:^|[，。！？；：,.!?;:]\s*|\r?\n\s*|(?:但是|然而|不过|但|却|并且|并)\s*)"
+)
+_GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"no\s+writes?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"no\s+mutations?{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+"
+        rf"(?:write(?:\s+(?:to|into))?|mutate)"
+        rf"(?:\s+(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|"
+        rf"\s+anything){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:write|mutate)"
+        rf"{_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        # Without an explicit global object, coordination can introduce a
+        # shared selective object: "do not write or update tests".
+        rf"(?=\s*(?:[,.!?;\r\n]|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        rf"{_ENGLISH_NEGATION_PREFIX_PATTERN}\s+(?:"
+        rf"(?:change|modify|edit|patch|update)\s+(?:(?:any|the)\s+)?"
+        rf"(?:files?|project|working\s+tree|anything)"
+        rf"|make\s+(?:any\s+)?changes?"
+        rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
+        rf"(?:files?|project|working\s+tree))?"
+        rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+        rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN}"
+        r"(?:不要|别|禁止|不得|无需|不需要|不可|不应)\s*(?:"
+        r"(?:修改|更改|改动|写入|变更)\s*(?:任何|任意|所有)?\s*"
+        r"(?:文件|项目|工作树|代码)"
+        r"|(?:做|进行|产生)\s*(?:任何|任意)?\s*"
+        r"(?:更改|修改|改动|变更)"
+        r")"
+        r"(?:\s*(?:在)?(?:本次|当前|此)(?:任务|操作|工作流|会话)(?:中|期间|内))?"
+        r"(?=\s*(?:[，。！？；,.!?;\r\n]|$))",
+        re.IGNORECASE,
+    ),
+)
+_WITHOUT_GLOBAL_WRITE_VETO_PATTERN = re.compile(
+    rf"\bwithout\s+(?:"
+    rf"(?:modifying|changing|mutating|editing|patching|updating)\s+"
+    rf"(?:(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|anything)"
+    rf"|writing(?:\s+(?:to|into))?\s+"
+    rf"(?:(?:(?:any|the)\s+)?(?:files?|project|working\s+tree)|anything)"
+    rf"|making\s+(?:any\s+)?changes?"
+    rf"(?:\s+to\s+(?:(?:any|the)\s+)?"
+    rf"(?:files?|project|working\s+tree))?"
+    rf"){_GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN}"
+    rf"{_GLOBAL_WRITE_DIRECTIVE_END_PATTERN}",
+    re.IGNORECASE,
+)
+_ROUTING_SUBJECT_MATTER_PATTERN = re.compile(
+    r"\b(?:to\s+(?:explain|describe|document)|explaining|describing|"
+    r"documenting|handling|when|where|why|how|that)\b",
+    re.IGNORECASE,
+)
+_WITHOUT_SUBJECT_MATTER_PATTERN = re.compile(
+    r"\b(?:operating|running|working|executing|acting|behaving|"
+    r"functioning|used|designed)\s*$",
+    re.IGNORECASE,
+)
+_COORDINATED_ROUTING_SUBJECT_PATTERN = re.compile(
+    r"\b(?:to\s+(?:explain|describe|document)|explaining|describing|"
+    r"documenting|handling)\b",
+    re.IGNORECASE,
+)
+_CHINESE_COORDINATED_ROUTING_SUBJECT_PATTERN = re.compile(
+    r"(?:^\s*(?:请)?|(?:以|来))(?:说明|解释|描述|介绍|讲解)(?=\S)"
+)
+_MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
+    {"docs", "plan", "git_commit", "small_project_patch"}
+)
+
+
+def _without_global_write_veto(goal: str) -> bool:
+    for match in _WITHOUT_GLOBAL_WRITE_VETO_PATTERN.finditer(goal):
+        clause_start = max(
+            (goal.rfind(separator, 0, match.start()) for separator in ".!?;\n"),
+            default=-1,
+        )
+        clause_prefix = goal[clause_start + 1 : match.start()]
+        if (
+            _ROUTING_SUBJECT_MATTER_PATTERN.search(clause_prefix) is None
+            and _WITHOUT_SUBJECT_MATTER_PATTERN.search(clause_prefix) is None
+        ):
+            return True
+    return False
+
+
+def _global_write_veto(goal: str) -> bool:
+    for pattern in _GLOBAL_WRITE_VETO_PATTERNS:
+        for match in pattern.finditer(goal):
+            if match.group().split(maxsplit=1)[0].lower() in {
+                "and", "but", "however", "yet",
+            }:
+                # Bare coordination can also occur inside a description, such
+                # as "explain why dry runs inspect and do not modify files".
+                # Punctuation starts a new directive clause, so a preceding
+                # documentation subject must not veto "..., and do not ...".
+                clause_start = max(
+                    (goal.rfind(separator, 0, match.start()) for separator in ",.!?;:\n"),
+                    default=-1,
+                )
+                prefix = goal[clause_start + 1 : match.start()]
+                if (
+                    _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None
+                    and re.search(r"\b(?:you|we)\b", match.group(), re.IGNORECASE) is None
+                ):
+                    continue
+            elif match.group().startswith(("并且", "并")):
+                # Keep descriptive coordinated predicates scoped to their
+                # subject; punctuation starts a separate task directive.
+                clause_start = max(
+                    (goal.rfind(separator, 0, match.start()) for separator in "，。！？；：,.!?;:\r\n"),
+                    default=-1,
+                )
+                prefix = goal[clause_start + 1 : match.start()]
+                if _CHINESE_COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None:
+                    continue
+            return True
+    return _without_global_write_veto(goal)
+
+
+def _executor_description_prefix(prefix: str) -> bool:
+    if (
+        _EXECUTOR_ENGLISH_NEGATION_PATTERN.search(prefix)
+        or _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix)
+        or re.search(r"\b(?:which|where|whose|why|how)\b", prefix, re.IGNORECASE)
+    ):
+        return True
+    for relative in re.finditer(r"\bthat\b", prefix, re.IGNORECASE):
+        preceding = re.search(r"\b(\w+)\s*$", prefix[:relative.start()])
+        # "workflows that ..." introduces a predicate; "inspect that
+        # executor" and "of that executor" contain a demonstrative object.
+        if preceding and preceding.group(1).lower() not in {
+            "inspect", "review", "check", "examine", "assess", "analyze",
+            "for", "of", "in", "on", "at", "to", "with", "without",
+        }:
+            return True
+    return False
+
+
+def _executor_negation_is_directive(goal: str, start: int) -> bool:
+    """Recognize an English prohibition without promoting descriptions."""
+
+    clause_start = max(
+        (goal.rfind(separator, 0, start) for separator in ",.!?;:\r\n"),
+        default=-1,
+    )
+    prefix = goal[clause_start + 1 : start]
+    coordinators = list(re.finditer(r"\b(?:and|but|however|yet)\s+", prefix, re.IGNORECASE))
+    before = prefix[:coordinators[-1].start()] if coordinators else ""
+    after = prefix[coordinators[-1].end():] if coordinators else ""
+    if (
+        coordinators
+        and re.search(r"\b(?:you|we)\b", after, re.IGNORECASE)
+        and not _executor_description_prefix(after)
+    ):
+        return True
+    entity_pattern = (
+        r"\b(?:workflows?|modes?|configurations?|environments?|profiles?|pipelines?)"
+    )
+    if re.match(r"no\s+", goal[start:], re.IGNORECASE) and re.search(
+        entity_pattern + r"\s+with\s*$", prefix, re.IGNORECASE,
+    ):
+        return False
+    if re.match(r"without\s+", goal[start:], re.IGNORECASE):
+        negation = _EXECUTOR_ENGLISH_NEGATION_PATTERN.match(goal, start)
+        suffix = goal[negation.end():] if negation else ""
+        if re.match(
+            r"\s+(?:during|for|in|throughout)\s+"
+            r"(?:this|current|the\s+current)\s+(?:inspection|task)\b",
+            suffix, re.IGNORECASE,
+        ):
+            return True
+        # A query's "how/where" describes what to inspect, not permission to
+        # execute during that inspection. Establish the described entity's
+        # clause instead of recognizing a fixed list of operating verbs.
+        relative_entity = re.search(
+            entity_pattern + r"\s+(?:that|which|where)\b", prefix, re.IGNORECASE,
+        )
+        queried_entity = re.search(
+            r"\b(?:how|why|where)\s+(?:(?:the|these|those)\s+)?"
+            + entity_pattern, prefix, re.IGNORECASE,
+        ) or (
+            re.search(entity_pattern, prefix, re.IGNORECASE)
+            and re.search(r"\b(?:how|why|where)\s+they\b", prefix, re.IGNORECASE)
+        )
+        return not (
+            re.search(entity_pattern + r"\s*$", prefix, re.IGNORECASE)
+            or relative_entity
+            or queried_entity
+        )
+    if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(prefix):
+        return True
+    if not coordinators:
+        # Keep the existing veto unless a descriptive predicate is identified;
+        # a task qualifier such as "for this task you" is still a directive.
+        return not _executor_description_prefix(prefix)
+    if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(after) is None:
+        return not _executor_description_prefix(prefix)
+    if (
+        re.match(r"(?:do\s+not|don't|dont|never|without|no)\s+", goal[start:], re.IGNORECASE)
+        and _EXECUTOR_ENGLISH_NEGATION_PATTERN.search(before) is None
+        and re.search(r"\b(?:that|which|where|whose)\b", before, re.IGNORECASE) is None
+    ):
+        # Without a shared relative subject or an earlier negative predicate,
+        # "and do not/no/without ..." introduces a separate task constraint.
+        # An inspection's purpose ("to explain failures") is not such a subject.
+        return True
+    # An implicit coordinated subject inherits a preceding description;
+    # explicit "and you/we ..." or a new clause establishes a fresh directive.
+    return not _executor_description_prefix(before)
+
+
+def _executor_explicitly_forbidden(goal: str) -> bool:
+    return any(pattern.search(goal) is not None for pattern in _EXECUTOR_NEGATION_PATTERNS) or any(
+        _executor_negation_is_directive(goal, match.start())
+        for match in _EXECUTOR_ENGLISH_NEGATION_PATTERN.finditer(goal)
+    )
+
+
+def _read_only_requested(goal: str) -> bool:
+    for pattern in _READ_ONLY_DIRECTIVE_PATTERNS:
+        for match in pattern.finditer(goal):
+            if re.match(r"and\s+", match.group(), re.IGNORECASE):
+                clause_start = max(
+                    (goal.rfind(separator, 0, match.start()) for separator in ",.!?;:\n"),
+                    default=-1,
+                )
+                prefix = goal[clause_start + 1 : match.start()]
+                # A bare coordinated predicate can inherit the subject of a
+                # description. An explicit addressee or polite request starts
+                # a new directive, as does intervening punctuation.
+                if (
+                    _executor_description_prefix(prefix)
+                    and re.search(r"\b(?:you|we|please|kindly)\b", match.group(), re.IGNORECASE)
+                    is None
+                ):
+                    continue
+            return True
+    return False
+
+
+def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
+    """Return positive routing text and bounded prohibition facts."""
+
+    # All clause scans share one newline form, including directive prefixes,
+    # description context, and stripping before a later positive request.
+    goal = goal.replace("\r\n", "\n").replace("\r", "\n")
+    global_write_veto = _global_write_veto(goal)
+    positive_goal = goal
+    for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
+        executor_subjects = {
+            match.start(): match.group()
+            for match in _EXECUTOR_ENGLISH_NEGATION_PATTERN.finditer(positive_goal)
+            if not _executor_negation_is_directive(positive_goal, match.start())
+        }
+        # Keep the described executor available as inspection evidence, even
+        # when it is mentioned only in the subordinate negative predicate. Keep
+        # just the bounded executor phrase, not arbitrary trailing actions.
+        positive_goal = pattern.sub(
+            lambda match: executor_subjects.get(match.start(), " "), positive_goal,
+        )
+    prohibited_action_filtered = positive_goal != goal
+    read_only_requested = global_write_veto or _read_only_requested(positive_goal)
+    return positive_goal, read_only_requested, prohibited_action_filtered
 
 
 def _goal_keyword_matches(goal: str, keyword: str) -> bool:
@@ -329,6 +776,21 @@ class WorkflowOrchestrator:
         action: str = "run_workflow",
     ) -> CoreOutput:
         result_facts = normalize_result_facts(core_result)
+        if (
+            core_result.workflow == "auto_preview"
+            and core_result.selected_workflow == "project_status"
+            and core_result.requires_confirmation is False
+            and not any(
+                action.get("requires_confirmation") is True
+                for action in core_result.next_actions
+                if isinstance(action, dict)
+            )
+        ):
+            # A read-only state result can contain nested project facts that
+            # resemble a preview payload.  They are not confirmation authority;
+            # the auto-preview route's own bounded action set is authoritative.
+            result_facts.requires_confirmation = False
+            result_facts.confirmation = None
         unified_status = create_status_from_normalized_result(
             workflow=core_result.workflow,
             status=core_result.status,
@@ -4645,6 +5107,12 @@ class WorkflowOrchestrator:
         auto_preview_params["_selected_workflow"] = selected_workflow
         auto_preview_params["_selection_reason"] = selection_reason
         auto_preview_params["_confidence"] = confidence
+        _, read_only_requested, prohibited_action_filtered = (
+            _positive_routing_evidence(goal)
+        )
+        auto_preview_params["_read_only_intent"] = read_only_requested or (
+            selected_workflow == "project_status" and prohibited_action_filtered
+        )
 
         if selected_workflow == "docs":
             return self._auto_preview_docs(auto_preview_params)
@@ -4719,7 +5187,8 @@ class WorkflowOrchestrator:
                 if plan_info.get("source_only"):
                     is_source_only = True
 
-        if is_source_only:
+        read_only_intent = params.get("_read_only_intent") is True
+        if is_source_only and not read_only_intent:
             onboarding_params = {
                 "phase": "preview",
                 "goal": params.get("goal"),
@@ -4770,6 +5239,21 @@ class WorkflowOrchestrator:
             raw = state.get("recommended_next_actions", [])
             if isinstance(raw, list):
                 next_actions = raw
+        if read_only_intent:
+            next_actions = [
+                action
+                for action in next_actions
+                if isinstance(action, dict)
+                and action.get("requires_confirmation") is not True
+                and str(action.get("risk_level") or "info").lower()
+                in {"none", "info", "read", "read_only"}
+            ]
+            # Keep the nested analyze-state evidence consistent with the
+            # read-only route.  Otherwise result normalization can rediscover
+            # a confirmation-required mutation recommendation that this route
+            # deliberately filtered from its public next actions.
+            state = dict(state)
+            state["recommended_next_actions"] = list(next_actions)
 
         return self._auto_preview_result(
             selected_workflow="project_status",
@@ -5219,19 +5703,22 @@ class WorkflowOrchestrator:
         if not goal_lower:
             return {"selected_workflow": "project_status", "confidence": 1.0, "reason": "empty goal"}
 
-        executor_explicitly_forbidden = any(
-            pattern.search(goal_lower) is not None
-            for pattern in _EXECUTOR_NEGATION_PATTERNS
+        positive_goal, read_only_requested, prohibited_action_filtered = (
+            _positive_routing_evidence(goal_lower)
         )
+
+        executor_explicitly_forbidden = _executor_explicitly_forbidden(goal_lower)
 
         best_workflow = "project_status"
         best_confidence = 0.0
         best_reason = ""
 
         for keywords, workflow in _GOAL_CLASSIFIERS:
+            if read_only_requested and workflow in _MUTATING_AUTO_PREVIEW_WORKFLOWS:
+                continue
             if workflow == "executor" and executor_explicitly_forbidden:
                 continue
-            matches = sum(1 for kw in keywords if _goal_keyword_matches(goal_lower, kw))
+            matches = sum(1 for kw in keywords if _goal_keyword_matches(positive_goal, kw))
             if matches > 0:
                 confidence = min(0.5 + matches * 0.15, 1.0)
                 if confidence > best_confidence:
@@ -5240,14 +5727,25 @@ class WorkflowOrchestrator:
                     best_reason = f"matched {matches} keyword(s) in {workflow} classifier"
 
         if best_workflow == "project_status":
-            if executor_explicitly_forbidden:
+            if (
+                read_only_requested
+                or prohibited_action_filtered
+                or executor_explicitly_forbidden
+            ):
+                if executor_explicitly_forbidden:
+                    reason = (
+                        "goal explicitly forbids executor execution; "
+                        "defaulted to read-only project_status"
+                    )
+                else:
+                    reason = (
+                        "goal requests read-only routing or filters prohibited actions; "
+                        "defaulted to project_status"
+                    )
                 return {
                     "selected_workflow": best_workflow,
                     "confidence": 0.8,
-                    "reason": (
-                        "goal explicitly forbids executor execution; "
-                        "defaulted to read-only project_status"
-                    ),
+                    "reason": reason,
                 }
             return {
                 "selected_workflow": best_workflow,

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
+
+import pytest
 
 from runner.mcp_server import (
     COMMANDER_EXPOSED_TOOLS,
@@ -10,6 +14,7 @@ from runner.mcp_server import (
     MCPPlanningBridgeServer,
 )
 from runner.mcp_private_operator import OperatorSettingsStore
+from runner.project_registry import ProjectRegistry
 from runner.mcp_commander_public import (
     COMMANDER_CLIENT_EXPERIENCE_CONTRACT_VERSION,
     COMMANDER_LOCAL_CODEX_ADVANCED_TOOL_EXAMPLES,
@@ -18,6 +23,10 @@ from runner.mcp_commander_public import (
 GIT_HEAD = "c" * 40
 PLAN_SHA256 = "b" * 64
 MANIFEST_SHA256 = "d" * 64
+LIVE_ACCEPTANCE_FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "agent_routing_r1_live_acceptance.json")
+    .read_text(encoding="utf-8")
+)
 
 
 def _base_context_binding() -> dict[str, object]:
@@ -408,6 +417,206 @@ def test_owner_profile_live_call_failure_log_is_bounded_and_public_error_is_exac
         "principal_denial_reason=SUBJECT_MISMATCH"
     ]
     assert "must-not-appear" not in logs[0]
+
+
+@pytest.mark.parametrize("transport", ["agent", "tools/call"])
+def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
+    monkeypatch,
+    tmp_path,
+    transport,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.email", "fixture@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project), "config", "user.name", "Fixture"],
+        check=True,
+    )
+    (project / "README.md").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(project), "add", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(project), "commit", "-qm", "fixture"],
+        check=True,
+    )
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile=MCP_EXPOSURE_PROFILE_OWNER,
+    )
+    server.project_registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = server.project_registry.register_project(
+        str(project),
+        project_name="colameta-self-dev",
+        project_mode="managed",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+    real_json_char_count = server._json_char_count
+
+    def force_advanced_context_overflow(value):
+        data = value.get("data") if isinstance(value, dict) else None
+        if isinstance(data, dict) and "advanced_context" in data:
+            return 60_001
+        return real_json_char_count(value)
+
+    monkeypatch.setattr(server, "_json_char_count", force_advanced_context_overflow)
+
+    arguments = dict(LIVE_ACCEPTANCE_FIXTURES["operator_flow_default_advanced_context"])
+    if transport == "agent":
+        result = server.call_tool_for_agent(
+            "get_agent_operator_flow_packet", arguments, auth_context=_owner_auth(),
+        )
+    else:
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "get_agent_operator_flow_packet", "arguments": arguments},
+            },
+            auth_context=_owner_auth(),
+        )
+        assert response is not None and "error" not in response
+        result = response["result"]["structuredContent"]
+
+    assert result["ok"] is True
+    assert result.get("error_code") != "PUBLIC_PROJECTION_FAILED"
+    packet = result["data"]
+    assert packet["result_packaged"] is True
+    assert packet["advanced_context_status"] == "packaged"
+    assert packet["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert "primary_next_action" in packet
+    assert "authority" in packet
+    assert "routing" in packet
+    assert "advanced_actions" in packet
+    assert "tool_surface_guidance" in packet
+    assert "flow_usage_rule" in packet
+    assert packet["advanced_context_artifact"]["kind"] == "result_artifact"
+    artifact_id = packet["advanced_context_artifact"]["artifact_id"]
+    first_page = server._mcp_result_artifact_store.read_page(artifact_id, 1)
+    assert first_page is not None
+    artifact_pages = [first_page.content]
+    for page_number in range(2, first_page.page_count + 1):
+        page = server._mcp_result_artifact_store.read_page(artifact_id, page_number)
+        assert page is not None
+        artifact_pages.append(page.content)
+    public_artifact = "".join(artifact_pages)
+    assert str(project) not in public_artifact
+    assert '"advanced_context"' in public_artifact
+    assert json.loads(public_artifact)["tool"] == "get_agent_operator_flow_packet"
+
+    typed_pages = []
+    resource_pages = []
+    expected_metadata = {
+        "artifact_id": first_page.artifact_id,
+        "content_sha256": first_page.content_sha256,
+        "expires_at": first_page.expires_at,
+        "page_count": first_page.page_count,
+    }
+    descriptor = packet["advanced_context_artifact"]
+    assert {key: descriptor[key] for key in expected_metadata} == expected_metadata
+    assert descriptor["resource_uri"] == f"colameta://result-artifact/{artifact_id}"
+    assert descriptor["page_uri_template"] == descriptor["resource_uri"] + "/pages/{page}"
+    repeated = server._commander_public_project_tool_result(result, arguments)
+    assert repeated["data"]["advanced_context_artifact"] == descriptor
+    for page_number in range(1, first_page.page_count + 1):
+        typed = server.call_tool_for_agent(
+            "read_result_artifact",
+            {"artifact_id": artifact_id, "artifact_page": page_number},
+            auth_context=_owner_auth(),
+        )
+        assert typed["ok"] is True
+        typed_page = typed["data"]["facts"]["artifact_page"]
+        assert {key: typed_page[key] for key in expected_metadata} == expected_metadata
+        assert typed_page["page"] == page_number
+        # The typed public contract names its read entrypoint; the resource
+        # page retains the original producer bound to the stored artifact.
+        assert typed_page["tool"] == "read_result_artifact"
+        typed_pages.append(typed_page["content"])
+        resource = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0", "id": page_number, "method": "resources/read",
+                "params": {"uri": f"colameta://result-artifact/{artifact_id}/pages/{page_number}"},
+            },
+            auth_context=_owner_auth(),
+        )
+        assert resource is not None and "error" not in resource
+        resource_page = json.loads(resource["result"]["contents"][0]["text"])
+        assert {key: resource_page[key] for key in expected_metadata} == expected_metadata
+        assert resource_page["page"] == page_number
+        assert resource_page["tool"] == first_page.tool == "get_agent_operator_flow_packet"
+        resource_pages.append(resource_page["content"])
+    assert "".join(typed_pages) == public_artifact
+    assert "".join(resource_pages) == public_artifact
+
+    denied = server.call_tool_for_agent(
+        "read_result_artifact", {"artifact_id": artifact_id, "artifact_page": 1},
+        auth_context=_owner_auth(subject="auth0|other"),
+    )
+    assert denied["ok"] is False
+    denied_resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": f"colameta://result-artifact/{artifact_id}"},
+        },
+        auth_context=_owner_auth(subject="auth0|other"),
+    )
+    assert denied_resource is not None
+    assert denied_resource["error"]["data"]["error_code"] == "owner_principal_required"
+
+    # Possession of an owner artifact handle must not make its producer public
+    # on the narrower Commander surface, even when the stores are shared.
+    commander = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    commander._mcp_result_artifact_store = server._mcp_result_artifact_store
+    hidden_typed = commander.call_tool_for_agent(
+        "read_result_artifact", {"artifact_id": artifact_id, "artifact_page": 1},
+    )
+    assert hidden_typed["ok"] is False
+    assert hidden_typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    hidden_resource = commander._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": f"colameta://result-artifact/{artifact_id}"},
+        },
+    )
+    assert hidden_resource is not None
+    assert hidden_resource["error"]["data"]["error_code"] == "evidence_unavailable"
+
+
+@pytest.mark.parametrize("producer", ["read_result_artifact", "get_agent_operator_flow_packet"])
+def test_owner_artifact_public_reads_still_reject_unsafe_payload(
+    monkeypatch, tmp_path, producer: str,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile=MCP_EXPOSURE_PROFILE_OWNER)
+    private_path = "/home/synthetic-owner/private-artifact.txt"
+    handle = server._mcp_result_artifact_store.put(
+        tool=producer,
+        payload={"ok": True, "tool": producer, "data": {"note": private_path}},
+    )
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact", {"artifact_id": handle.artifact_id, "artifact_page": 1},
+        auth_context=_owner_auth(),
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": f"colameta://result-artifact/{handle.artifact_id}"},
+        },
+        auth_context=_owner_auth(),
+    )
+    assert resource is not None
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert private_path not in json.dumps([typed, resource])
 
 
 def test_owner_profile_live_principal_denial_log_distinguishes_safe_reason_only(

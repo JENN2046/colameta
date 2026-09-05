@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,12 @@ from runner.mcp_commander_public import (
 from runner.mcp_server import MCPPlanningBridgeServer, THIN_LOOP_PRODUCT_SESSIONS
 from runner.project_context_binding import collect_project_context_binding
 from runner.project_registry import ProjectRegistry
+
+
+LIVE_ACCEPTANCE_FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "agent_routing_r1_live_acceptance.json")
+    .read_text(encoding="utf-8")
+)
 
 
 def _percent_encode_layers(value: str, layers: int) -> str:
@@ -2128,6 +2135,90 @@ def _make_real_git_project(tmp_path, name: str):
         check=True,
     )
     return project
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["negative_intent", "plain_project_status"],
+)
+def test_exact_live_project_status_is_a_valid_commander_public_result(
+    tmp_path,
+    fixture_name: str,
+) -> None:
+    project = _make_real_git_project(tmp_path, "live-project-status")
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registered = registry.register_project(
+        str(project),
+        project_name="colameta-self-dev",
+        project_mode="managed",
+        last_selected=False,
+    )
+    assert registered["ok"] is True
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="commander",
+    )
+    server.project_registry = registry
+
+    result = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": LIVE_ACCEPTANCE_FIXTURES[fixture_name],
+            "project_name": "colameta-self-dev",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result.get("error_code") != "INTERNAL_RESULT_INVALID"
+    contract = result["data"]
+    validate_commander_response(contract)
+    assert contract["outcome"] == "completed"
+    facts = contract["facts"]
+    assert facts["selected_workflow"] == "project_status"
+    assert facts["agent_projection_schema_version"] == (
+        "colameta.agent_state_projection.v1"
+    )
+    assert facts["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert facts["primary_next_action"] is not None or facts[
+        "why_no_unique_action"
+    ]
+    assert facts["blocked_next_actions"]["exhaustive"] is False
+    assert facts["authority"]["projection_is_navigation_only"] is True
+    assert facts["preview_ids"] == []
+    assert facts["changed_files"] == []
+
+
+@pytest.mark.parametrize(
+    ("exposure_profile", "expected_profile"),
+    [
+        ("commander", "web_gpt_commander"),
+        ("normal", "local_codex_commander"),
+    ],
+)
+def test_auto_preview_preserves_the_serving_persona(
+    tmp_path,
+    exposure_profile: str,
+    expected_profile: str,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=exposure_profile,
+    )
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": LIVE_ACCEPTANCE_FIXTURES["plain_project_status"],
+        }
+    )
+
+    assert result["selected_workflow"] == "project_status"
+    assert result["agent_state"]["profile_id"] == expected_profile
 
 
 @pytest.mark.parametrize(
