@@ -1085,6 +1085,40 @@ def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_
     assert local_result["primary_next_action"]["tool"] == "manage_executor_workflow"
 
 
+@pytest.mark.parametrize(
+    "profile_id",
+    ["web_gpt_commander", "reviewer_agent", "source_observer"],
+)
+def test_auto_preview_filters_all_executor_actions_by_selected_profile(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "profile_id": profile_id,
+        }
+    )
+
+    assert result["selected_workflow"] == "executor_preflight"
+    assert result["primary_next_action"] is None
+    assert all(
+        action.get("tool") != "manage_executor_workflow"
+        for action in result["next_actions"]
+        if isinstance(action, dict)
+    )
+    nested_result = result.get("result")
+    if isinstance(nested_result, dict):
+        assert all(
+            action.get("tool") != "manage_executor_workflow"
+            for action in nested_result.get("next_actions", [])
+            if isinstance(action, dict)
+        )
+
+
 def test_normal_exposure_keeps_visible_local_executor_follow_up(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
 

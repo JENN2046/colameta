@@ -3963,6 +3963,7 @@ class WorkflowOrchestrator:
         )
     def _prompt_to_plan_run_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         provider = self._normalize_provider(params.get("provider")) or "codex"
+        profile_id = str(params.get("profile_id") or "").strip()
         manager = self._executor_workflow_factory(self.project_root)
         steps: list[dict[str, Any]] = []
         preflight = manager.handle("preflight", {"provider": provider, "execution_mode": "run"})
@@ -3978,18 +3979,32 @@ class WorkflowOrchestrator:
                 result=preflight,
                 phase="run_preview",
             )
-        preview = manager.handle("run_once_preview", {"provider": provider, "execution_mode": "run"})
+        preview_params: dict[str, Any] = {
+            "provider": provider,
+            "execution_mode": "run",
+        }
+        if profile_id:
+            preview_params["profile_id"] = profile_id
+        preview = manager.handle("run_once_preview", preview_params)
         steps.append(self._step("prompt_to_plan", "manage_executor_workflow", "run_once_preview",
                                 preview, STEP_RISK_PREVIEW))
         preview_id_value = preview.get("preview_id")
         preview_ids = self._extract_preview_ids(preview)
         next_actions = []
         if preview_ids:
+            run_params: dict[str, Any] = {
+                "workflow": "prompt_to_plan",
+                "phase": "run",
+                "preview_id": preview_ids[0],
+                "provider": provider,
+            }
+            if profile_id:
+                run_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "prompt_to_plan.run",
                 "label": "确认运行执行器",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "run", "preview_id": preview_ids[0], "provider": provider},
+                "params": run_params,
                 "risk_level": "write",
                 "requires_confirmation": True,
             })
@@ -4018,12 +4033,16 @@ class WorkflowOrchestrator:
         if not isinstance(preview_id, str) or not preview_id.strip():
             return self._error_result("prompt_to_plan", "PREVIEW_ID_REQUIRED", "run 需要非空 preview_id。")
         provider = self._normalize_provider(params.get("provider")) or "codex"
+        profile_id = str(params.get("profile_id") or "").strip()
         manager = self._executor_workflow_factory(self.project_root)
-        run_result = manager.handle("run_once", {
+        run_params: dict[str, Any] = {
             "provider": provider,
             "preview_id": preview_id.strip(),
             "execution_mode": "run",
-        })
+        }
+        if profile_id:
+            run_params["profile_id"] = profile_id
+        run_result = manager.handle("run_once", run_params)
         steps = [self._step("prompt_to_plan", "manage_executor_workflow", "run_once",
                             run_result, STEP_RISK_WRITE)]
         run_ok = bool(run_result.get("ok"))
@@ -4031,11 +4050,26 @@ class WorkflowOrchestrator:
         run_id = str(run_result.get("run_id") or "")
         next_actions = []
         if run_ok and run_status == "started":
+            polling_guidance = run_result.get("polling_guidance")
+            guidance_profile_id = (
+                polling_guidance.get("profile_id")
+                if isinstance(polling_guidance, dict)
+                else ""
+            )
+            status_profile_id = str(
+                run_result.get("polling_profile_id")
+                or guidance_profile_id
+                or profile_id
+                or ""
+            ).strip()
+            status_params: dict[str, Any] = {"action": "status", "run_id": run_id}
+            if status_profile_id:
+                status_params["profile_id"] = status_profile_id
             next_actions.append({
                 "action": "manage_executor_workflow.status",
                 "label": "查看执行器运行进度",
                 "tool": "manage_executor_workflow",
-                "params": {"action": "status", "run_id": run_id},
+                "params": status_params,
                 "risk_level": "info",
                 "requires_confirmation": False,
             })

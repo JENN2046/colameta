@@ -208,6 +208,45 @@ def _action_reachable(
     return allowed_tools is None or action.get("tool") in allowed_tools
 
 
+def _filter_unreachable_navigation_actions(
+    value: Mapping[str, Any],
+    *,
+    allowed_tools: frozenset[str] | None,
+    depth: int = 0,
+) -> dict[str, Any]:
+    filtered = dict(value)
+    for key in ("recommended_next_actions", "next_actions", "recommended_next_steps"):
+        actions = filtered.get(key)
+        if isinstance(actions, list):
+            filtered[key] = [
+                dict(action) if isinstance(action, Mapping) else action
+                for action in actions
+                if not isinstance(action, Mapping)
+                or not isinstance(action.get("tool"), str)
+                or _action_reachable(action, allowed_tools)
+            ]
+    if depth >= 5:
+        return filtered
+    for key in (
+        "result",
+        "facts",
+        "data",
+        "current_state",
+        "canonical_state",
+        "canonical_project_state",
+        "current_conclusion",
+        "unified_status",
+    ):
+        nested = filtered.get(key)
+        if isinstance(nested, Mapping):
+            filtered[key] = _filter_unreachable_navigation_actions(
+                nested,
+                allowed_tools=allowed_tools,
+                depth=depth + 1,
+            )
+    return filtered
+
+
 def _clear_unreachable_executor_confirmation(
     projected: dict[str, Any],
     *,
@@ -998,8 +1037,6 @@ def add_agent_state_projection(
     enforce_profile_reachability: bool = False,
     visible_tool_names: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    projected = dict(response)
-    _bind_top_level_actions_to_project(projected, project_name)
     allowed_tools = (
         _profile_allowed_tools(profile_id) if enforce_profile_reachability else None
     )
@@ -1010,6 +1047,8 @@ def add_agent_state_projection(
             if allowed_tools is None
             else allowed_tools.intersection(visible_tools)
         )
+    projected = dict(response)
+    _bind_top_level_actions_to_project(projected, project_name)
     selected = (
         primary_action
         if isinstance(primary_action, Mapping)
@@ -1042,6 +1081,10 @@ def add_agent_state_projection(
         selected,
         source_tool=source_tool,
         project_name=project_name,
+    )
+    projected = _filter_unreachable_navigation_actions(
+        projected,
+        allowed_tools=allowed_tools,
     )
     _clear_unreachable_executor_confirmation(
         projected,
