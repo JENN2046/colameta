@@ -486,11 +486,18 @@ class MCPWorkflowCompatibilityService:
                 require_managed=True,
             )
 
-        agent_profile_id = self._host._resolve_agent_profile_id(
-            params.get("profile_id")
-        )
         routed_params = self._host._strip_operation_context_binding_params(params)
-        routed_params["profile_id"] = agent_profile_id
+        requested_profile_id = params.get("profile_id")
+        agent_profile_id: str | None = None
+        if (
+            workflow == "auto_preview"
+            or requested_profile_id is not None
+            and requested_profile_id != ""
+        ):
+            agent_profile_id = self._host._resolve_agent_profile_id(
+                requested_profile_id
+            )
+            routed_params["profile_id"] = agent_profile_id
         result = self._host._create_mcp_workflow_router().handle(
             workflow,
             routed_params,
