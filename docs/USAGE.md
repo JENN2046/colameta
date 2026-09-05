@@ -115,6 +115,9 @@ These global vetoes also accept coordinated or polite directives (`and do not`,
 `Please do not`, `Kindly do not`) and retain their force before a trailing
 prohibited action such as `or commit`. Embedded descriptions such as “explain
 why dry runs inspect state and do not modify files” remain documentation work.
+Explicit task subjects also apply: “but you must not modify any files” and
+“we cannot change the project” are global constraints, including after a
+documentation request that explains another topic.
 A newline (LF, CRLF, or CR) can end an English or Chinese prohibition clause
 even when the line has no punctuation, including before another prohibition.
 “Inspect only.” also applies after a period, exclamation mark, question mark,

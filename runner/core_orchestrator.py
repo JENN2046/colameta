@@ -235,6 +235,7 @@ _GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
 _GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
     r"(?:^|[,.!?;:]\s*|\r?\n\s*|\b(?:but|however|yet|and)\s+)"
     r"(?:(?:please|kindly)\s+)?"
+    r"(?:(?:you|we)\s+)?(?:(?:please|kindly)\s+)?"
 )
 # A complete global object remains a veto when another prohibited action
 # follows. Do not accept arbitrary trailing text: it may narrow the object
@@ -362,7 +363,10 @@ def _global_write_veto(goal: str) -> bool:
                     default=-1,
                 )
                 prefix = goal[clause_start + 1 : match.start()]
-                if _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None:
+                if (
+                    _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None
+                    and re.search(r"\b(?:you|we)\b", match.group(), re.IGNORECASE) is None
+                ):
                     continue
             elif match.group().startswith(("并且", "并")):
                 # Keep descriptive coordinated predicates scoped to their

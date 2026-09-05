@@ -102,6 +102,8 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 全局禁止语句也支持 `and do not`、`Please do not`、`Kindly do not` 等连接或礼貌前缀，
 并在后接 `or commit` 等并列禁止动作时保持有效。描述 dry run 行为的从句
 （如 “explain why dry runs inspect state and do not modify files”）仍可进入文档流程。
+显式任务主语同样有效：“but you must not modify any files”和“we cannot change the project”
+仍是全局约束，包括接在介绍其他主题的文档请求之后。
 中英文禁止子句也可由换行（LF、CRLF 或 CR）结束，无需在行末添加标点，后接另一条禁令也保持有效。
 独立的 “Inspect only.” 在句号、感叹号、问号或换行后同样生效。
 中文全局禁止语句支持 `并且`、`并` 连接，例如“更新文档，并且不要修改任何文件。”；
