@@ -1102,6 +1102,15 @@ def test_without_edit_patch_update_subject_matter_is_not_a_global_veto(
             for prefix in ("，", "，并且", "并")
             for newline in ("\n", "\r\n", "\r")
         ],
+        *[
+            template.format(newline=newline)
+            for template in (
+                "Update the docs{newline}Do not modify any files.",
+                "更新文档{newline}不要修改任何文件。",
+                "Update the docs to explain routing{newline}and do not modify any files.",
+            )
+            for newline in ("\n", "\r\n", "\r")
+        ],
     ],
 )
 def test_global_veto_clause_boundaries_block_preview_and_confirmation(goal: str) -> None:
@@ -1152,6 +1161,14 @@ def test_global_veto_clause_boundaries_block_preview_and_confirmation(goal: str)
         "更新文档来解释预览检查状态并不要修改任何文件。",
         *[
             f"更新文档，并且不要修改任何测试文件{newline}不要提交。"
+            for newline in ("\n", "\r\n", "\r")
+        ],
+        *[
+            template.format(newline=newline)
+            for template in (
+                "Do not commit{newline}Update the docs.",
+                "不要提交{newline}更新文档。",
+            )
             for newline in ("\n", "\r\n", "\r")
         ],
     ],

@@ -480,6 +480,9 @@ def _executor_explicitly_forbidden(goal: str) -> bool:
 def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
     """Return positive routing text and bounded prohibition facts."""
 
+    # All clause scans share one newline form, including directive prefixes,
+    # description context, and stripping before a later positive request.
+    goal = goal.replace("\r\n", "\n").replace("\r", "\n")
     global_write_veto = _global_write_veto(goal)
     positive_goal = goal
     for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
