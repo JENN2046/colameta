@@ -1801,11 +1801,18 @@ class WorkflowOrchestrator:
         can_dispatch = bool(inspect_result.get("dispatch_ready"))
         next_actions = []
         if can_dispatch:
+            preview_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "preview",
+            }
+            profile_id = str(params.get("profile_id") or "").strip()
+            if profile_id:
+                preview_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "agent_dispatch.preview",
                 "label": "生成派发预览",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "agent_dispatch", "phase": "preview"},
+                "params": preview_params,
                 "risk_level": "preview",
                 "requires_confirmation": True,
             })

@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from runner.functional_mvp_contract import (
     FUNCTIONAL_MVP_POLLING_PROFILE,
     FUNCTIONAL_MVP_PREVIEW_FAILED,
@@ -705,6 +707,33 @@ def test_agent_dispatch_run_now_uses_existing_async_run_once(tmp_path) -> None:
         )
     ]
     assert result.next_actions[0]["params"]["profile_id"] == FUNCTIONAL_MVP_POLLING_PROFILE
+
+
+@pytest.mark.parametrize("profile_id", ["local_codex_commander", ""])
+def test_agent_dispatch_inspect_preserves_only_explicit_profile_in_preview(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    orchestrator = WorkflowOrchestrator.__new__(WorkflowOrchestrator)
+    orchestrator.project_root = str(tmp_path)
+    orchestrator._agent_dispatch_precheck = lambda *args, **kwargs: {
+        "ok": True,
+        "steps": [],
+        "blockers": [],
+        "warnings": [],
+        "inspect_result": {"ok": True, "dispatch_ready": True},
+    }
+    params = {"profile_id": profile_id} if profile_id else {}
+
+    result = orchestrator._agent_dispatch_inspect(params)
+
+    assert result.ok is True
+    assert result.next_actions[0]["action"] == "agent_dispatch.preview"
+    preview_params = result.next_actions[0]["params"]
+    if profile_id:
+        assert preview_params["profile_id"] == profile_id
+    else:
+        assert "profile_id" not in preview_params
 
 
 def test_agent_dispatch_run_preview_preserves_profile_in_executor_and_run_continuation(
