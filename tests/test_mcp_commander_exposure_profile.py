@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from runner.mcp_server import (
     COMMANDER_EXPOSED_TOOLS,
     COMMANDER_PUBLIC_RESPONSE_MINIMIZATION_VERSION,
@@ -495,6 +497,108 @@ def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
     public_artifact = "".join(artifact_pages)
     assert str(project) not in public_artifact
     assert '"advanced_context"' in public_artifact
+    assert json.loads(public_artifact)["tool"] == "get_agent_operator_flow_packet"
+
+    typed_pages = []
+    resource_pages = []
+    expected_metadata = {
+        "artifact_id": first_page.artifact_id,
+        "content_sha256": first_page.content_sha256,
+        "expires_at": first_page.expires_at,
+        "page_count": first_page.page_count,
+    }
+    for page_number in range(1, first_page.page_count + 1):
+        typed = server.call_tool_for_agent(
+            "read_result_artifact",
+            {"artifact_id": artifact_id, "artifact_page": page_number},
+            auth_context=_owner_auth(),
+        )
+        assert typed["ok"] is True
+        typed_page = typed["data"]["facts"]["artifact_page"]
+        assert {key: typed_page[key] for key in expected_metadata} == expected_metadata
+        assert typed_page["page"] == page_number
+        # The typed public contract names its read entrypoint; the resource
+        # page retains the original producer bound to the stored artifact.
+        assert typed_page["tool"] == "read_result_artifact"
+        typed_pages.append(typed_page["content"])
+        resource = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0", "id": page_number, "method": "resources/read",
+                "params": {"uri": f"colameta://result-artifact/{artifact_id}/pages/{page_number}"},
+            },
+            auth_context=_owner_auth(),
+        )
+        assert resource is not None and "error" not in resource
+        resource_page = json.loads(resource["result"]["contents"][0]["text"])
+        assert {key: resource_page[key] for key in expected_metadata} == expected_metadata
+        assert resource_page["page"] == page_number
+        assert resource_page["tool"] == first_page.tool == "get_agent_operator_flow_packet"
+        resource_pages.append(resource_page["content"])
+    assert "".join(typed_pages) == public_artifact
+    assert "".join(resource_pages) == public_artifact
+
+    denied = server.call_tool_for_agent(
+        "read_result_artifact", {"artifact_id": artifact_id, "artifact_page": 1},
+        auth_context=_owner_auth(subject="auth0|other"),
+    )
+    assert denied["ok"] is False
+    denied_resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": f"colameta://result-artifact/{artifact_id}"},
+        },
+        auth_context=_owner_auth(subject="auth0|other"),
+    )
+    assert denied_resource is not None
+    assert denied_resource["error"]["data"]["error_code"] == "owner_principal_required"
+
+    # Possession of an owner artifact handle must not make its producer public
+    # on the narrower Commander surface, even when the stores are shared.
+    commander = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    commander._mcp_result_artifact_store = server._mcp_result_artifact_store
+    hidden_typed = commander.call_tool_for_agent(
+        "read_result_artifact", {"artifact_id": artifact_id, "artifact_page": 1},
+    )
+    assert hidden_typed["ok"] is False
+    assert hidden_typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    hidden_resource = commander._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": f"colameta://result-artifact/{artifact_id}"},
+        },
+    )
+    assert hidden_resource is not None
+    assert hidden_resource["error"]["data"]["error_code"] == "evidence_unavailable"
+
+
+@pytest.mark.parametrize("producer", ["read_result_artifact", "get_agent_operator_flow_packet"])
+def test_owner_artifact_public_reads_still_reject_unsafe_payload(
+    monkeypatch, tmp_path, producer: str,
+) -> None:
+    _install_owner_settings(monkeypatch, tmp_path)
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile=MCP_EXPOSURE_PROFILE_OWNER)
+    private_path = "/home/synthetic-owner/private-artifact.txt"
+    handle = server._mcp_result_artifact_store.put(
+        tool=producer,
+        payload={"ok": True, "tool": producer, "data": {"note": private_path}},
+    )
+    assert handle is not None
+    typed = server.call_tool_for_agent(
+        "read_result_artifact", {"artifact_id": handle.artifact_id, "artifact_page": 1},
+        auth_context=_owner_auth(),
+    )
+    assert typed["ok"] is False
+    assert typed["data"]["error"]["code"] == "EVIDENCE_UNAVAILABLE"
+    resource = server._handle_jsonrpc_request(
+        {
+            "jsonrpc": "2.0", "id": 1, "method": "resources/read",
+            "params": {"uri": f"colameta://result-artifact/{handle.artifact_id}"},
+        },
+        auth_context=_owner_auth(),
+    )
+    assert resource is not None
+    assert resource["error"]["data"]["error_code"] == "evidence_unavailable"
+    assert private_path not in json.dumps([typed, resource])
 
 
 def test_owner_profile_live_principal_denial_log_distinguishes_safe_reason_only(

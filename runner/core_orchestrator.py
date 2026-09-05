@@ -302,7 +302,7 @@ _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:更改|修改|改动|变更)"
         r")"
         r"(?:\s*(?:在)?(?:本次|当前|此)(?:任务|操作|工作流|会话)(?:中|期间|内))?"
-        r"(?=\s*(?:[，。！？；,.!?;]|$))",
+        r"(?=\s*(?:[，。！？；,.!?;\r\n]|$))",
         re.IGNORECASE,
     ),
 )
@@ -405,31 +405,55 @@ def _executor_negation_is_directive(goal: str, start: int) -> bool:
         default=-1,
     )
     prefix = goal[clause_start + 1 : start]
+    coordinators = list(re.finditer(r"\b(?:and|but|however|yet)\s+", prefix, re.IGNORECASE))
+    before = prefix[:coordinators[-1].start()] if coordinators else ""
+    after = prefix[coordinators[-1].end():] if coordinators else ""
+    if (
+        coordinators
+        and re.search(r"\b(?:you|we)\b", after, re.IGNORECASE)
+        and not _executor_description_prefix(after)
+    ):
+        return True
     entity_pattern = (
         r"\b(?:workflows?|modes?|configurations?|environments?|profiles?|pipelines?)"
     )
-    if (
-        re.match(r"no\s+", goal[start:], re.IGNORECASE)
-        and re.search(entity_pattern + r"\s+with\s*$", prefix, re.IGNORECASE)
-    ) or (
-        re.match(r"without\s+", goal[start:], re.IGNORECASE)
-        and re.search(entity_pattern + r"\s*$", prefix, re.IGNORECASE)
+    if re.match(r"no\s+", goal[start:], re.IGNORECASE) and re.search(
+        entity_pattern + r"\s+with\s*$", prefix, re.IGNORECASE,
     ):
         return False
+    if re.match(r"without\s+", goal[start:], re.IGNORECASE):
+        negation = _EXECUTOR_ENGLISH_NEGATION_PATTERN.match(goal, start)
+        suffix = goal[negation.end():] if negation else ""
+        if re.match(
+            r"\s+(?:during|for|in|throughout)\s+"
+            r"(?:this|current|the\s+current)\s+(?:inspection|task)\b",
+            suffix, re.IGNORECASE,
+        ):
+            return True
+        # A query's "how/where" describes what to inspect, not permission to
+        # execute during that inspection. Establish the described entity's
+        # clause instead of recognizing a fixed list of operating verbs.
+        relative_entity = re.search(
+            entity_pattern + r"\s+(?:that|which|where)\b", prefix, re.IGNORECASE,
+        )
+        queried_entity = re.search(
+            r"\b(?:how|why|where)\s+(?:(?:the|these|those)\s+)?"
+            + entity_pattern, prefix, re.IGNORECASE,
+        ) or (
+            re.search(entity_pattern, prefix, re.IGNORECASE)
+            and re.search(r"\b(?:how|why|where)\s+they\b", prefix, re.IGNORECASE)
+        )
+        return not (
+            re.search(entity_pattern + r"\s*$", prefix, re.IGNORECASE)
+            or relative_entity
+            or queried_entity
+        )
     if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(prefix):
         return True
-    coordinators = list(re.finditer(r"\b(?:and|but|however|yet)\s+", prefix, re.IGNORECASE))
     if not coordinators:
         # Keep the existing veto unless a descriptive predicate is identified;
         # a task qualifier such as "for this task you" is still a directive.
         return not _executor_description_prefix(prefix)
-    before = prefix[:coordinators[-1].start()]
-    after = prefix[coordinators[-1].end():]
-    if (
-        re.search(r"\b(?:you|we)\b", after, re.IGNORECASE)
-        and not _executor_description_prefix(after)
-    ):
-        return True
     if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(after) is None:
         return not _executor_description_prefix(prefix)
     if (

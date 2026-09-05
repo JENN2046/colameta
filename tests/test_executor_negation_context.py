@@ -27,6 +27,13 @@ def test_described_executor_prohibition_is_inspection_evidence(negation, templat
     "Inspect modes where there is no executor.",
     "Inspect workflows that operate without running executor.",
     "Inspect workflows to explain how they operate without running executor.",
+    "Inspect how workflows function without running executor.",
+    "Inspect modes that work without launching Codex.",
+    "Inspect workflows that run without executor.",
+    "Inspect workflows that complete without running executor.",
+    "Inspect configurations that were created without an executor.",
+    "Inspect workflows which operate reliably without running executor.",
+    "Inspect workflows where tasks run without executor.",
     "Inspect workflows that inspect state and do not run executor.",
     "Inspect how workflows do not run executor and do not launch Codex.",
 ])
@@ -82,3 +89,30 @@ def test_described_executor_does_not_restore_trailing_mutation_evidence():
     )
     assert "executor" in positive
     assert "edit" not in positive
+
+
+@pytest.mark.parametrize("goal", [
+    "Inspect where executor is installed without running executor.",
+    "Inspect how executor is configured without launching Codex.",
+    "Inspect how executor works without running executor.",
+    "Inspect workflows that run without executor during this inspection.",
+    "Inspect workflows without executor for this task.",
+    "Inspect workflows that run and you must inspect state without running executor.",
+    "Inspect workflows that run but you must inspect state without running executor.",
+    "For this task, inspect how executor is configured without running executor during this inspection.",
+    "Inspect how executor is configured without running executor; only inspect its configuration.",
+])
+def test_query_subject_does_not_cancel_without_execution_constraint(goal):
+    class RejectExecutor(WorkflowOrchestrator):
+        def _auto_preview_executor(self, _params):
+            raise AssertionError("inspection's without constraint must veto preflight")
+
+    result = RejectExecutor(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {"ok": True, "recommended_next_actions": []},
+    )._workflow_auto_preview({"goal": goal})
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.changed_files == []
+    assert result.next_actions == []
+    assert result.requires_confirmation is False

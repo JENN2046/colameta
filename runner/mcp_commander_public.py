@@ -94,17 +94,16 @@ def _commander_result_artifact_tool_is_public(
         if exposed_tool_names is not None
         else None
     )
-    if allowed is not None and value not in allowed:
-        return False
+    if allowed is not None:
+        # An owner surface can expose producer identities that the ordinary
+        # Commander text redactor intentionally hides. Only exact catalog
+        # identities qualify; free text still uses the standard redactor.
+        return value in allowed
     return (
         commander_public_text(
             value,
             max_chars=128,
-            forbidden_tools=(
-                ()
-                if allowed is not None
-                else COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES
-            ),
+            forbidden_tools=COMMANDER_PUBLIC_KNOWN_NONCOMMANDER_TOOL_REFERENCES,
         )
         == value
     )
@@ -394,6 +393,17 @@ class CommanderPublicProjector:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
+                if (
+                    artifact
+                    and clean_key == "tool"
+                    and isinstance(referenced_tool, str)
+                    and referenced_tool in self._exposed_tool_names
+                ):
+                    # Keep the producer identity stable across storage and
+                    # complete-payload read preflight. The mapping's tool was
+                    # checked against this surface's catalog above.
+                    sanitized[clean_key] = referenced_tool
+                    continue
                 if (
                     clean_key in COMMANDER_PUBLIC_CONTEXT_BINDING_KEYS
                     and self._is_context_binding(nested)

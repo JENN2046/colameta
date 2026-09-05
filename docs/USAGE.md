@@ -115,7 +115,8 @@ These global vetoes also accept coordinated or polite directives (`and do not`,
 `Please do not`, `Kindly do not`) and retain their force before a trailing
 prohibited action such as `or commit`. Embedded descriptions such as “explain
 why dry runs inspect state and do not modify files” remain documentation work.
-A newline can end a prohibition clause even when the line has no punctuation.
+A newline (LF, CRLF, or CR) can end an English or Chinese prohibition clause
+even when the line has no punctuation, including before another prohibition.
 “Inspect only.” also applies after a period, exclamation mark, question mark,
 or newline. Chinese global prohibitions accept `并且` and `并` as coordinating
 boundaries, as in “更新文档，并且不要修改任何文件。”; selective prohibitions and
@@ -126,6 +127,9 @@ For executor routing, English negatives such as `must not`, `cannot`, `do not`,
 executor”) retain the read-only executor preflight. Actual task prohibitions such as
 “you must not run executor” still veto that route, including a separate directive
 following a description. This distinction does not authorize executor execution.
+An inspection constraint such as “inspect how executor is configured without
+running executor during this inspection” also vetoes executor preflight; a
+question about configuration does not turn that constraint into subject matter.
 
 If you want to start a controlled optimization round:
 
@@ -216,6 +220,10 @@ are filtered by profile: Reviewer and Source Observer profiles see read and
 evidence routes by default, not executor, commit, push, or stable promotion
 entry points. The packet itself is read-only; it does not create preview
 artifacts, start executors, merge, commit, push, or replace stable.
+On the authenticated owner surface, an oversized `advanced_context` is returned
+as `advanced_context_artifact`. Read its pages through `read_result_artifact`
+or `resources/read`; the producer identity, SHA-256, and expiry remain bound
+to that evidence. Packaging does not widen access to owner-only results.
 
 For ChatGPT Apps connector closeout, read `apps_connector_closeout` from the
 same surfaces. It is a read-only smoke packet for:

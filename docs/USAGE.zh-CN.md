@@ -102,7 +102,7 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 全局禁止语句也支持 `and do not`、`Please do not`、`Kindly do not` 等连接或礼貌前缀，
 并在后接 `or commit` 等并列禁止动作时保持有效。描述 dry run 行为的从句
 （如 “explain why dry runs inspect state and do not modify files”）仍可进入文档流程。
-禁止子句也可由换行结束，无需在行末添加标点。
+中英文禁止子句也可由换行（LF、CRLF 或 CR）结束，无需在行末添加标点，后接另一条禁令也保持有效。
 独立的 “Inspect only.” 在句号、感叹号、问号或换行后同样生效。
 中文全局禁止语句支持 `并且`、`并` 连接，例如“更新文档，并且不要修改任何文件。”；
 局部禁止语句和嵌入的行为描述仍保持各自的作用范围。
@@ -110,6 +110,8 @@ executor 路由会区分 `must not`、`cannot`、`do not`、`without`、`no exec
 如 “inspect workflows that do not run executor” 或 “inspect workflows with no executor”
 中的描述保留只读 executor preflight；“you must not run executor”等真正的任务禁令，
 包括描述之后另起的禁止子句，仍会否决该路由。这一区分不授予执行器运行权限。
+“inspect how executor is configured without running executor during this inspection”
+中的后置约束同样阻止 executor preflight；询问配置方式不会把本次检查的禁止约束变成描述内容。
 
 如果要开一轮受控优化：
 
@@ -177,6 +179,9 @@ dev repo: /home/jenn/src/colameta-dev
 `primary_next_action`、该动作的 gate level，以及给聪明 agent 继续判断的
 `advanced_actions`。这个 packet 本身只读，不创建 preview artifact、不启动 executor、不
 merge、不 commit、不 push、不替换 stable。
+在已认证的 owner surface 中，超限的 `advanced_context` 会转为 `advanced_context_artifact`。
+通过 `read_result_artifact` 或 `resources/read` 读取各页；结果仍绑定真实来源工具、SHA-256 和
+过期时间。打包不会扩大 owner 专属结果的访问范围。
 
 需要一句话私人 App 服务决策时，看 `render_commander_app` 面板内嵌的 readiness。advanced
 endpoint 可直接读 `get_commander_app_manifest(project_name=...)`，Web `/api/v2/status` 则提供

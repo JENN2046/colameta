@@ -1097,6 +1097,11 @@ def test_without_edit_patch_update_subject_matter_is_not_a_global_veto(
         "更新说明文档并且不要修改任何文件。",
         "更新使用说明文档并且不要修改任何文件。",
         "更新文档介绍页并且不要修改任何文件。",
+        *[
+            f"更新文档{prefix}不要修改任何文件{newline}不要提交。"
+            for prefix in ("，", "，并且", "并")
+            for newline in ("\n", "\r\n", "\r")
+        ],
     ],
 )
 def test_global_veto_clause_boundaries_block_preview_and_confirmation(goal: str) -> None:
@@ -1145,6 +1150,10 @@ def test_global_veto_clause_boundaries_block_preview_and_confirmation(goal: str)
         "更新文档，并且不要修改任何测试文件。",
         "更新文档，说明预览检查状态并且不要修改任何文件。",
         "更新文档来解释预览检查状态并不要修改任何文件。",
+        *[
+            f"更新文档，并且不要修改任何测试文件{newline}不要提交。"
+            for newline in ("\n", "\r\n", "\r")
+        ],
     ],
 )
 def test_veto_clause_boundaries_preserve_selective_and_subject_matter_requests(goal: str) -> None:
