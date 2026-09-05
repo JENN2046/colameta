@@ -6349,6 +6349,23 @@ def test_nested_failure_with_partial_errors_still_produces_failed_public_respons
     validate_commander_response(response)
 
 
+def test_deep_nested_failure_is_not_hidden_by_successful_intermediate_result():
+    response = build_commander_response(
+        tool_name="run_mcp_workflow",
+        raw_result={
+            "ok": True,
+            "context_binding": _operation_context_binding(),
+            "result": {"ok": True, "result": {
+                "ok": False, "status": "failed", "error_code": "PATH_NOT_ALLOWED",
+            }},
+        },
+        params={"workflow": "project_status"},
+    )
+    assert response["outcome"] == "blocked"
+    assert response["error"]["code"] == "SCOPE_VIOLATION"
+    validate_commander_response(response)
+
+
 def test_successful_outer_envelope_does_not_hide_a_failed_nested_result() -> None:
     response = build_commander_response(
         tool_name="run_mcp_workflow",

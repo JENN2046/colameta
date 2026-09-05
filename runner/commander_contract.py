@@ -1191,16 +1191,18 @@ def derive_commander_outcome(
     if public_error_code in _FAILED_PUBLIC_ERROR_CODES:
         return "failed"
 
-    statuses = _direct_status_values(containers)
+    authoritative_statuses = _direct_status_values(
+        _authoritative_result_containers(result)
+    )
     if _has_blockers(containers) or public_error_code in _BLOCKED_PUBLIC_ERROR_CODES:
         return "blocked"
-    if statuses & _BLOCKED_STATUS_VALUES:
+    if authoritative_statuses & _BLOCKED_STATUS_VALUES:
         return "blocked"
     if tool_name == "get_apps_connector_smoke_packet" and _connector_smoke_blocked(
         result
     ):
         return "blocked"
-    if "failed" in statuses and tool_name == "manage_validation_run":
+    if "failed" in authoritative_statuses and tool_name == "manage_validation_run":
         return "blocked"
 
     ok = _result_ok(containers)
@@ -1214,7 +1216,7 @@ def derive_commander_outcome(
         not confirmation_was_consumed
         and (
             public_error_code in _CONFIRMATION_PUBLIC_ERROR_CODES
-            or statuses & _CONFIRMATION_STATUS_VALUES
+            or authoritative_statuses & _CONFIRMATION_STATUS_VALUES
             or _requires_confirmation(containers)
             or _has_confirmation_ready_preview(containers)
         )
@@ -1223,12 +1225,12 @@ def derive_commander_outcome(
 
     if (
         public_error_code in _IN_PROGRESS_PUBLIC_ERROR_CODES
-        or statuses & _RUNNING_STATUS_VALUES
+        or authoritative_statuses & _RUNNING_STATUS_VALUES
         or _has_running_flag(containers)
     ):
         return "in_progress"
 
-    if statuses & _FAILED_STATUS_VALUES:
+    if authoritative_statuses & _FAILED_STATUS_VALUES:
         return "failed"
 
     if ok is not True:
@@ -1944,6 +1946,24 @@ def _authoritative_error_code(result: dict[str, Any], *, depth: int = 0) -> str 
     return None
 
 
+def _authoritative_result_containers(
+    result: dict[str, Any], *, depth: int = 0,
+) -> list[dict[str, Any]]:
+    """Collect only current result envelopes, excluding diagnostics/history."""
+
+    if depth > COMMANDER_PUBLIC_MAX_DEPTH:
+        return []
+    containers = _result_containers(result)
+    for container in tuple(containers):
+        for key in ("result", "unified_status"):
+            nested = container.get(key)
+            if isinstance(nested, dict):
+                containers.extend(
+                    _authoritative_result_containers(nested, depth=depth + 1)
+                )
+    return containers
+
+
 def _raw_error_code(result: dict[str, Any]) -> str | None:
     direct_containers = [result]
     data = result.get("data")
@@ -1981,17 +2001,14 @@ def _raw_error_code(result: dict[str, Any]) -> str | None:
                     _CONFIRMATION_PUBLIC_ERROR_CODES | _IN_PROGRESS_PUBLIC_ERROR_CODES
                 ):
                     return current_code
-                nested_containers = _result_containers(nested)
+                nested_containers = _authoritative_result_containers(nested)
                 nested_statuses = _direct_status_values(nested_containers)
                 if (
                     _result_ok(nested_containers) is False
                     or nested_statuses
                     & (_FAILED_STATUS_VALUES | _BLOCKED_STATUS_VALUES)
                 ):
-                    nested_code = _first_nested_string(
-                        nested,
-                        ("error_code",),
-                    )
+                    nested_code = _authoritative_error_code(nested)
                     if nested_code is not None:
                         return nested_code
         return None

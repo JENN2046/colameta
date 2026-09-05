@@ -809,6 +809,22 @@ def test_embedded_write_predicates_are_not_global_directives(
     assert classified["selected_workflow"] == expected_workflow
 
 
+@pytest.mark.parametrize("goal", [
+    "Update the docs to describe workflows that inspect state but do not modify any files.",
+    "Update the docs to describe workflows that inspect state however do not modify any files.",
+])
+def test_contrastive_write_predicate_in_documentation_is_not_global_veto(goal: str) -> None:
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "docs"
+
+
+@pytest.mark.parametrize("goal", [
+    "Update the docs, but you should not modify any files.",
+    "Inspect status; you should not commit.",
+])
+def test_should_not_global_veto_blocks_mutation_preview(goal: str) -> None:
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "project_status"
+
+
 @pytest.mark.parametrize(
     "goal",
     [

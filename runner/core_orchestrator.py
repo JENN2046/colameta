@@ -71,7 +71,7 @@ _GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
     "version": frozenset({"versions", "versioned", "versioning"}),
 }
 
-_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN = r"(?:must\s+not|cannot|can't|cant)"
+_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN = r"(?:must\s+not|should\s+not|cannot|can't|cant)"
 _ENGLISH_NEGATION_PREFIX_PATTERN = (
     rf"(?:do\s+not|don't|dont|never|{_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN})"
 )
@@ -373,7 +373,9 @@ def _without_global_write_veto(goal: str) -> bool:
 def _global_write_veto(goal: str) -> bool:
     for pattern in _GLOBAL_WRITE_VETO_PATTERNS:
         for match in pattern.finditer(goal):
-            if match.group().split(maxsplit=1)[0].lower() == "and":
+            if match.group().split(maxsplit=1)[0].lower() in {
+                "and", "but", "however", "yet",
+            }:
                 # Bare coordination can also occur inside a description, such
                 # as "explain why dry runs inspect and do not modify files".
                 # Punctuation starts a new directive clause, so a preceding
