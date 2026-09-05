@@ -71,8 +71,23 @@ _GOAL_KEYWORD_INFLECTIONS: dict[str, frozenset[str]] = {
     "version": frozenset({"versions", "versioned", "versioning"}),
 }
 
+_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN = r"(?:must\s+not|cannot|can't|cant)"
 _ENGLISH_NEGATION_PREFIX_PATTERN = (
-    r"(?:do\s+not|don't|dont|never|must\s+not|cannot|can't|cant)"
+    rf"(?:do\s+not|don't|dont|never|{_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN})"
+)
+_EXECUTOR_NEGATED_TARGET_PATTERN = (
+    r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
+    r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
+    r"use|using|execute|executing)\s+)?"
+    r"(?:(?:the|any|a|an)\s+)?"
+    r"(?:executor|codex|opencode|pi|execution|execute)\b"
+)
+_EXECUTOR_MODAL_NEGATION_PATTERN = re.compile(
+    rf"\b{_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN}\s+{_EXECUTOR_NEGATED_TARGET_PATTERN}",
+    re.IGNORECASE,
+)
+_EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN = re.compile(
+    r"\s*(?:(?:please|kindly|you|we)\s+)*", re.IGNORECASE,
 )
 
 # ``auto_preview`` may infer a bounded route, but an explicit instruction not
@@ -81,12 +96,7 @@ _ENGLISH_NEGATION_PREFIX_PATTERN = (
 # vetoes for executor routing, not a general natural-language parser.
 _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        rf"\b(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}|without)\s+"
-        r"(?:(?:start(?:ing)?|run(?:ning)?|launch(?:ing)?|invoke(?:ing)?|"
-        r"call(?:ing)?|trigger(?:ing)?|dispatch(?:ing)?|resume(?:ing)?|"
-        r"use|using|execute|executing)\s+)?"
-        r"(?:(?:the|any|a|an)\s+)?"
-        r"(?:executor|codex|opencode|pi|execution|execute)\b",
+        rf"\b(?:do\s+not|don't|dont|never|without)\s+{_EXECUTOR_NEGATED_TARGET_PATTERN}",
         re.IGNORECASE,
     ),
     re.compile(
@@ -361,13 +371,78 @@ def _global_write_veto(goal: str) -> bool:
     return _without_global_write_veto(goal)
 
 
+def _executor_modal_description_prefix(prefix: str) -> bool:
+    if (
+        _EXECUTOR_MODAL_NEGATION_PATTERN.search(prefix)
+        or _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix)
+        or re.search(r"\b(?:which|where|whose|why|how)\b", prefix, re.IGNORECASE)
+    ):
+        return True
+    for relative in re.finditer(r"\bthat\b", prefix, re.IGNORECASE):
+        preceding = re.search(r"\b(\w+)\s*$", prefix[:relative.start()])
+        # "workflows that ..." introduces a predicate; "inspect that
+        # executor" and "of that executor" contain a demonstrative object.
+        if preceding and preceding.group(1).lower() not in {
+            "inspect", "review", "check", "examine", "assess", "analyze",
+            "for", "of", "in", "on", "at", "to", "with", "without",
+        }:
+            return True
+    return False
+
+
+def _executor_modal_is_directive(goal: str, start: int) -> bool:
+    """Recognize a modal prohibition's clause without promoting descriptions."""
+
+    clause_start = max(
+        (goal.rfind(separator, 0, start) for separator in ",.!?;:\r\n"),
+        default=-1,
+    )
+    prefix = goal[clause_start + 1 : start]
+    if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(prefix):
+        return True
+    coordinators = list(re.finditer(r"\b(?:and|but|however|yet)\s+", prefix, re.IGNORECASE))
+    if not coordinators:
+        # Keep the existing veto unless a descriptive predicate is identified;
+        # a task qualifier such as "for this task you" is still a directive.
+        return not _executor_modal_description_prefix(prefix)
+    before = prefix[:coordinators[-1].start()]
+    after = prefix[coordinators[-1].end():]
+    if (
+        re.search(r"\b(?:you|we)\b", after, re.IGNORECASE)
+        and not _executor_modal_description_prefix(after)
+    ):
+        return True
+    if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(after) is None:
+        return not _executor_modal_description_prefix(prefix)
+    # An implicit coordinated subject inherits a preceding description;
+    # explicit "and you/we ..." or a new clause establishes a fresh directive.
+    return not _executor_modal_description_prefix(before)
+
+
+def _executor_explicitly_forbidden(goal: str) -> bool:
+    return any(pattern.search(goal) is not None for pattern in _EXECUTOR_NEGATION_PATTERNS) or any(
+        _executor_modal_is_directive(goal, match.start())
+        for match in _EXECUTOR_MODAL_NEGATION_PATTERN.finditer(goal)
+    )
+
+
 def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
     """Return positive routing text and bounded prohibition facts."""
 
     global_write_veto = _global_write_veto(goal)
     positive_goal = goal
     for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
-        positive_goal = pattern.sub(" ", positive_goal)
+        modal_subjects = {
+            match.start(): match.group()
+            for match in _EXECUTOR_MODAL_NEGATION_PATTERN.finditer(positive_goal)
+            if not _executor_modal_is_directive(positive_goal, match.start())
+        }
+        # Keep the described executor available as inspection evidence, even
+        # when it is mentioned only in the subordinate modal predicate. Keep
+        # just the bounded executor phrase, not arbitrary trailing actions.
+        positive_goal = pattern.sub(
+            lambda match: modal_subjects.get(match.start(), " "), positive_goal,
+        )
     prohibited_action_filtered = positive_goal != goal
     read_only_requested = global_write_veto or any(
         pattern.search(positive_goal) is not None
@@ -5533,10 +5608,7 @@ class WorkflowOrchestrator:
             _positive_routing_evidence(goal_lower)
         )
 
-        executor_explicitly_forbidden = any(
-            pattern.search(goal_lower) is not None
-            for pattern in _EXECUTOR_NEGATION_PATTERNS
-        )
+        executor_explicitly_forbidden = _executor_explicitly_forbidden(goal_lower)
 
         best_workflow = "project_status"
         best_confidence = 0.0

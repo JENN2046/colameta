@@ -103,6 +103,9 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 并在后接 `or commit` 等并列禁止动作时保持有效。描述 dry run 行为的从句
 （如 “explain why dry runs inspect state and do not modify files”）仍可进入文档流程。
 禁止子句也可由换行结束，无需在行末添加标点。
+executor 路由会区分模态否定的语境：如 “inspect workflows that cannot run executor”
+中的描述性谓词保留只读 executor preflight；“you must not run executor”等真正的任务禁令，
+包括描述之后另起的禁止子句，仍会否决该路由。这一区分不授予执行器运行权限。
 
 如果要开一轮受控优化：
 

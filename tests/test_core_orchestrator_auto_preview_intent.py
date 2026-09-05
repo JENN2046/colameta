@@ -1133,3 +1133,100 @@ def test_coordinated_verbs_with_shared_selective_object_remain_routable(
 ) -> None:
     goal = f"Do not {verb} or {action} tests; update the plan instead."
     assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "plan"
+
+
+@pytest.mark.parametrize("modal", ["must not", "cannot", "can't", "cant"])
+@pytest.mark.parametrize(
+    "goal_template",
+    [
+        "Inspect executor behavior for workflows that {modal} run executor.",
+        "Inspect workflows that {modal} run executor.",
+        "Review executor modes which {modal} launch Codex.",
+        "Inspect executor behavior where a workflow {modal} run executor.",
+        "Inspect executor behavior to explain why you {modal} run executor.",
+        "Inspect workflows that {modal} run executor and {modal} launch Codex.",
+        "Inspect workflows that {modal} run executor but {modal} launch Codex.",
+        "Inspect executor modes which inspect state and {modal} run executor.",
+        "Inspect workflows that inspect state and {modal} run executor.",
+        "Inspect executor behavior to explain why we {modal} run executor.",
+        "Inspect why executor workflows {modal} run executor.",
+    ],
+)
+def test_executor_modal_subject_matter_preserves_inspection(
+    modal: str, goal_template: str,
+) -> None:
+    assert WorkflowOrchestrator._classify_goal(
+        goal_template.format(modal=modal)
+    )["selected_workflow"] == "executor"
+
+
+@pytest.mark.parametrize("modal", ["must not", "cannot", "can't", "cant"])
+@pytest.mark.parametrize(
+    "goal_template",
+    [
+        "{modal} run executor. Inspect the project state.",
+        "Please {modal} run executor. Inspect the project state.",
+        "You {modal} run executor; inspect the project state.",
+        "Inspect executor behavior, but you {modal} run executor.",
+        "Inspect executor behavior and {modal} run executor.",
+        "Inspect executor behavior that needs review and you {modal} run executor.",
+        "For this task, we {modal} run executor.",
+        "We {modal} run executor; inspect the project state.",
+        "Inspect executor when ready and {modal} run executor.",
+        "Inspect that executor and {modal} run executor.",
+        "Inspect the behavior of that executor and {modal} run executor.",
+        "Inspect executor behavior but {modal} run executor.",
+        "For this task you {modal} run executor; inspect current state.",
+        "During this review we {modal} run executor.",
+        "You absolutely {modal} run executor; inspect current state.",
+        "Inspect executor behavior and you absolutely {modal} run executor.",
+    ],
+)
+def test_executor_modal_directives_still_veto_preflight(
+    modal: str, goal_template: str,
+) -> None:
+    class RejectExecutorOrchestrator(WorkflowOrchestrator):
+        def _auto_preview_executor(self, _params):
+            raise AssertionError("explicit modal directive must veto executor preflight")
+
+    goal = goal_template.format(modal=modal)
+    result = RejectExecutorOrchestrator(
+        "/tmp/project",
+        analyze_state_fn=lambda _params: {"ok": True, "recommended_next_actions": []},
+    )._workflow_auto_preview({"goal": goal})
+
+    assert result.selected_workflow == "project_status"
+    assert result.preview_ids == []
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Inspect workflows that cannot run executor. You must not run executor.",
+        "Inspect workflows that cannot run executor, but do not run executor.",
+        "Inspect workflows that cannot run executor, and you cannot run executor.",
+        "Inspect workflows that cannot run executor; kindly must not launch Codex.",
+        "Inspect workflows that cannot run executor\nMust not run executor.",
+        "Inspect workflows that cannot run executor but we must not run executor.",
+        "Inspect workflows that cannot run executor, but must not run executor.",
+        "Inspect workflows that cannot run executor and you absolutely must not run executor.",
+    ],
+)
+def test_executor_subject_matter_does_not_hide_a_later_directive(goal: str) -> None:
+    classified = WorkflowOrchestrator._classify_goal(goal)
+    assert classified["selected_workflow"] == "project_status"
+    assert "explicitly forbids executor" in classified["reason"]
+
+
+@pytest.mark.parametrize("modal", ["must not", "cannot"])
+def test_executor_modal_subject_matter_runs_only_read_only_preflight(tmp_path, modal: str) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path), agent_profile_id="web_gpt_commander",
+    ).handle("auto_preview", {"goal": f"Inspect workflows that {modal} run executor."})
+
+    assert result["selected_workflow"] == "executor_preflight"
+    assert result["changed_files"] == []
+    assert result["preview_ids"] == []
+    assert result["requires_confirmation"] is False
+    assert {step["risk_level"] for step in result["steps"]} == {"info"}
