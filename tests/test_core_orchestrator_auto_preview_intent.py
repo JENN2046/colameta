@@ -831,6 +831,45 @@ def test_without_write_subject_matter_is_not_a_global_veto() -> None:
     assert classified["selected_workflow"] == "docs"
 
 
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Update the docs with an example of a tool operating without modifying any files.",
+        "Update the docs about workflows operating without modifying files.",
+        "Update the docs with an example of a workflow running without changing the project.",
+    ],
+)
+def test_without_embedded_in_operating_subject_matter_is_not_a_global_veto(
+    goal: str,
+) -> None:
+    assert WorkflowOrchestrator._classify_goal(goal)["selected_workflow"] == "docs"
+
+
+def test_without_embedded_subject_matter_still_allows_docs_preview() -> None:
+    class DocsManager:
+        def __init__(self) -> None:
+            self.actions: list[str] = []
+
+        def handle(self, action: str, _params: dict[str, object]) -> dict[str, object]:
+            self.actions.append(action)
+            return {"ok": True, "preview_id": "without-subject-preview"} if action.endswith("_preview") else {"ok": True}
+
+    docs = DocsManager()
+    result = WorkflowOrchestrator(
+        "/tmp/project", project_docs_manager=docs,
+    )._workflow_auto_preview(
+        {
+            "goal": "Update the docs with an example of a tool operating without modifying any files.",
+            "file": "README.md",
+            "heading": "Usage",
+            "new_content": "Example behavior.",
+        }
+    )
+    assert result.selected_workflow == "docs_update"
+    assert docs.actions == ["index", "update_section_preview"]
+    assert result.preview_ids == ["without-subject-preview"]
+
+
 def test_filtered_status_goal_does_not_enter_source_onboarding() -> None:
     class RejectOnboardingOrchestrator(WorkflowOrchestrator):
         def _workflow_source_onboarding(

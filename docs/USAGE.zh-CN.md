@@ -55,6 +55,8 @@ consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback 
 聚合调用成功不代表嵌套操作已经结束。权威 `result`/`unified_status` 及其 `data` 包装中
 仍报告 `CONFIRMATION_REQUIRED` 或 `EXECUTOR_RUNNING` 时，Commander 会保留确认或轮询动作。
 单独出现在历史、部分错误诊断中的状态码，不会把成功聚合结果变成未完成操作。
+当 `without modifying/changing...` 描述示例工具或工作流的行为时，它仍属于文档主题；
+独立的 `without` 子句仍会阻止文档预览。
 
 ### Functional MVP 执行器流程
 

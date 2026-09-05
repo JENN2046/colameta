@@ -55,6 +55,9 @@ reports `CONFIRMATION_REQUIRED` or `EXECUTOR_RUNNING`. Commander preserves the
 confirmation or polling action from authoritative `result`/`unified_status`
 envelopes, including their `data` wrappers. Historical and partial-error codes
 alone do not turn a successful aggregate into an unfinished operation.
+When `without modifying/changing...` describes an example tool or workflow's
+behavior, it remains documentation subject matter; a standalone `without`
+clause still vetoes the document preview.
 
 ### Functional MVP executor flow
 

@@ -337,6 +337,11 @@ _ROUTING_SUBJECT_MATTER_PATTERN = re.compile(
     r"documenting|handling|when|where|why|how|that)\b",
     re.IGNORECASE,
 )
+_WITHOUT_SUBJECT_MATTER_PATTERN = re.compile(
+    r"\b(?:operating|running|working|executing|acting|behaving|"
+    r"functioning|used|designed)\s*$",
+    re.IGNORECASE,
+)
 _COORDINATED_ROUTING_SUBJECT_PATTERN = re.compile(
     r"\b(?:to\s+(?:explain|describe|document)|explaining|describing|"
     r"documenting|handling)\b",
@@ -357,7 +362,10 @@ def _without_global_write_veto(goal: str) -> bool:
             default=-1,
         )
         clause_prefix = goal[clause_start + 1 : match.start()]
-        if _ROUTING_SUBJECT_MATTER_PATTERN.search(clause_prefix) is None:
+        if (
+            _ROUTING_SUBJECT_MATTER_PATTERN.search(clause_prefix) is None
+            and _WITHOUT_SUBJECT_MATTER_PATTERN.search(clause_prefix) is None
+        ):
             return True
     return False
 
