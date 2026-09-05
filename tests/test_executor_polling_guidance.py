@@ -60,6 +60,64 @@ class ExecutorPollingGuidanceTests(unittest.TestCase):
         assert result["max_poll_attempts"] == 24
         assert result["polling_exhausted"] is False
 
+    def test_profile_less_status_uses_claimed_profile_for_preview_and_run_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MCPExecutorWorkflowManager(tmpdir)
+            preview_id = "preview_local_profile"
+            claim_result = manager._claims.acquire_claim(
+                preview_id=preview_id,
+                artifact={
+                    "artifact_kind": "run_once",
+                    "profile_id": "local_codex_commander",
+                },
+                provider="codex",
+                execution_mode="run",
+            )
+            run_id = claim_result["run_id"]
+
+            by_preview = manager.handle(
+                "status",
+                {"preview_id": preview_id, "poll_attempt": 4},
+            )
+            by_run = manager.handle(
+                "status",
+                {"run_id": run_id, "poll_attempt": 4},
+            )
+
+        for result in (by_preview, by_run):
+            assert result["polling_profile_id"] == "local_codex_commander"
+            assert result["next_poll_after_seconds"] == 5
+            assert result["max_poll_attempts"] == 24
+            assert result["polling_exhausted"] is False
+
+    def test_explicit_status_profile_overrides_claimed_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MCPExecutorWorkflowManager(tmpdir)
+            preview_id = "preview_explicit_profile"
+            manager._claims.acquire_claim(
+                preview_id=preview_id,
+                artifact={
+                    "artifact_kind": "run_once",
+                    "profile_id": "local_codex_commander",
+                },
+                provider="codex",
+                execution_mode="run",
+            )
+
+            result = manager.handle(
+                "status",
+                {
+                    "preview_id": preview_id,
+                    "profile_id": "web_gpt_commander",
+                    "poll_attempt": 4,
+                },
+            )
+
+        assert result["polling_profile_id"] == "web_gpt_commander"
+        assert result["next_poll_after_seconds"] == 3
+        assert result["max_poll_attempts"] == 3
+        assert result["polling_exhausted"] is True
+
     def test_run_bounded_already_claimed_preserves_polling_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MCPExecutorWorkflowManager(tmpdir)

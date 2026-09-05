@@ -1950,6 +1950,13 @@ class MCPExecutorWorkflowManager:
         preview_id = self._str_param(params.get("preview_id"), default="")
         run_id = self._str_param(params.get("run_id"), default="")
         profile_id = self._str_param(params.get("profile_id"), default="")
+        claim: dict[str, Any] | None = None
+        if preview_id:
+            claim = self._read_preview_claim_record(preview_id)
+        elif run_id:
+            claim = self._find_claim_by_run_id(run_id)
+        if not profile_id and isinstance(claim, dict):
+            profile_id = self._str_param(claim.get("profile_id"), default="")
         poll_attempt_raw = params.get("poll_attempt", 1)
         poll_attempt = bounded_int(poll_attempt_raw, default=1, minimum=1, maximum=9_223_372_036_854_775_807)
         result = status_base_result(poll_attempt, profile_id=profile_id)
@@ -1964,7 +1971,6 @@ class MCPExecutorWorkflowManager:
         )
 
         if preview_id:
-            claim = self._read_preview_claim_record(preview_id)
             result["preview_id"] = preview_id
             self._apply_preview_artifact_context(result, preview_id)
             if isinstance(claim, dict):
@@ -1974,7 +1980,6 @@ class MCPExecutorWorkflowManager:
                 result["terminal"] = False
         elif run_id:
             result["run_id"] = run_id
-            claim = self._find_claim_by_run_id(run_id)
             if isinstance(claim, dict):
                 self._apply_claim_to_status(result, claim)
                 claim_preview_id = str(claim.get("preview_id") or "")
