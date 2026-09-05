@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 import hashlib
 import re
 from typing import Any, Iterable
@@ -393,6 +394,16 @@ class CommanderPublicProjector:
             sanitized: dict[str, Any] = {}
             for key, nested in value.items():
                 clean_key = str(key)
+                if clean_key == "advanced_context_artifact":
+                    # This typed continuation carries a public expiry, unlike
+                    # generic diagnostic timestamps. Preserve only its exact
+                    # contract on a surface exposing the owning tool.
+                    if (
+                        "get_agent_operator_flow_packet" in self._exposed_tool_names
+                        and self._is_result_artifact_descriptor(nested)
+                    ):
+                        sanitized[clean_key] = copy.deepcopy(nested)
+                    continue
                 if (
                     artifact
                     and clean_key == "tool"
@@ -944,6 +955,38 @@ class CommanderPublicProjector:
         if isinstance(value, dict):
             return any(CommanderPublicProjector._value_has_absolute_path(item) for item in value.values())
         return False
+
+    @staticmethod
+    def _is_result_artifact_descriptor(value: Any) -> bool:
+        if not isinstance(value, dict) or set(value) != {
+            "kind", *COMMANDER_PUBLIC_RESULT_ARTIFACT_CONTRACT_FIELDS,
+        }:
+            return False
+        artifact_id = value.get("artifact_id")
+        expiry = value.get("expires_at")
+        digest = value.get("content_sha256")
+        page_count = value.get("page_count")
+        if (
+            value.get("kind") != "result_artifact"
+            or not isinstance(artifact_id, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{16,128}", artifact_id) is None
+            or value.get("resource_uri") != f"colameta://result-artifact/{artifact_id}"
+            or value.get("page_uri_template") != f"colameta://result-artifact/{artifact_id}/pages/{{page}}"
+            or type(page_count) is not int
+            or page_count < 1
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or not isinstance(expiry, str)
+            or re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})",
+                expiry,
+            ) is None
+        ):
+            return False
+        try:
+            return datetime.fromisoformat(expiry.replace("Z", "+00:00")).utcoffset() is not None
+        except ValueError:
+            return False
 
     def _omit_key(
         self,

@@ -202,25 +202,37 @@ _NEGATED_ROUTING_CLAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
 )
+_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN = (
+    r"(?:^|[,.!?;:\r\n]\s*|\b(?:and|but|however|yet|then)\s+)"
+    r"(?:for\s+(?:(?:this|the|current|next)\s+)?"
+    r"(?:task|request|operation|workflow|response)\s+)?"
+    r"(?:(?:please|kindly)\s+)?"
+    r"(?:(?:can|could|would|will)\s+you\s+|"
+    r"(?:you|we)\s+(?:(?:must|should)\s+|need\s+to\s+)?)?"
+    r"(?:(?:please|kindly)\s+)?"
+    r"(?:(?:only|just)\s+)?"
+)
 _READ_ONLY_DIRECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?:^|[,.!?;:\r\n]\s*)read[-\s]only(?=\s*(?:[:.!?]|$))",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:keep|make|treat)\s+"
+        rf"{_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN}(?:keep|make|treat)\s+"
         r"(?:(?:this|the|current|next)\s+)?"
         r"(?:task|request|action|operation|workflow|route|response|inspection)\s+"
         r"read[-\s]only\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:perform|conduct|run)\s+(?:(?:a|an|the)\s+)?"
+        rf"{_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN}"
+        r"(?:perform|conduct|run)\s+(?:(?:a|an|the)\s+)?"
         r"read[-\s]only\s+(?:inspection|review|check|operation|workflow)\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:choose|select|report|return|provide|recommend)\b"
+        rf"{_READ_ONLY_ACTION_DIRECTIVE_PREFIX_PATTERN}"
+        r"(?:choose|select|report|return|provide|recommend)\b"
         r"[^,.!?;\n]{0,96}\bread[-\s]only\s+"
         r"(?:action|route|response|workflow|operation)\b",
         re.IGNORECASE,
@@ -481,6 +493,28 @@ def _executor_explicitly_forbidden(goal: str) -> bool:
     )
 
 
+def _read_only_requested(goal: str) -> bool:
+    for pattern in _READ_ONLY_DIRECTIVE_PATTERNS:
+        for match in pattern.finditer(goal):
+            if re.match(r"and\s+", match.group(), re.IGNORECASE):
+                clause_start = max(
+                    (goal.rfind(separator, 0, match.start()) for separator in ",.!?;:\n"),
+                    default=-1,
+                )
+                prefix = goal[clause_start + 1 : match.start()]
+                # A bare coordinated predicate can inherit the subject of a
+                # description. An explicit addressee or polite request starts
+                # a new directive, as does intervening punctuation.
+                if (
+                    _executor_description_prefix(prefix)
+                    and re.search(r"\b(?:you|we|please|kindly)\b", match.group(), re.IGNORECASE)
+                    is None
+                ):
+                    continue
+            return True
+    return False
+
+
 def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
     """Return positive routing text and bounded prohibition facts."""
 
@@ -502,10 +536,7 @@ def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
             lambda match: executor_subjects.get(match.start(), " "), positive_goal,
         )
     prohibited_action_filtered = positive_goal != goal
-    read_only_requested = global_write_veto or any(
-        pattern.search(positive_goal) is not None
-        for pattern in _READ_ONLY_DIRECTIVE_PATTERNS
-    )
+    read_only_requested = global_write_veto or _read_only_requested(positive_goal)
     return positive_goal, read_only_requested, prohibited_action_filtered
 
 

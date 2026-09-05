@@ -96,6 +96,8 @@ submission materials readiness 与这个 P1 release decision 是有意分开的�
 否定动作列表会在正向转折处停止匹配：例如 “Do not commit but update the docs, and edit the README”
 仍选择文档流程。独立的 “Read-only.” 声明在句号或换行后同样生效，阻止文档、计划、提交和补丁预览；
 把 “read-only mode” 作为文档修改主题描述，不等同于声明本次任务只读。
+同样，“Update the docs to recommend a read-only action for reviewers” 请求的是文档修改；
+独立的任务指令，例如 “but only perform a read-only inspection”，仍会阻止修改预览。
 “do not edit any files”、“do not patch the project”、“do not update the working tree”
 等作用于全部文件或项目的禁止语句，以及相应的 “without editing/patching/updating” 表达，也会阻止修改预览。
 仅限测试或项目配置的禁止语句，不会否决无关的文档工作。
@@ -184,6 +186,8 @@ merge、不 commit、不 push、不替换 stable。
 在已认证的 owner surface 中，超限的 `advanced_context` 会转为 `advanced_context_artifact`。
 通过 `read_result_artifact` 或 `resources/read` 读取各页；结果仍绑定真实来源工具、SHA-256 和
 过期时间。打包不会扩大 owner 专属结果的访问范围。
+初始描述符的 `expires_at` 与分页一致，通过 `call_tool_for_agent` 和 JSON-RPC `tools/call`
+返回或重复执行公共投影时都会保留；仅校验通过的 owner artifact 描述符享有此字段保留规则。
 
 需要一句话私人 App 服务决策时，看 `render_commander_app` 面板内嵌的 readiness。advanced
 endpoint 可直接读 `get_commander_app_manifest(project_name=...)`，Web `/api/v2/status` 则提供

@@ -419,9 +419,11 @@ def test_owner_profile_live_call_failure_log_is_bounded_and_public_error_is_exac
     assert "must-not-appear" not in logs[0]
 
 
+@pytest.mark.parametrize("transport", ["agent", "tools/call"])
 def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
     monkeypatch,
     tmp_path,
+    transport,
 ) -> None:
     _install_owner_settings(monkeypatch, tmp_path)
     project = tmp_path / "project"
@@ -467,11 +469,21 @@ def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
 
     monkeypatch.setattr(server, "_json_char_count", force_advanced_context_overflow)
 
-    result = server.call_tool_for_agent(
-        "get_agent_operator_flow_packet",
-        dict(LIVE_ACCEPTANCE_FIXTURES["operator_flow_default_advanced_context"]),
-        auth_context=_owner_auth(),
-    )
+    arguments = dict(LIVE_ACCEPTANCE_FIXTURES["operator_flow_default_advanced_context"])
+    if transport == "agent":
+        result = server.call_tool_for_agent(
+            "get_agent_operator_flow_packet", arguments, auth_context=_owner_auth(),
+        )
+    else:
+        response = server._handle_jsonrpc_request(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "get_agent_operator_flow_packet", "arguments": arguments},
+            },
+            auth_context=_owner_auth(),
+        )
+        assert response is not None and "error" not in response
+        result = response["result"]["structuredContent"]
 
     assert result["ok"] is True
     assert result.get("error_code") != "PUBLIC_PROJECTION_FAILED"
@@ -507,6 +519,12 @@ def test_owner_operator_flow_default_advanced_context_keeps_primary_navigation(
         "expires_at": first_page.expires_at,
         "page_count": first_page.page_count,
     }
+    descriptor = packet["advanced_context_artifact"]
+    assert {key: descriptor[key] for key in expected_metadata} == expected_metadata
+    assert descriptor["resource_uri"] == f"colameta://result-artifact/{artifact_id}"
+    assert descriptor["page_uri_template"] == descriptor["resource_uri"] + "/pages/{page}"
+    repeated = server._commander_public_project_tool_result(result, arguments)
+    assert repeated["data"]["advanced_context_artifact"] == descriptor
     for page_number in range(1, first_page.page_count + 1):
         typed = server.call_tool_for_agent(
             "read_result_artifact",

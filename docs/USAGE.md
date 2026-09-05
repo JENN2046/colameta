@@ -107,6 +107,9 @@ the docs, and edit the README” still selects the documentation workflow.
 A standalone “Read-only.” directive also applies after a sentence boundary
 or newline; it prevents document, plan, commit, and patch previews. Describing
 “read-only mode” as the subject of a documentation change is not such a directive.
+Likewise, “Update the docs to recommend a read-only action for reviewers”
+requests a document change. A separate task instruction such as “but only
+perform a read-only inspection” still prevents mutation previews.
 Global file/project prohibitions such as “do not edit any files”, “do not patch
 the project”, and “do not update the working tree” also veto mutation previews,
 as do equivalent “without editing/patching/updating” instructions. A prohibition
@@ -227,6 +230,9 @@ On the authenticated owner surface, an oversized `advanced_context` is returned
 as `advanced_context_artifact`. Read its pages through `read_result_artifact`
 or `resources/read`; the producer identity, SHA-256, and expiry remain bound
 to that evidence. Packaging does not widen access to owner-only results.
+The initial descriptor includes the same `expires_at` as its pages, through
+both `call_tool_for_agent` and JSON-RPC `tools/call`, including repeated public
+projection. Only a validated owner artifact descriptor preserves this field.
 
 For ChatGPT Apps connector closeout, read `apps_connector_closeout` from the
 same surfaces. It is a read-only smoke packet for:
