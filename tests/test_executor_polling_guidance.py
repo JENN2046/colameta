@@ -118,6 +118,34 @@ class ExecutorPollingGuidanceTests(unittest.TestCase):
         assert result["max_poll_attempts"] == 3
         assert result["polling_exhausted"] is True
 
+    def test_explicit_run_profile_is_persisted_in_claim_for_later_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = MCPExecutorWorkflowManager(tmpdir)
+            for action, artifact_kind in (
+                ("run_once", "run_once"),
+                ("run_bounded", "run_bounded"),
+            ):
+                with self.subTest(action=action):
+                    claim_result = manager._claim_preview_artifact(
+                        action=action,
+                        preview_id=f"profileless_preview_{action}",
+                        artifact={"artifact_kind": artifact_kind},
+                        provider="codex",
+                        execution_mode="run",
+                        profile_id="local_codex_commander",
+                    )
+
+                    status = manager.handle(
+                        "status",
+                        {"run_id": claim_result["run_id"], "poll_attempt": 4},
+                    )
+
+                    assert claim_result["ok"] is True
+                    assert status["polling_profile_id"] == "local_codex_commander"
+                    assert status["next_poll_after_seconds"] == 5
+                    assert status["max_poll_attempts"] == 24
+                    assert status["polling_exhausted"] is False
+
     def test_run_bounded_already_claimed_preserves_polling_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MCPExecutorWorkflowManager(tmpdir)

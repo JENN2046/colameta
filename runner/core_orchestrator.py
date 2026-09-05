@@ -1947,11 +1947,19 @@ class WorkflowOrchestrator:
         preview_ids = self._extract_preview_ids(result)
         next_actions = []
         if preview_ids:
+            apply_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "apply",
+                "preview_id": preview_ids[0],
+            }
+            profile_id = str(params.get("profile_id") or "").strip()
+            if profile_id:
+                apply_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "agent_dispatch.apply",
                 "label": "应用版本预览",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "agent_dispatch", "phase": "apply", "preview_id": preview_ids[0]},
+                "params": apply_params,
                 "risk_level": "commit",
                 "requires_confirmation": True,
             })
@@ -2016,6 +2024,9 @@ class WorkflowOrchestrator:
         next_actions = []
         if result.get("ok"):
             action_params: dict[str, Any] = {"workflow": "agent_dispatch", "phase": "run_preview"}
+            profile_id = str(params.get("profile_id") or "").strip()
+            if profile_id:
+                action_params["profile_id"] = profile_id
             if isinstance(recommended_version, str) and recommended_version.strip():
                 action_params["version"] = recommended_version.strip()
             next_actions.append({
@@ -2086,6 +2097,9 @@ class WorkflowOrchestrator:
             "provider": provider,
             "execution_mode": "run",
         }
+        profile_id = str(params.get("profile_id") or "").strip()
+        if profile_id:
+            preview_params["profile_id"] = profile_id
         for key in ("model", "executor_session_mode", "security_profile"):
             if params.get(key) is not None:
                 preview_params[key] = params[key]
@@ -2097,11 +2111,19 @@ class WorkflowOrchestrator:
         preview_ids = self._extract_preview_ids(preview)
         next_actions = []
         if preview_ids:
+            run_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "run",
+                "preview_id": preview_ids[0],
+                "provider": provider,
+            }
+            if profile_id:
+                run_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "agent_dispatch.run",
                 "label": "确认启动执行器",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "agent_dispatch", "phase": "run", "preview_id": preview_ids[0], "provider": provider},
+                "params": run_params,
                 "risk_level": "commit",
                 "requires_confirmation": True,
             })
@@ -2141,8 +2163,10 @@ class WorkflowOrchestrator:
             "preview_id": preview_id.strip(),
             "provider": provider,
             "execution_mode": "run",
-            "profile_id": params.get("profile_id", "web_gpt_commander"),
         }
+        profile_id = str(params.get("profile_id") or "").strip()
+        if profile_id:
+            run_params["profile_id"] = profile_id
         for key in ("model", "executor_session_mode", "security_profile"):
             if params.get(key) is not None:
                 run_params[key] = params[key]
@@ -2161,15 +2185,30 @@ class WorkflowOrchestrator:
         )
         next_actions: list[dict[str, Any]] = []
         if run_started:
+            polling_guidance = run_result.get("polling_guidance")
+            guidance_profile_id = (
+                polling_guidance.get("profile_id")
+                if isinstance(polling_guidance, dict)
+                else ""
+            )
+            status_profile_id = str(
+                run_result.get("polling_profile_id")
+                or guidance_profile_id
+                or profile_id
+                or ""
+            ).strip()
+            status_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "status",
+                "run_id": run_result["run_id"],
+            }
+            if status_profile_id:
+                status_params["profile_id"] = status_profile_id
             next_actions.append({
                 "action": "agent_dispatch.status",
                 "label": "查询执行器状态",
                 "tool": "run_mcp_workflow",
-                "params": {
-                    "workflow": "agent_dispatch",
-                    "phase": "status",
-                    "run_id": run_result["run_id"],
-                },
+                "params": status_params,
                 "risk_level": "info",
                 "requires_confirmation": False,
             })
@@ -2199,7 +2238,12 @@ class WorkflowOrchestrator:
         analyze = precheck["analyze"]
         steps = list(precheck["steps"])
         manager = self._executor_workflow_factory(self.project_root)
-        executor_status = manager.handle("status", {})
+        status_params = {
+            key: params[key]
+            for key in ("preview_id", "run_id", "profile_id", "poll_attempt", "provider")
+            if params.get(key) is not None
+        }
+        executor_status = manager.handle("status", status_params)
         git_status = self._source_review.get_git_status(self.project_root)
         steps.append(self._step("agent_dispatch", "manage_executor_workflow", "status", executor_status, STEP_RISK_INFO))
         steps.append(self._step("agent_dispatch", "get_git_status", "read", git_status, STEP_RISK_INFO))

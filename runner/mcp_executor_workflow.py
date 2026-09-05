@@ -5054,6 +5054,7 @@ class MCPExecutorWorkflowManager:
             artifact=artifact,
             provider=provider,
             execution_mode=execution_mode,
+            profile_id=profile_id,
             executor_authority_id=executor_authority_id,
             admission_sha256=admission_sha256,
         )
