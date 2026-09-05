@@ -5084,6 +5084,8 @@ class WorkflowOrchestrator:
             "goal": goal_raw,
             "provider": provider,
         }
+        if "profile_id" in params:
+            classify_params["profile_id"] = params["profile_id"]
         if max_files is not None:
             classify_params["max_files"] = max_files
         if max_chars is not None:

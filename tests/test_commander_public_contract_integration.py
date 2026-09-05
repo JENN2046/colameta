@@ -2317,6 +2317,79 @@ def test_auto_preview_preserves_each_explicit_public_caller_persona(
     assert result["routing"]["profile"]["profile_id"] == profile_id
 
 
+@pytest.mark.parametrize(
+    ("profile_id", "exposure_profile"),
+    [
+        ("web_gpt_commander", "normal"),
+        ("local_codex_commander", "commander"),
+        ("planner_agent", "normal"),
+        ("reviewer_agent", "normal"),
+        ("source_observer", "normal"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("goal_present", "goal"),
+    [(False, None), (True, "")],
+    ids=["goal-omitted", "goal-empty"],
+)
+def test_no_goal_auto_preview_preserves_explicit_public_caller_persona(
+    tmp_path,
+    profile_id: str,
+    exposure_profile: str,
+    goal_present: bool,
+    goal: str | None,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=exposure_profile,
+    )
+    params = {"workflow": "auto_preview", "profile_id": profile_id}
+    if goal_present:
+        params["goal"] = goal
+
+    result = server._tool_run_mcp_workflow(params)
+
+    assert result["selected_workflow"] == "project_status"
+    assert result["agent_state"]["profile_id"] == profile_id
+    assert result["routing"]["profile"]["profile_id"] == profile_id
+    assert result["result"]["agent_state"]["profile_id"] == profile_id
+    assert result["preview_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("exposure_profile", "expected_profile"),
+    [
+        ("commander", "web_gpt_commander"),
+        ("normal", "local_codex_commander"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("goal_present", "goal"),
+    [(False, None), (True, "")],
+    ids=["goal-omitted", "goal-empty"],
+)
+def test_no_goal_auto_preview_keeps_existing_exposure_fallback(
+    tmp_path,
+    exposure_profile: str,
+    expected_profile: str,
+    goal_present: bool,
+    goal: str | None,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=exposure_profile,
+    )
+    params = {"workflow": "auto_preview"}
+    if goal_present:
+        params["goal"] = goal
+
+    result = server._tool_run_mcp_workflow(params)
+
+    assert result["agent_state"]["profile_id"] == expected_profile
+    assert result["routing"]["profile"]["profile_id"] == expected_profile
+    assert result["result"]["agent_state"]["profile_id"] == expected_profile
+
+
 def test_run_mcp_workflow_schema_exposes_navigation_only_profile_id(
     tmp_path,
 ) -> None:
