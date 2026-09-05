@@ -52,6 +52,10 @@
 consumer contract、独立 runtime/cadence 和其他底层诊断属于 loopback advanced endpoint；不要把它们当成
 私人 App 默认公开工具。
 
+聚合调用成功不代表嵌套操作已经结束。权威 `result`/`unified_status` 及其 `data` 包装中
+仍报告 `CONFIRMATION_REQUIRED` 或 `EXECUTOR_RUNNING` 时，Commander 会保留确认或轮询动作。
+单独出现在历史、部分错误诊断中的状态码，不会把成功聚合结果变成未完成操作。
+
 ### Functional MVP 执行器流程
 
 ChatGPT Commander 可以直接启动并追踪现有异步执行器，不需要理解仅 Local Codex 可见的工具名、

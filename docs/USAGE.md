@@ -50,6 +50,12 @@ deployment can legitimately still expose seven. Consumer contracts,
 individual runtime/cadence tools, and other low-level diagnostics belong to the
 loopback advanced endpoint; do not assume they are private-App tools.
 
+A successful aggregate wrapper does not complete a nested operation that still
+reports `CONFIRMATION_REQUIRED` or `EXECUTOR_RUNNING`. Commander preserves the
+confirmation or polling action from authoritative `result`/`unified_status`
+envelopes, including their `data` wrappers. Historical and partial-error codes
+alone do not turn a successful aggregate into an unfinished operation.
+
 ### Functional MVP executor flow
 
 ChatGPT Commander can start and follow the existing asynchronous executor

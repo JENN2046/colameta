@@ -1921,6 +1921,29 @@ def commander_public_error_code_for_result(
     return commander_public_error_code(_raw_error_code(result))
 
 
+def _authoritative_error_code(result: dict[str, Any], *, depth: int = 0) -> str | None:
+    if depth > COMMANDER_PUBLIC_MAX_DEPTH:
+        return None
+    containers = _result_containers(result)
+    code = _first_string(containers, ("error_code",))
+    if code is not None:
+        return code
+    for container in containers:
+        error = container.get("error")
+        if isinstance(error, dict):
+            code = _first_string([error], ("error_code", "code"))
+            if code is not None:
+                return code
+    for container in containers:
+        for key in ("result", "unified_status"):
+            nested = container.get(key)
+            if isinstance(nested, dict):
+                code = _authoritative_error_code(nested, depth=depth + 1)
+                if code is not None:
+                    return code
+    return None
+
+
 def _raw_error_code(result: dict[str, Any]) -> str | None:
     direct_containers = [result]
     data = result.get("data")
@@ -1950,6 +1973,14 @@ def _raw_error_code(result: dict[str, Any]) -> str | None:
                 nested = container.get(key)
                 if not isinstance(nested, dict):
                     continue
+                # Current nonterminal codes are authoritative even when the
+                # aggregate wrapper succeeded. Do not discover them in
+                # diagnostic or history containers.
+                current_code = _authoritative_error_code(nested)
+                if commander_public_error_code(current_code) in (
+                    _CONFIRMATION_PUBLIC_ERROR_CODES | _IN_PROGRESS_PUBLIC_ERROR_CODES
+                ):
+                    return current_code
                 nested_containers = _result_containers(nested)
                 nested_statuses = _direct_status_values(nested_containers)
                 if (
