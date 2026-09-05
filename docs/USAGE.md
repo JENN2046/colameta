@@ -116,9 +116,14 @@ These global vetoes also accept coordinated or polite directives (`and do not`,
 prohibited action such as `or commit`. Embedded descriptions such as “explain
 why dry runs inspect state and do not modify files” remain documentation work.
 A newline can end a prohibition clause even when the line has no punctuation.
-For executor routing, modal negatives such as `must not` and `cannot` in a
-descriptive predicate (for example, “inspect workflows that cannot run executor”)
-retain the read-only executor preflight. Actual task prohibitions such as
+“Inspect only.” also applies after a period, exclamation mark, question mark,
+or newline. Chinese global prohibitions accept `并且` and `并` as coordinating
+boundaries, as in “更新文档，并且不要修改任何文件。”; selective prohibitions and
+embedded descriptions retain their narrower scope.
+For executor routing, English negatives such as `must not`, `cannot`, `do not`,
+`without`, and `no executor` in a descriptive predicate (for example,
+“inspect workflows that do not run executor” or “inspect workflows with no
+executor”) retain the read-only executor preflight. Actual task prohibitions such as
 “you must not run executor” still veto that route, including a separate directive
 following a description. This distinction does not authorize executor execution.
 

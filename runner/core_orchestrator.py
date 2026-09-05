@@ -82,8 +82,10 @@ _EXECUTOR_NEGATED_TARGET_PATTERN = (
     r"(?:(?:the|any|a|an)\s+)?"
     r"(?:executor|codex|opencode|pi|execution|execute)\b"
 )
-_EXECUTOR_MODAL_NEGATION_PATTERN = re.compile(
-    rf"\b{_ENGLISH_MODAL_NEGATION_PREFIX_PATTERN}\s+{_EXECUTOR_NEGATED_TARGET_PATTERN}",
+_EXECUTOR_ENGLISH_NEGATION_PATTERN = re.compile(
+    rf"\b(?:(?:{_ENGLISH_NEGATION_PREFIX_PATTERN}|without)\s+"
+    rf"{_EXECUTOR_NEGATED_TARGET_PATTERN}"
+    rf"|no\s+(?:executor|codex|opencode|pi|execution)\b)",
     re.IGNORECASE,
 )
 _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN = re.compile(
@@ -95,14 +97,6 @@ _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN = re.compile(
 # or the historical short form "exec". These are deliberately narrow safety
 # vetoes for executor routing, not a general natural-language parser.
 _EXECUTOR_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        rf"\b(?:do\s+not|don't|dont|never|without)\s+{_EXECUTOR_NEGATED_TARGET_PATTERN}",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bno\s+(?:executor|codex|opencode|pi|execution)\b",
-        re.IGNORECASE,
-    ),
     re.compile(
         r"(?:不要|别|不需要|无需|禁止|不得)\s*"
         r"(?:启动|运行|执行|调用|触发|调度|恢复|使用)?\s*"
@@ -231,7 +225,7 @@ _READ_ONLY_DIRECTIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:action|route|response|workflow|operation)\b",
         re.IGNORECASE,
     ),
-    re.compile(r"(?:^|[,;:]\s*)inspect\s+only\b", re.IGNORECASE),
+    re.compile(r"(?:^|[,.!?;:\r\n]\s*)inspect\s+only\b", re.IGNORECASE),
 )
 _GLOBAL_WRITE_SCOPE_QUALIFIER_PATTERN = (
     r"(?:\s+(?:during|throughout|within|for|in)\s+"
@@ -254,7 +248,7 @@ _GLOBAL_WRITE_DIRECTIVE_END_PATTERN = (
     rf"|writes?|mutations?)\b)"
 )
 _CHINESE_GLOBAL_WRITE_DIRECTIVE_PREFIX_PATTERN = (
-    r"(?:^|[，。！？；：]\s*|\r?\n\s*|(?:但是|然而|不过|但|却)\s*)"
+    r"(?:^|[，。！？；：,.!?;:]\s*|\r?\n\s*|(?:但是|然而|不过|但|却|并且|并)\s*)"
 )
 _GLOBAL_WRITE_VETO_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
@@ -335,6 +329,9 @@ _COORDINATED_ROUTING_SUBJECT_PATTERN = re.compile(
     r"documenting|handling)\b",
     re.IGNORECASE,
 )
+_CHINESE_COORDINATED_ROUTING_SUBJECT_PATTERN = re.compile(
+    r"(?:^\s*(?:请)?|(?:以|来))(?:说明|解释|描述|介绍|讲解)(?=\S)"
+)
 _MUTATING_AUTO_PREVIEW_WORKFLOWS = frozenset(
     {"docs", "plan", "git_commit", "small_project_patch"}
 )
@@ -367,13 +364,23 @@ def _global_write_veto(goal: str) -> bool:
                 prefix = goal[clause_start + 1 : match.start()]
                 if _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None:
                     continue
+            elif match.group().startswith(("并且", "并")):
+                # Keep descriptive coordinated predicates scoped to their
+                # subject; punctuation starts a separate task directive.
+                clause_start = max(
+                    (goal.rfind(separator, 0, match.start()) for separator in "，。！？；：,.!?;:\r\n"),
+                    default=-1,
+                )
+                prefix = goal[clause_start + 1 : match.start()]
+                if _CHINESE_COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix) is not None:
+                    continue
             return True
     return _without_global_write_veto(goal)
 
 
-def _executor_modal_description_prefix(prefix: str) -> bool:
+def _executor_description_prefix(prefix: str) -> bool:
     if (
-        _EXECUTOR_MODAL_NEGATION_PATTERN.search(prefix)
+        _EXECUTOR_ENGLISH_NEGATION_PATTERN.search(prefix)
         or _COORDINATED_ROUTING_SUBJECT_PATTERN.search(prefix)
         or re.search(r"\b(?:which|where|whose|why|how)\b", prefix, re.IGNORECASE)
     ):
@@ -390,39 +397,59 @@ def _executor_modal_description_prefix(prefix: str) -> bool:
     return False
 
 
-def _executor_modal_is_directive(goal: str, start: int) -> bool:
-    """Recognize a modal prohibition's clause without promoting descriptions."""
+def _executor_negation_is_directive(goal: str, start: int) -> bool:
+    """Recognize an English prohibition without promoting descriptions."""
 
     clause_start = max(
         (goal.rfind(separator, 0, start) for separator in ",.!?;:\r\n"),
         default=-1,
     )
     prefix = goal[clause_start + 1 : start]
+    entity_pattern = (
+        r"\b(?:workflows?|modes?|configurations?|environments?|profiles?|pipelines?)"
+    )
+    if (
+        re.match(r"no\s+", goal[start:], re.IGNORECASE)
+        and re.search(entity_pattern + r"\s+with\s*$", prefix, re.IGNORECASE)
+    ) or (
+        re.match(r"without\s+", goal[start:], re.IGNORECASE)
+        and re.search(entity_pattern + r"\s*$", prefix, re.IGNORECASE)
+    ):
+        return False
     if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(prefix):
         return True
     coordinators = list(re.finditer(r"\b(?:and|but|however|yet)\s+", prefix, re.IGNORECASE))
     if not coordinators:
         # Keep the existing veto unless a descriptive predicate is identified;
         # a task qualifier such as "for this task you" is still a directive.
-        return not _executor_modal_description_prefix(prefix)
+        return not _executor_description_prefix(prefix)
     before = prefix[:coordinators[-1].start()]
     after = prefix[coordinators[-1].end():]
     if (
         re.search(r"\b(?:you|we)\b", after, re.IGNORECASE)
-        and not _executor_modal_description_prefix(after)
+        and not _executor_description_prefix(after)
     ):
         return True
     if _EXECUTOR_DIRECTIVE_LEAD_IN_PATTERN.fullmatch(after) is None:
-        return not _executor_modal_description_prefix(prefix)
+        return not _executor_description_prefix(prefix)
+    if (
+        re.match(r"(?:do\s+not|don't|dont|never|without|no)\s+", goal[start:], re.IGNORECASE)
+        and _EXECUTOR_ENGLISH_NEGATION_PATTERN.search(before) is None
+        and re.search(r"\b(?:that|which|where|whose)\b", before, re.IGNORECASE) is None
+    ):
+        # Without a shared relative subject or an earlier negative predicate,
+        # "and do not/no/without ..." introduces a separate task constraint.
+        # An inspection's purpose ("to explain failures") is not such a subject.
+        return True
     # An implicit coordinated subject inherits a preceding description;
     # explicit "and you/we ..." or a new clause establishes a fresh directive.
-    return not _executor_modal_description_prefix(before)
+    return not _executor_description_prefix(before)
 
 
 def _executor_explicitly_forbidden(goal: str) -> bool:
     return any(pattern.search(goal) is not None for pattern in _EXECUTOR_NEGATION_PATTERNS) or any(
-        _executor_modal_is_directive(goal, match.start())
-        for match in _EXECUTOR_MODAL_NEGATION_PATTERN.finditer(goal)
+        _executor_negation_is_directive(goal, match.start())
+        for match in _EXECUTOR_ENGLISH_NEGATION_PATTERN.finditer(goal)
     )
 
 
@@ -432,16 +459,16 @@ def _positive_routing_evidence(goal: str) -> tuple[str, bool, bool]:
     global_write_veto = _global_write_veto(goal)
     positive_goal = goal
     for pattern in _NEGATED_ROUTING_CLAUSE_PATTERNS:
-        modal_subjects = {
+        executor_subjects = {
             match.start(): match.group()
-            for match in _EXECUTOR_MODAL_NEGATION_PATTERN.finditer(positive_goal)
-            if not _executor_modal_is_directive(positive_goal, match.start())
+            for match in _EXECUTOR_ENGLISH_NEGATION_PATTERN.finditer(positive_goal)
+            if not _executor_negation_is_directive(positive_goal, match.start())
         }
         # Keep the described executor available as inspection evidence, even
-        # when it is mentioned only in the subordinate modal predicate. Keep
+        # when it is mentioned only in the subordinate negative predicate. Keep
         # just the bounded executor phrase, not arbitrary trailing actions.
         positive_goal = pattern.sub(
-            lambda match: modal_subjects.get(match.start(), " "), positive_goal,
+            lambda match: executor_subjects.get(match.start(), " "), positive_goal,
         )
     prohibited_action_filtered = positive_goal != goal
     read_only_requested = global_write_veto or any(
