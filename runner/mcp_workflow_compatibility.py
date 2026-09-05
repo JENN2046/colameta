@@ -113,6 +113,8 @@ class WorkflowCompatibilityHost(Protocol):
 
     def _create_mcp_workflow_router(self) -> Any: ...
 
+    def _get_exposed_tool_names(self, profile: str | None = None) -> set[str]: ...
+
     def _normalize_recommended_actions_for_visible_tools(self, actions: list[Any]) -> list[Any]: ...
 
     def _record_workflow_if_needed(
@@ -518,6 +520,9 @@ class MCPWorkflowCompatibilityService:
                 result,
                 source_tool="run_mcp_workflow",
                 profile_id=agent_profile_id,
+                visible_tool_names=self._host._get_exposed_tool_names(
+                    self._host.mcp_exposure_profile
+                ),
             )
         return self._host._attach_operation_context_binding(
             result,

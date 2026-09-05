@@ -929,6 +929,17 @@ def test_workflow_continuation_names_the_real_consumer_and_action() -> None:
     assert continuation["allowed_next_actions"] == ["get"]
 
 
+def test_workflow_continuation_is_omitted_when_consumer_is_not_exposed() -> None:
+    continuation = typed_continuation_projection(
+        {"workflow_id": "workflow_1"},
+        source_tool="run_mcp_workflow",
+        profile_id="local_codex_commander",
+        visible_tool_names={"run_mcp_workflow", "analyze_project_state"},
+    )
+
+    assert continuation is None
+
+
 def test_commander_omits_unreachable_workflow_record_continuation(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
 
@@ -1033,17 +1044,21 @@ def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None
     assert verify_agent_projection(result) == []
 
 
+@pytest.mark.parametrize("profile_id", ["web_gpt_commander", "local_codex_commander"])
 def test_commander_status_only_auto_preview_omits_unreachable_workflow_continuation(
     tmp_path,
+    profile_id: str,
 ) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     server._create_mcp_workflow_router = lambda: MCPWorkflowRouter(  # type: ignore[method-assign]
         str(tmp_path),
         analyze_state_fn=lambda _params: {"ok": True},
-        agent_profile_id="web_gpt_commander",
+        agent_profile_id=profile_id,
     )
 
-    result = server._tool_run_mcp_workflow({"workflow": "auto_preview"})
+    result = server._tool_run_mcp_workflow(
+        {"workflow": "auto_preview", "profile_id": profile_id}
+    )
 
     assert isinstance(result["workflow_id"], str)
     assert result["continuation"] is None

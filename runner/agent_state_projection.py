@@ -650,6 +650,7 @@ def typed_continuation_projection(
     *,
     source_tool: str,
     profile_id: str | None = None,
+    visible_tool_names: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
     found = _walk_for_handle(response)
     if found is None:
@@ -666,6 +667,13 @@ def typed_continuation_projection(
         "does_not_grant_authority": True,
     }
     allowed_tools = _profile_allowed_tools(profile_id)
+    if visible_tool_names is not None:
+        visible_tools = frozenset(visible_tool_names)
+        allowed_tools = (
+            visible_tools
+            if allowed_tools is None
+            else allowed_tools.intersection(visible_tools)
+        )
     if kind == "workflow_run":
         if allowed_tools is not None and "manage_workflow_run" not in allowed_tools:
             return None
@@ -1064,6 +1072,7 @@ def add_agent_state_projection(
         projected,
         source_tool=source_tool,
         profile_id=profile_id,
+        visible_tool_names=visible_tool_names,
     )
     sources = _projection_sources(projected)
     error_code = _first_text(sources, "error_code")
