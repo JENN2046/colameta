@@ -5662,23 +5662,34 @@ class WorkflowOrchestrator:
         goal_text = str(params.get("goal") or "").lower()
         bounded_keywords = ("bounded", "loop", "循环", "多轮", "trusted")
         use_bounded_preview = any(keyword in goal_text for keyword in bounded_keywords)
+        profile_id = params.get("profile_id")
         if use_bounded_preview:
+            action_params = {"action": "run_bounded_preview", "provider": provider}
+            if isinstance(profile_id, str) and profile_id.strip():
+                action_params["profile_id"] = profile_id.strip()
             next_action = {
                 "action": "manage_executor_workflow.run_bounded_preview",
                 "label": "生成 bounded loop 预览",
                 "reason": "使用 manage_executor_workflow action=run_bounded_preview 生成 bounded loop 预览，不直接运行。",
                 "tool": "manage_executor_workflow",
-                "params": {"action": "run_bounded_preview", "provider": provider},
+                "params": action_params,
                 "risk_level": "preview",
                 "requires_confirmation": True,
             }
         else:
+            action_params = {
+                "action": "run_once_preview",
+                "provider": provider,
+                "execution_mode": "run",
+            }
+            if isinstance(profile_id, str) and profile_id.strip():
+                action_params["profile_id"] = profile_id.strip()
             next_action = {
                 "action": "manage_executor_workflow.run_once_preview",
                 "label": "生成执行器运行预览",
                 "reason": "使用 manage_executor_workflow action=run_once_preview 生成执行器运行预览，不直接运行。",
                 "tool": "manage_executor_workflow",
-                "params": {"action": "run_once_preview", "provider": provider, "execution_mode": "run"},
+                "params": action_params,
                 "risk_level": "preview",
                 "requires_confirmation": True,
             }
