@@ -175,6 +175,36 @@ def test_read_only_executor_inspection_keeps_the_executor_preflight_route() -> N
     assert classified["selected_workflow"] == "executor"
 
 
+def test_auto_preview_preserves_public_profile_for_nested_state_analysis(
+    tmp_path,
+) -> None:
+    analyzed_params: dict[str, object] = {}
+
+    def analyze_state(params):
+        analyzed_params.update(params)
+        return {
+            "ok": True,
+            "agent_state": {"profile_id": "local_codex_commander"},
+            "recommended_next_actions": [],
+        }
+
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        analyze_state_fn=analyze_state,
+        agent_profile_id="web_gpt_commander",
+    ).handle(
+        "auto_preview",
+        {
+            "goal": "Inspect the current project state and report the next read-only action.",
+            "profile_id": "web_gpt_commander",
+        },
+    )
+
+    assert analyzed_params["profile_id"] == "web_gpt_commander"
+    assert result["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert result["routing"]["profile"]["profile_id"] == "web_gpt_commander"
+
+
 def test_read_only_executor_inspection_runs_only_the_bounded_preflight(
     tmp_path,
 ) -> None:
@@ -191,6 +221,47 @@ def test_read_only_executor_inspection_runs_only_the_bounded_preflight(
     assert result["preview_ids"] == []
     assert result["requires_confirmation"] is False
     assert {step["risk_level"] for step in result["steps"]} == {"info"}
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_action"),
+    [
+        (
+            "Run the executor for this task",
+            "manage_executor_workflow.run_once_preview",
+        ),
+        (
+            "Run a bounded executor loop for this task",
+            "manage_executor_workflow.run_bounded_preview",
+        ),
+    ],
+)
+def test_executor_auto_preview_carries_profile_into_follow_up_actions(
+    tmp_path,
+    goal: str,
+    expected_action: str,
+) -> None:
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        agent_profile_id="web_gpt_commander",
+    ).handle(
+        "auto_preview",
+        {
+            "goal": goal,
+            "profile_id": "local_codex_commander",
+        },
+    )
+
+    assert result["selected_workflow"] == "executor_preflight"
+    assert result["agent_state"]["profile_id"] == "local_codex_commander"
+    action = result["next_actions"][0]
+    assert action["action"] == expected_action
+    assert action["params"]["profile_id"] == "local_codex_commander"
+    assert result["primary_next_action"]["required_arguments"]["profile_id"] == (
+        "local_codex_commander"
+    )
+    assert result["authority"]["projection_is_navigation_only"] is True
+    assert result["primary_next_action"]["does_not_grant_authority"] is True
 
 
 def test_executor_run_negation_still_overrides_read_only_executor_words() -> None:

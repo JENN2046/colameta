@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from runner.functional_mvp_contract import (
     FUNCTIONAL_MVP_POLLING_PROFILE,
     FUNCTIONAL_MVP_PREVIEW_FAILED,
@@ -701,6 +703,135 @@ def test_agent_dispatch_run_now_uses_existing_async_run_once(tmp_path) -> None:
                 "execution_mode": "run",
                 "profile_id": FUNCTIONAL_MVP_POLLING_PROFILE,
                 "security_profile": FUNCTIONAL_MVP_SECURITY_PROFILE,
+            },
+        )
+    ]
+    assert result.next_actions[0]["params"]["profile_id"] == FUNCTIONAL_MVP_POLLING_PROFILE
+
+
+@pytest.mark.parametrize("profile_id", ["local_codex_commander", ""])
+def test_agent_dispatch_inspect_preserves_only_explicit_profile_in_preview(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    orchestrator = WorkflowOrchestrator.__new__(WorkflowOrchestrator)
+    orchestrator.project_root = str(tmp_path)
+    orchestrator._agent_dispatch_precheck = lambda *args, **kwargs: {
+        "ok": True,
+        "steps": [],
+        "blockers": [],
+        "warnings": [],
+        "inspect_result": {"ok": True, "dispatch_ready": True},
+    }
+    params = {"profile_id": profile_id} if profile_id else {}
+
+    result = orchestrator._agent_dispatch_inspect(params)
+
+    assert result.ok is True
+    assert result.next_actions[0]["action"] == "agent_dispatch.preview"
+    preview_params = result.next_actions[0]["params"]
+    if profile_id:
+        assert preview_params["profile_id"] == profile_id
+    else:
+        assert "profile_id" not in preview_params
+
+
+def test_agent_dispatch_run_preview_preserves_profile_in_executor_and_run_continuation(
+    tmp_path,
+) -> None:
+    manager_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class PreviewManager:
+        def __init__(self, project_root: str) -> None:
+            assert project_root == str(tmp_path)
+
+        def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+            manager_calls.append((action, dict(params)))
+            if action == "preflight":
+                return {
+                    "ok": True,
+                    "preflight_blocked": False,
+                    "current_version": "v1",
+                }
+            assert action == "run_once_preview"
+            return {
+                "ok": True,
+                "preview_id": "executor_preview_local_123",
+            }
+
+    orchestrator = WorkflowOrchestrator.__new__(WorkflowOrchestrator)
+    orchestrator.project_root = str(tmp_path)
+    orchestrator._executor_workflow_factory = PreviewManager
+    orchestrator._agent_dispatch_precheck = lambda *args, **kwargs: {
+        "ok": True,
+        "provider": "codex",
+        "steps": [],
+        "inspect_result": {},
+    }
+    orchestrator._tag_agent_dispatch_executor_preview = lambda *args: None
+
+    result = orchestrator._agent_dispatch_run_preview(
+        {
+            "provider": "codex",
+            "profile_id": "local_codex_commander",
+        }
+    )
+
+    assert result.ok is True
+    assert manager_calls[-1] == (
+        "run_once_preview",
+        {
+            "provider": "codex",
+            "execution_mode": "run",
+            "profile_id": "local_codex_commander",
+        },
+    )
+    assert result.next_actions[0]["params"]["profile_id"] == "local_codex_commander"
+
+
+def test_agent_dispatch_status_forwards_run_and_profile_context(tmp_path) -> None:
+    manager_calls: list[tuple[str, dict[str, Any]]] = []
+
+    class StatusManager:
+        def __init__(self, project_root: str) -> None:
+            assert project_root == str(tmp_path)
+
+        def handle(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+            manager_calls.append((action, dict(params)))
+            return {"ok": True, "polling_profile_id": params.get("profile_id")}
+
+    class SourceReview:
+        @staticmethod
+        def get_git_status(project_root: str) -> dict[str, Any]:
+            assert project_root == str(tmp_path)
+            return {"ok": True}
+
+    orchestrator = WorkflowOrchestrator.__new__(WorkflowOrchestrator)
+    orchestrator.project_root = str(tmp_path)
+    orchestrator._executor_workflow_factory = StatusManager
+    orchestrator._source_review = SourceReview()
+    orchestrator._agent_dispatch_precheck = lambda *args, **kwargs: {
+        "ok": True,
+        "analyze": {"ok": True},
+        "steps": [],
+    }
+
+    result = orchestrator._agent_dispatch_status(
+        {
+            "run_id": RUN_ID,
+            "profile_id": "local_codex_commander",
+            "poll_attempt": 4,
+        }
+    )
+
+    assert result.ok is True
+    assert manager_calls == [
+        (
+            "status",
+            {
+                "run_id": RUN_ID,
+                "profile_id": "local_codex_commander",
+                "poll_attempt": 4,
             },
         )
     ]

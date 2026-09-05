@@ -76,6 +76,7 @@ class ExecutorRunClaimStore:
         artifact: dict[str, Any],
         provider: str,
         execution_mode: str,
+        profile_id: str | None = None,
         executor_authority_id: str | None = None,
         admission_sha256: str | None = None,
     ) -> dict[str, Any]:
@@ -126,6 +127,9 @@ class ExecutorRunClaimStore:
             claim_record["executor_authority_id"] = executor_authority_id.strip()
         if isinstance(admission_sha256, str) and admission_sha256.strip():
             claim_record["admission_sha256"] = admission_sha256.strip()
+        effective_profile_id = str(profile_id or artifact.get("profile_id") or "").strip()
+        if effective_profile_id:
+            claim_record["profile_id"] = effective_profile_id
         claim_record.update(work_item_binding)
         try:
             fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)

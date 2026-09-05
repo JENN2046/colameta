@@ -929,6 +929,17 @@ def test_workflow_continuation_names_the_real_consumer_and_action() -> None:
     assert continuation["allowed_next_actions"] == ["get"]
 
 
+def test_workflow_continuation_is_omitted_when_consumer_is_not_exposed() -> None:
+    continuation = typed_continuation_projection(
+        {"workflow_id": "workflow_1"},
+        source_tool="run_mcp_workflow",
+        profile_id="local_codex_commander",
+        visible_tool_names={"run_mcp_workflow", "analyze_project_state"},
+    )
+
+    assert continuation is None
+
+
 def test_commander_omits_unreachable_workflow_record_continuation(tmp_path) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
 
@@ -1033,17 +1044,21 @@ def test_auto_preview_exposes_selected_workflow_and_projection(tmp_path) -> None
     assert verify_agent_projection(result) == []
 
 
+@pytest.mark.parametrize("profile_id", ["web_gpt_commander", "local_codex_commander"])
 def test_commander_status_only_auto_preview_omits_unreachable_workflow_continuation(
     tmp_path,
+    profile_id: str,
 ) -> None:
     server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
     server._create_mcp_workflow_router = lambda: MCPWorkflowRouter(  # type: ignore[method-assign]
         str(tmp_path),
         analyze_state_fn=lambda _params: {"ok": True},
-        agent_profile_id="web_gpt_commander",
+        agent_profile_id=profile_id,
     )
 
-    result = server._tool_run_mcp_workflow({"workflow": "auto_preview"})
+    result = server._tool_run_mcp_workflow(
+        {"workflow": "auto_preview", "profile_id": profile_id}
+    )
 
     assert isinstance(result["workflow_id"], str)
     assert result["continuation"] is None
@@ -1068,6 +1083,58 @@ def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_
         agent_profile_id="local_codex_commander",
     ).handle("auto_preview", {"goal": "Run the executor for this task"})
     assert local_result["primary_next_action"]["tool"] == "manage_executor_workflow"
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    ["web_gpt_commander", "reviewer_agent", "source_observer"],
+)
+def test_auto_preview_filters_all_executor_actions_by_selected_profile(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "profile_id": profile_id,
+        }
+    )
+
+    assert result["selected_workflow"] == "executor_preflight"
+    assert result["primary_next_action"] is None
+    assert all(
+        action.get("tool") != "manage_executor_workflow"
+        for action in result["next_actions"]
+        if isinstance(action, dict)
+    )
+    nested_result = result.get("result")
+    if isinstance(nested_result, dict):
+        assert all(
+            action.get("tool") != "manage_executor_workflow"
+            for action in nested_result.get("next_actions", [])
+            if isinstance(action, dict)
+        )
+
+
+def test_normal_exposure_keeps_visible_local_executor_follow_up(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "profile_id": "local_codex_commander",
+        }
+    )
+
+    assert result["agent_state"]["profile_id"] == "local_codex_commander"
+    assert result["primary_next_action"]["tool"] == "manage_executor_workflow"
+    assert result["primary_next_action"]["required_arguments"]["profile_id"] == (
+        "local_codex_commander"
+    )
 
 
 def test_registered_project_auto_preview_preserves_serving_commander_profile(
@@ -1152,6 +1219,28 @@ def test_registered_project_auto_preview_preserves_serving_commander_profile(
     assert facts["agent_state"]["project"] == "demo-project"
     assert facts.get("primary_next_action") is None
     assert "manage_executor_workflow" not in json.dumps(response, sort_keys=True)
+
+    local_response = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "project_name": "demo-project",
+            "profile_id": "local_codex_commander",
+        },
+    )
+
+    assert local_response["ok"] is True
+    assert local_response.get("error_code") != "INTERNAL_RESULT_INVALID"
+    assert local_response["data"]["outcome"] == "completed"
+    local_facts = local_response["data"]["facts"]
+    assert local_facts["selected_workflow"] == "executor_preflight"
+    assert local_facts["agent_state"]["profile_id"] == "local_codex_commander"
+    assert local_facts.get("primary_next_action") is None
+    assert "manage_executor_workflow" not in json.dumps(
+        local_response,
+        sort_keys=True,
+    )
 
 
 @pytest.mark.parametrize(

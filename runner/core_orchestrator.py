@@ -1801,11 +1801,18 @@ class WorkflowOrchestrator:
         can_dispatch = bool(inspect_result.get("dispatch_ready"))
         next_actions = []
         if can_dispatch:
+            preview_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "preview",
+            }
+            profile_id = str(params.get("profile_id") or "").strip()
+            if profile_id:
+                preview_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "agent_dispatch.preview",
                 "label": "生成派发预览",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "agent_dispatch", "phase": "preview"},
+                "params": preview_params,
                 "risk_level": "preview",
                 "requires_confirmation": True,
             })
@@ -1947,11 +1954,19 @@ class WorkflowOrchestrator:
         preview_ids = self._extract_preview_ids(result)
         next_actions = []
         if preview_ids:
+            apply_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "apply",
+                "preview_id": preview_ids[0],
+            }
+            profile_id = str(params.get("profile_id") or "").strip()
+            if profile_id:
+                apply_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "agent_dispatch.apply",
                 "label": "应用版本预览",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "agent_dispatch", "phase": "apply", "preview_id": preview_ids[0]},
+                "params": apply_params,
                 "risk_level": "commit",
                 "requires_confirmation": True,
             })
@@ -2016,6 +2031,9 @@ class WorkflowOrchestrator:
         next_actions = []
         if result.get("ok"):
             action_params: dict[str, Any] = {"workflow": "agent_dispatch", "phase": "run_preview"}
+            profile_id = str(params.get("profile_id") or "").strip()
+            if profile_id:
+                action_params["profile_id"] = profile_id
             if isinstance(recommended_version, str) and recommended_version.strip():
                 action_params["version"] = recommended_version.strip()
             next_actions.append({
@@ -2086,6 +2104,9 @@ class WorkflowOrchestrator:
             "provider": provider,
             "execution_mode": "run",
         }
+        profile_id = str(params.get("profile_id") or "").strip()
+        if profile_id:
+            preview_params["profile_id"] = profile_id
         for key in ("model", "executor_session_mode", "security_profile"):
             if params.get(key) is not None:
                 preview_params[key] = params[key]
@@ -2097,11 +2118,19 @@ class WorkflowOrchestrator:
         preview_ids = self._extract_preview_ids(preview)
         next_actions = []
         if preview_ids:
+            run_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "run",
+                "preview_id": preview_ids[0],
+                "provider": provider,
+            }
+            if profile_id:
+                run_params["profile_id"] = profile_id
             next_actions.append({
                 "action": "agent_dispatch.run",
                 "label": "确认启动执行器",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "agent_dispatch", "phase": "run", "preview_id": preview_ids[0], "provider": provider},
+                "params": run_params,
                 "risk_level": "commit",
                 "requires_confirmation": True,
             })
@@ -2141,8 +2170,10 @@ class WorkflowOrchestrator:
             "preview_id": preview_id.strip(),
             "provider": provider,
             "execution_mode": "run",
-            "profile_id": params.get("profile_id", "web_gpt_commander"),
         }
+        profile_id = str(params.get("profile_id") or "").strip()
+        if profile_id:
+            run_params["profile_id"] = profile_id
         for key in ("model", "executor_session_mode", "security_profile"):
             if params.get(key) is not None:
                 run_params[key] = params[key]
@@ -2161,15 +2192,30 @@ class WorkflowOrchestrator:
         )
         next_actions: list[dict[str, Any]] = []
         if run_started:
+            polling_guidance = run_result.get("polling_guidance")
+            guidance_profile_id = (
+                polling_guidance.get("profile_id")
+                if isinstance(polling_guidance, dict)
+                else ""
+            )
+            status_profile_id = str(
+                run_result.get("polling_profile_id")
+                or guidance_profile_id
+                or profile_id
+                or ""
+            ).strip()
+            status_params: dict[str, Any] = {
+                "workflow": "agent_dispatch",
+                "phase": "status",
+                "run_id": run_result["run_id"],
+            }
+            if status_profile_id:
+                status_params["profile_id"] = status_profile_id
             next_actions.append({
                 "action": "agent_dispatch.status",
                 "label": "查询执行器状态",
                 "tool": "run_mcp_workflow",
-                "params": {
-                    "workflow": "agent_dispatch",
-                    "phase": "status",
-                    "run_id": run_result["run_id"],
-                },
+                "params": status_params,
                 "risk_level": "info",
                 "requires_confirmation": False,
             })
@@ -2199,7 +2245,12 @@ class WorkflowOrchestrator:
         analyze = precheck["analyze"]
         steps = list(precheck["steps"])
         manager = self._executor_workflow_factory(self.project_root)
-        executor_status = manager.handle("status", {})
+        status_params = {
+            key: params[key]
+            for key in ("preview_id", "run_id", "profile_id", "poll_attempt", "provider")
+            if params.get(key) is not None
+        }
+        executor_status = manager.handle("status", status_params)
         git_status = self._source_review.get_git_status(self.project_root)
         steps.append(self._step("agent_dispatch", "manage_executor_workflow", "status", executor_status, STEP_RISK_INFO))
         steps.append(self._step("agent_dispatch", "get_git_status", "read", git_status, STEP_RISK_INFO))
@@ -3615,6 +3666,16 @@ class WorkflowOrchestrator:
             missing.append("acceptance_commands")
         return missing
 
+    @staticmethod
+    def _prompt_to_plan_continuation_params(
+        params: dict[str, Any],
+        **continuation_params: Any,
+    ) -> dict[str, Any]:
+        profile_id = str(params.get("profile_id") or "").strip()
+        if profile_id:
+            continuation_params["profile_id"] = profile_id
+        return continuation_params
+
     def _prompt_to_plan_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         version = params.get("version")
         content = params.get("content")
@@ -3644,7 +3705,12 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.apply_all",
                 "label": "保存 prompt 并登记到 plan（一键完成）",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "apply_all", "preview_id": preview_ids[0]},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="apply_all",
+                    preview_id=preview_ids[0],
+                ),
                 "risk_level": "write",
                 "requires_confirmation": True,
             })
@@ -3736,7 +3802,12 @@ class WorkflowOrchestrator:
                     "action": "prompt_to_plan.plan_preview",
                     "label": "从 prompt 文件生成 plan patch preview",
                     "tool": "run_mcp_workflow",
-                    "params": {"workflow": "prompt_to_plan", "phase": "plan_preview", "prompt_file": prompt_file},
+                    "params": self._prompt_to_plan_continuation_params(
+                        params,
+                        workflow="prompt_to_plan",
+                        phase="plan_preview",
+                        prompt_file=prompt_file,
+                    ),
                     "risk_level": "preview",
                     "requires_confirmation": True,
                 })
@@ -3771,7 +3842,12 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.plan_apply",
                 "label": "应用 plan patch",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "plan_apply", "patch_id": preview_ids[0]},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="plan_apply",
+                    patch_id=preview_ids[0],
+                ),
                 "risk_level": "commit",
                 "requires_confirmation": True,
             })
@@ -3799,7 +3875,11 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.run_preview",
                 "label": "生成执行器运行预览（推荐）",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "run_preview"},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="run_preview",
+                ),
                 "risk_level": "preview",
                 "requires_confirmation": False,
             })
@@ -3881,7 +3961,11 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.run_preview",
                 "label": "生成执行器运行预览（推荐）",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "run_preview"},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="run_preview",
+                ),
                 "risk_level": "preview",
                 "requires_confirmation": False,
             }],
@@ -3919,6 +4003,7 @@ class WorkflowOrchestrator:
         )
     def _prompt_to_plan_run_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         provider = self._normalize_provider(params.get("provider")) or "codex"
+        profile_id = str(params.get("profile_id") or "").strip()
         manager = self._executor_workflow_factory(self.project_root)
         steps: list[dict[str, Any]] = []
         preflight = manager.handle("preflight", {"provider": provider, "execution_mode": "run"})
@@ -3934,18 +4019,31 @@ class WorkflowOrchestrator:
                 result=preflight,
                 phase="run_preview",
             )
-        preview = manager.handle("run_once_preview", {"provider": provider, "execution_mode": "run"})
+        preview_params: dict[str, Any] = {
+            "provider": provider,
+            "execution_mode": "run",
+        }
+        if profile_id:
+            preview_params["profile_id"] = profile_id
+        preview = manager.handle("run_once_preview", preview_params)
         steps.append(self._step("prompt_to_plan", "manage_executor_workflow", "run_once_preview",
                                 preview, STEP_RISK_PREVIEW))
         preview_id_value = preview.get("preview_id")
         preview_ids = self._extract_preview_ids(preview)
         next_actions = []
         if preview_ids:
+            run_params = self._prompt_to_plan_continuation_params(
+                params,
+                workflow="prompt_to_plan",
+                phase="run",
+                preview_id=preview_ids[0],
+                provider=provider,
+            )
             next_actions.append({
                 "action": "prompt_to_plan.run",
                 "label": "确认运行执行器",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "run", "preview_id": preview_ids[0], "provider": provider},
+                "params": run_params,
                 "risk_level": "write",
                 "requires_confirmation": True,
             })
@@ -3974,12 +4072,16 @@ class WorkflowOrchestrator:
         if not isinstance(preview_id, str) or not preview_id.strip():
             return self._error_result("prompt_to_plan", "PREVIEW_ID_REQUIRED", "run 需要非空 preview_id。")
         provider = self._normalize_provider(params.get("provider")) or "codex"
+        profile_id = str(params.get("profile_id") or "").strip()
         manager = self._executor_workflow_factory(self.project_root)
-        run_result = manager.handle("run_once", {
+        run_params: dict[str, Any] = {
             "provider": provider,
             "preview_id": preview_id.strip(),
             "execution_mode": "run",
-        })
+        }
+        if profile_id:
+            run_params["profile_id"] = profile_id
+        run_result = manager.handle("run_once", run_params)
         steps = [self._step("prompt_to_plan", "manage_executor_workflow", "run_once",
                             run_result, STEP_RISK_WRITE)]
         run_ok = bool(run_result.get("ok"))
@@ -3987,11 +4089,26 @@ class WorkflowOrchestrator:
         run_id = str(run_result.get("run_id") or "")
         next_actions = []
         if run_ok and run_status == "started":
+            polling_guidance = run_result.get("polling_guidance")
+            guidance_profile_id = (
+                polling_guidance.get("profile_id")
+                if isinstance(polling_guidance, dict)
+                else ""
+            )
+            status_profile_id = str(
+                run_result.get("polling_profile_id")
+                or guidance_profile_id
+                or profile_id
+                or ""
+            ).strip()
+            status_params: dict[str, Any] = {"action": "status", "run_id": run_id}
+            if status_profile_id:
+                status_params["profile_id"] = status_profile_id
             next_actions.append({
                 "action": "manage_executor_workflow.status",
                 "label": "查看执行器运行进度",
                 "tool": "manage_executor_workflow",
-                "params": {"action": "status", "run_id": run_id},
+                "params": status_params,
                 "risk_level": "info",
                 "requires_confirmation": False,
             })
@@ -5084,6 +5201,8 @@ class WorkflowOrchestrator:
             "goal": goal_raw,
             "provider": provider,
         }
+        if "profile_id" in params:
+            classify_params["profile_id"] = params["profile_id"]
         if max_files is not None:
             classify_params["max_files"] = max_files
         if max_chars is not None:
@@ -5660,23 +5779,34 @@ class WorkflowOrchestrator:
         goal_text = str(params.get("goal") or "").lower()
         bounded_keywords = ("bounded", "loop", "循环", "多轮", "trusted")
         use_bounded_preview = any(keyword in goal_text for keyword in bounded_keywords)
+        profile_id = params.get("profile_id")
         if use_bounded_preview:
+            action_params = {"action": "run_bounded_preview", "provider": provider}
+            if isinstance(profile_id, str) and profile_id.strip():
+                action_params["profile_id"] = profile_id.strip()
             next_action = {
                 "action": "manage_executor_workflow.run_bounded_preview",
                 "label": "生成 bounded loop 预览",
                 "reason": "使用 manage_executor_workflow action=run_bounded_preview 生成 bounded loop 预览，不直接运行。",
                 "tool": "manage_executor_workflow",
-                "params": {"action": "run_bounded_preview", "provider": provider},
+                "params": action_params,
                 "risk_level": "preview",
                 "requires_confirmation": True,
             }
         else:
+            action_params = {
+                "action": "run_once_preview",
+                "provider": provider,
+                "execution_mode": "run",
+            }
+            if isinstance(profile_id, str) and profile_id.strip():
+                action_params["profile_id"] = profile_id.strip()
             next_action = {
                 "action": "manage_executor_workflow.run_once_preview",
                 "label": "生成执行器运行预览",
                 "reason": "使用 manage_executor_workflow action=run_once_preview 生成执行器运行预览，不直接运行。",
                 "tool": "manage_executor_workflow",
-                "params": {"action": "run_once_preview", "provider": provider, "execution_mode": "run"},
+                "params": action_params,
                 "risk_level": "preview",
                 "requires_confirmation": True,
             }
@@ -5768,7 +5898,7 @@ class WorkflowOrchestrator:
         _PASSTHROUGH_FIELDS = [
             "goal", "provider", "reason", "max_files", "max_chars",
             "max_diff_chars", "include_diff_summary", "dry_run",
-            "project_name", "first_version", "first_version_name",
+            "project_name", "profile_id", "first_version", "first_version_name",
             "file", "heading", "query", "new_content",
             "section_heading", "section_content", "after_heading",
             "stale_terms", "version", "target_version", "insert_after",

@@ -113,6 +113,8 @@ class WorkflowCompatibilityHost(Protocol):
 
     def _create_mcp_workflow_router(self) -> Any: ...
 
+    def _get_exposed_tool_names(self, profile: str | None = None) -> set[str]: ...
+
     def _normalize_recommended_actions_for_visible_tools(self, actions: list[Any]) -> list[Any]: ...
 
     def _record_workflow_if_needed(
@@ -486,9 +488,21 @@ class MCPWorkflowCompatibilityService:
                 require_managed=True,
             )
 
+        routed_params = self._host._strip_operation_context_binding_params(params)
+        requested_profile_id = params.get("profile_id")
+        agent_profile_id: str | None = None
+        if (
+            workflow == "auto_preview"
+            or requested_profile_id is not None
+            and requested_profile_id != ""
+        ):
+            agent_profile_id = self._host._resolve_agent_profile_id(
+                requested_profile_id
+            )
+            routed_params["profile_id"] = agent_profile_id
         result = self._host._create_mcp_workflow_router().handle(
             workflow,
-            self._host._strip_operation_context_binding_params(params),
+            routed_params,
         )
         if self._host.mcp_exposure_profile == self._commander_exposure_profile:
             next_actions = result.get("next_actions") if isinstance(result, dict) else None
@@ -505,10 +519,9 @@ class MCPWorkflowCompatibilityService:
             result["continuation"] = typed_continuation_projection(
                 result,
                 source_tool="run_mcp_workflow",
-                profile_id=(
-                    "web_gpt_commander"
-                    if self._host.mcp_exposure_profile == self._commander_exposure_profile
-                    else "local_codex_commander"
+                profile_id=agent_profile_id,
+                visible_tool_names=self._host._get_exposed_tool_names(
+                    self._host.mcp_exposure_profile
                 ),
             )
         return self._host._attach_operation_context_binding(

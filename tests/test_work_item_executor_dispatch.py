@@ -174,6 +174,79 @@ def test_bound_attempt_fails_closed_without_available_governance(
     assert not (project / ".colameta" / "ledger").exists()
 
 
+def test_executor_previews_preserve_explicit_profile_in_artifact_and_continuation(
+    tmp_path: Path,
+) -> None:
+    project, _ = _dispatchable_bound_project(tmp_path)
+    manager = MCPExecutorWorkflowManager(str(project))
+
+    once_preview = manager.handle(
+        "run_once_preview",
+        {
+            "provider": "codex",
+            "execution_mode": "run",
+            "profile_id": "local_codex_commander",
+        },
+    )
+    bounded_preview = manager.handle(
+        "run_bounded_preview",
+        {
+            "provider": "codex",
+            "max_iterations": 1,
+            "profile_id": "local_codex_commander",
+        },
+    )
+
+    assert once_preview["ok"] is True
+    assert once_preview["next_actions"][0]["params"]["profile_id"] == "local_codex_commander"
+    once_artifact = manager._read_preview_artifact(once_preview["preview_id"])
+    assert once_artifact is not None
+    assert once_artifact["profile_id"] == "local_codex_commander"
+
+    assert bounded_preview["ok"] is True
+    assert bounded_preview["next_actions"][0]["params"]["profile_id"] == "local_codex_commander"
+    bounded_artifact = manager._read_preview_artifact(bounded_preview["preview_id"])
+    assert bounded_artifact is not None
+    assert bounded_artifact["profile_id"] == "local_codex_commander"
+
+    manager._claims.acquire_claim(
+        preview_id=once_preview["preview_id"],
+        artifact=once_artifact,
+        provider="codex",
+        execution_mode="run",
+    )
+    repeated_run = manager.handle(
+        "run_once",
+        {
+            "preview_id": once_preview["preview_id"],
+            "provider": "codex",
+            "execution_mode": "run",
+        },
+    )
+    assert repeated_run["error_code"] == "PREVIEW_ALREADY_CLAIMED"
+    assert repeated_run["polling_profile_id"] == "local_codex_commander"
+    assert repeated_run["next_actions"][0]["params"]["profile_id"] == "local_codex_commander"
+
+
+def test_executor_previews_do_not_synthesize_an_omitted_profile(tmp_path: Path) -> None:
+    project, _ = _dispatchable_bound_project(tmp_path)
+    manager = MCPExecutorWorkflowManager(str(project))
+
+    once_preview = manager.handle(
+        "run_once_preview",
+        {"provider": "codex", "execution_mode": "run"},
+    )
+    bounded_preview = manager.handle(
+        "run_bounded_preview",
+        {"provider": "codex", "max_iterations": 1},
+    )
+
+    assert "profile_id" not in once_preview["next_actions"][0]["params"]
+    assert "profile_id" not in manager._read_preview_artifact(once_preview["preview_id"])
+    assert "profile_id" not in bounded_preview["next_actions"][0]["params"]
+    assert "profile_id" not in manager._read_preview_artifact(bounded_preview["preview_id"])
+
+
 @pytest.mark.parametrize("mutation", ["replace", "remove"])
 def test_confirmed_execution_rejects_work_item_binding_drift(
     tmp_path: Path,

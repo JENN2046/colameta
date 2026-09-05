@@ -2193,6 +2193,48 @@ def test_exact_live_project_status_is_a_valid_commander_public_result(
     assert facts["changed_files"] == []
 
 
+@pytest.mark.parametrize("profile_id", ["source_observer", "reviewer_agent"])
+def test_filtered_docs_apply_does_not_reappear_as_commander_confirmation(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    project = _make_real_git_project(tmp_path, f"filtered-docs-{profile_id}")
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+
+    result = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Update the docs with this section.",
+            "profile_id": profile_id,
+            "file": "README.md",
+            "section_heading": "Persona boundary",
+            "section_content": "This preview is not writable by this persona.",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result.get("error_code") != "INTERNAL_RESULT_INVALID"
+    contract = result["data"]
+    validate_commander_response(contract)
+    assert contract["outcome"] == "completed"
+    assert contract["confirmation"] is None
+    assert contract["next_action"]["tool"] == "analyze_project_state"
+    facts = contract["facts"]
+    assert facts.get("requires_confirmation", False) is False
+    assert facts["unified_status"]["needs_user_confirmation"] is False
+    assert facts["unified_status"]["can_apply"] is False
+    assert facts.get("primary_next_action") is None
+    assert all(
+        action.get("params", {}).get("phase") != "apply"
+        for action in facts.get("next_actions", [])
+        if isinstance(action, dict)
+    )
+
+
 @pytest.mark.parametrize(
     ("exposure_profile", "expected_profile"),
     [
@@ -2219,6 +2261,245 @@ def test_auto_preview_preserves_the_serving_persona(
 
     assert result["selected_workflow"] == "project_status"
     assert result["agent_state"]["profile_id"] == expected_profile
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["plain_project_status", "negative_intent"],
+)
+def test_registered_auto_preview_preserves_explicit_web_caller_persona(
+    tmp_path,
+    fixture_name: str,
+) -> None:
+    project = _make_real_git_project(tmp_path, f"explicit-web-{fixture_name}")
+    registry = ProjectRegistry(
+        registry_path=str(tmp_path / "registry.json"),
+        user_settings_path=str(tmp_path / "settings.json"),
+    )
+    registry.register_project(
+        str(project),
+        project_name="colameta-self-dev",
+        project_mode="managed",
+        last_selected=False,
+    )
+    # The physical server defaults to Local Codex. The explicit caller profile
+    # must survive project routing, auto classification, and nested analysis.
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        service_mode=True,
+        exposure_profile="normal",
+    )
+    server.project_registry = registry
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": LIVE_ACCEPTANCE_FIXTURES[fixture_name],
+            "project_name": "colameta-self-dev",
+            "profile_id": "web_gpt_commander",
+        }
+    )
+
+    assert result["selected_workflow"] == "project_status"
+    assert result["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert result["routing"]["profile"]["profile_id"] == "web_gpt_commander"
+    assert result["result"]["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert result["preview_ids"] == []
+
+
+def test_auto_preview_preserves_explicit_local_codex_caller_persona(
+    tmp_path,
+) -> None:
+    # The physical Commander exposure defaults to Web GPT. An explicit Local
+    # Codex caller must remain Local Codex through the same route.
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile="commander",
+    )
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": LIVE_ACCEPTANCE_FIXTURES["plain_project_status"],
+            "profile_id": "local_codex_commander",
+        }
+    )
+
+    assert result["selected_workflow"] == "project_status"
+    assert result["agent_state"]["profile_id"] == "local_codex_commander"
+    assert result["routing"]["profile"]["profile_id"] == "local_codex_commander"
+    assert result["result"]["agent_state"]["profile_id"] == "local_codex_commander"
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    [
+        "web_gpt_commander",
+        "local_codex_commander",
+        "reviewer_agent",
+        "planner_agent",
+        "source_observer",
+    ],
+)
+def test_auto_preview_preserves_each_explicit_public_caller_persona(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": LIVE_ACCEPTANCE_FIXTURES["plain_project_status"],
+            "profile_id": profile_id,
+        }
+    )
+
+    assert result["agent_state"]["profile_id"] == profile_id
+    assert result["routing"]["profile"]["profile_id"] == profile_id
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "exposure_profile"),
+    [
+        ("web_gpt_commander", "normal"),
+        ("local_codex_commander", "commander"),
+        ("planner_agent", "normal"),
+        ("reviewer_agent", "normal"),
+        ("source_observer", "normal"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("goal_present", "goal"),
+    [(False, None), (True, "")],
+    ids=["goal-omitted", "goal-empty"],
+)
+def test_no_goal_auto_preview_preserves_explicit_public_caller_persona(
+    tmp_path,
+    profile_id: str,
+    exposure_profile: str,
+    goal_present: bool,
+    goal: str | None,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=exposure_profile,
+    )
+    params = {"workflow": "auto_preview", "profile_id": profile_id}
+    if goal_present:
+        params["goal"] = goal
+
+    result = server._tool_run_mcp_workflow(params)
+
+    assert result["selected_workflow"] == "project_status"
+    assert result["agent_state"]["profile_id"] == profile_id
+    assert result["routing"]["profile"]["profile_id"] == profile_id
+    assert result["result"]["agent_state"]["profile_id"] == profile_id
+    assert result["preview_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("exposure_profile", "expected_profile"),
+    [
+        ("commander", "web_gpt_commander"),
+        ("normal", "local_codex_commander"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("goal_present", "goal"),
+    [(False, None), (True, "")],
+    ids=["goal-omitted", "goal-empty"],
+)
+def test_no_goal_auto_preview_keeps_existing_exposure_fallback(
+    tmp_path,
+    exposure_profile: str,
+    expected_profile: str,
+    goal_present: bool,
+    goal: str | None,
+) -> None:
+    server = MCPPlanningBridgeServer(
+        str(tmp_path),
+        exposure_profile=exposure_profile,
+    )
+    params = {"workflow": "auto_preview"}
+    if goal_present:
+        params["goal"] = goal
+
+    result = server._tool_run_mcp_workflow(params)
+
+    assert result["agent_state"]["profile_id"] == expected_profile
+    assert result["routing"]["profile"]["profile_id"] == expected_profile
+    assert result["result"]["agent_state"]["profile_id"] == expected_profile
+
+
+def test_run_mcp_workflow_schema_exposes_navigation_only_profile_id(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    tool = next(tool for tool in server.tool_defs if tool.name == "run_mcp_workflow")
+
+    profile_schema = tool.input_schema["properties"]["profile_id"]
+    assert profile_schema["enum"] == [
+        "web_gpt_commander",
+        "local_codex_commander",
+        "planner_agent",
+        "reviewer_agent",
+        "source_observer",
+    ]
+    assert "不授予任何执行或写入权限" in profile_schema["description"]
+    assert "仅 auto_preview 在省略时" in profile_schema["description"]
+    assert "其他 workflow 保留各自既有默认值" in profile_schema["description"]
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    [
+        "web_gpt_commander",
+        "local_codex_commander",
+        "planner_agent",
+        "reviewer_agent",
+        "source_observer",
+    ],
+)
+def test_run_mcp_workflow_profile_does_not_change_authority_scope(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="commander")
+    auto_preview_scope = server.get_required_scope_for_tool(
+        "run_mcp_workflow",
+        {"workflow": "auto_preview"},
+    )
+    commit_scope = server.get_required_scope_for_tool(
+        "run_mcp_workflow",
+        {"workflow": "git_commit", "phase": "commit"},
+    )
+
+    assert server.get_required_scope_for_tool(
+        "run_mcp_workflow",
+        {"workflow": "auto_preview", "profile_id": profile_id},
+    ) == auto_preview_scope
+    assert server.get_required_scope_for_tool(
+        "run_mcp_workflow",
+        {
+            "workflow": "git_commit",
+            "phase": "commit",
+            "profile_id": profile_id,
+        },
+    ) == commit_scope
+
+
+def test_direct_analyze_project_state_web_profile_remains_compatible(
+    tmp_path,
+) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server._tool_analyze_project_state(
+        {"profile_id": "web_gpt_commander"}
+    )
+
+    assert result["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert result["routing"]["profile"]["profile_id"] == "web_gpt_commander"
 
 
 @pytest.mark.parametrize(
