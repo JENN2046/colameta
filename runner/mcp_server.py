@@ -10247,6 +10247,9 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             git_history_manager=MCPGitHistoryManager(self.project_root, self.source_review),
             git_commit_manager=MCPGitCommitManager(self.project_root),
             agent_profile_id=self._resolve_agent_profile_id(),
+            visible_tool_names=self._get_exposed_tool_names(
+                self.mcp_exposure_profile
+            ),
         )
 
     def _operator_preview_validation(self, operation: dict[str, Any]) -> dict[str, Any]:

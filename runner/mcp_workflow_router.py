@@ -1,4 +1,5 @@
 import os
+from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable
 
@@ -30,6 +31,7 @@ class MCPWorkflowRouter:
         planning_bridge: PlanningBridge | None = None,
         executor_workflow_factory: Callable[[str], MCPExecutorWorkflowManager] | None = None,
         agent_profile_id: str | None = None,
+        visible_tool_names: Iterable[str] | None = None,
     ):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self._source_review = source_review or SourceReviewBridge()
@@ -44,6 +46,11 @@ class MCPWorkflowRouter:
             lambda project_root: MCPExecutorWorkflowManager(project_root)
         )
         self._agent_profile_id = agent_profile_id
+        self._visible_tool_names = (
+            frozenset(visible_tool_names)
+            if visible_tool_names is not None
+            else None
+        )
 
     # ---- Lazy managers ----
 
@@ -127,6 +134,7 @@ class MCPWorkflowRouter:
                 ),
                 goal=goal if isinstance(goal, str) else None,
                 enforce_profile_reachability=True,
+                visible_tool_names=self._visible_tool_names,
             )
             response["classified_intent"] = {
                 "user_request": goal if isinstance(goal, str) else None,

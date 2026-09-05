@@ -3094,7 +3094,7 @@ def build_mcp_tool_definitions(
                             "reviewer_agent",
                             "source_observer",
                         ],
-                        "description": "可选。跨高层 workflow 路由保留调用方 persona；仅影响公开 Agent 导航投影，不授予任何执行或写入权限。旧客户端不提供时仍按当前物理 exposure profile 使用既有默认值。",
+                        "description": "可选。显式提供时跨高层 workflow 路由保留调用方 persona；仅影响公开 Agent 导航投影，不授予任何执行或写入权限。仅 auto_preview 在省略时按当前物理 exposure profile 合成默认值；其他 workflow 保留各自既有默认值。",
                     },
                     "phase": {
                         "type": "string",

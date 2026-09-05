@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from runner.agent_routing_registry import profile_guidance, tool_routing_metadata
@@ -988,12 +988,20 @@ def add_agent_state_projection(
     primary_action: Mapping[str, Any] | None = None,
     error_origin: str | None = None,
     enforce_profile_reachability: bool = False,
+    visible_tool_names: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     projected = dict(response)
     _bind_top_level_actions_to_project(projected, project_name)
     allowed_tools = (
         _profile_allowed_tools(profile_id) if enforce_profile_reachability else None
     )
+    if visible_tool_names is not None:
+        visible_tools = frozenset(visible_tool_names)
+        allowed_tools = (
+            visible_tools
+            if allowed_tools is None
+            else allowed_tools.intersection(visible_tools)
+        )
     selected = (
         primary_action
         if isinstance(primary_action, Mapping)

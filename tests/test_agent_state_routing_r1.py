@@ -1070,6 +1070,24 @@ def test_auto_preview_commander_never_projects_an_unreachable_executor_tool(tmp_
     assert local_result["primary_next_action"]["tool"] == "manage_executor_workflow"
 
 
+def test_normal_exposure_keeps_visible_local_executor_follow_up(tmp_path) -> None:
+    server = MCPPlanningBridgeServer(str(tmp_path), exposure_profile="normal")
+
+    result = server._tool_run_mcp_workflow(
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "profile_id": "local_codex_commander",
+        }
+    )
+
+    assert result["agent_state"]["profile_id"] == "local_codex_commander"
+    assert result["primary_next_action"]["tool"] == "manage_executor_workflow"
+    assert result["primary_next_action"]["required_arguments"]["profile_id"] == (
+        "local_codex_commander"
+    )
+
+
 def test_registered_project_auto_preview_preserves_serving_commander_profile(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1152,6 +1170,28 @@ def test_registered_project_auto_preview_preserves_serving_commander_profile(
     assert facts["agent_state"]["project"] == "demo-project"
     assert facts.get("primary_next_action") is None
     assert "manage_executor_workflow" not in json.dumps(response, sort_keys=True)
+
+    local_response = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Run the executor for this task",
+            "project_name": "demo-project",
+            "profile_id": "local_codex_commander",
+        },
+    )
+
+    assert local_response["ok"] is True
+    assert local_response.get("error_code") != "INTERNAL_RESULT_INVALID"
+    assert local_response["data"]["outcome"] == "completed"
+    local_facts = local_response["data"]["facts"]
+    assert local_facts["selected_workflow"] == "executor_preflight"
+    assert local_facts["agent_state"]["profile_id"] == "local_codex_commander"
+    assert local_facts.get("primary_next_action") is None
+    assert "manage_executor_workflow" not in json.dumps(
+        local_response,
+        sort_keys=True,
+    )
 
 
 @pytest.mark.parametrize(

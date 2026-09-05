@@ -2405,6 +2405,8 @@ def test_run_mcp_workflow_schema_exposes_navigation_only_profile_id(
         "source_observer",
     ]
     assert "不授予任何执行或写入权限" in profile_schema["description"]
+    assert "仅 auto_preview 在省略时" in profile_schema["description"]
+    assert "其他 workflow 保留各自既有默认值" in profile_schema["description"]
 
 
 @pytest.mark.parametrize(
