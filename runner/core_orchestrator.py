@@ -5768,7 +5768,7 @@ class WorkflowOrchestrator:
         _PASSTHROUGH_FIELDS = [
             "goal", "provider", "reason", "max_files", "max_chars",
             "max_diff_chars", "include_diff_summary", "dry_run",
-            "project_name", "first_version", "first_version_name",
+            "project_name", "profile_id", "first_version", "first_version_name",
             "file", "heading", "query", "new_content",
             "section_heading", "section_content", "after_heading",
             "stale_terms", "version", "target_version", "insert_after",

@@ -10224,6 +10224,18 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
         self._record_workflow_if_needed("manage_stage_parallel_merges", action, params, result)
         return self._with_project_identity(result)
 
+    def _resolve_agent_profile_id(self, requested_profile_id: Any = None) -> str:
+        if requested_profile_id is None or requested_profile_id == "":
+            return (
+                "web_gpt_commander"
+                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
+                else "local_codex_commander"
+            )
+        profile_id, _, _ = self._select_service_entry_profile(
+            {"profile_id": requested_profile_id}
+        )
+        return profile_id
+
     def _create_mcp_workflow_router(self) -> MCPWorkflowRouter:
         return MCPWorkflowRouter(
             project_root=self.project_root,
@@ -10234,11 +10246,7 @@ class MCPPlanningBridgeServer(MCPCommanderAppMixin):
             project_docs_manager=MCPProjectDocsManager(self.project_root, self.source_review),
             git_history_manager=MCPGitHistoryManager(self.project_root, self.source_review),
             git_commit_manager=MCPGitCommitManager(self.project_root),
-            agent_profile_id=(
-                "web_gpt_commander"
-                if self.mcp_exposure_profile == MCP_EXPOSURE_PROFILE_COMMANDER
-                else "local_codex_commander"
-            ),
+            agent_profile_id=self._resolve_agent_profile_id(),
         )
 
     def _operator_preview_validation(self, operation: dict[str, Any]) -> dict[str, Any]:

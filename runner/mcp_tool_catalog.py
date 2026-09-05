@@ -3085,6 +3085,17 @@ def build_mcp_tool_definitions(
                         ],
                         "description": "要执行的工作流。auto_preview 是 v1.75 首选高层入口，自动分析 goal 并选择 bounded workflow。prompt_to_plan 是 v1.84.58 prompt 文件到 plan apply 链路入口。thin_governed_loop_preview 是 Stage 0-6 只读薄治理闭环预览。project_delivery_preview 验证同进程中已 ACCEPT 的 Thin Loop，并只读返回 Git delivery facts 与一个安全下一动作。stage_7_9_preview 是 Stage 7 drift evidence → Stage 8 PLAN_ADJUST preview → Stage 9 continue-readiness 的 hash/context-bound 只读 journey；只生成 next-human-decision，不 apply、不 continue、不启动 executor。current_facts 从 canonical_project_state 生成脱敏、可分页的当前事实 snapshot；inspect 只读，preview → context-bound apply 才能写入固定 runtime archive。review_manifest 建立哈希和上下文绑定的独立审查读取会话。result_artifact 只读取 packaged response 已返回的短期 opaque artifact 分页；它是旧客户端的兼容入口，ChatGPT 优先使用 read_result_artifact。gate_review_request 是复用 Work Item Gate 的受控 Gate review 入口。",
                     },
+                    "profile_id": {
+                        "type": "string",
+                        "enum": [
+                            "web_gpt_commander",
+                            "local_codex_commander",
+                            "planner_agent",
+                            "reviewer_agent",
+                            "source_observer",
+                        ],
+                        "description": "可选。跨高层 workflow 路由保留调用方 persona；仅影响公开 Agent 导航投影，不授予任何执行或写入权限。旧客户端不提供时仍按当前物理 exposure profile 使用既有默认值。",
+                    },
                     "phase": {
                         "type": "string",
                         "enum": ["inspect", "read", "verify", "preview", "apply", "plan_preview", "plan_apply", "apply_all", "run_preview", "run", "commit", "execute", "status", "pr_status", "pr_preview", "pr_apply", "merge_status"],

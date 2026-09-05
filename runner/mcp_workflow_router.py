@@ -109,10 +109,17 @@ class MCPWorkflowRouter:
         response = self._core_output_to_legacy_response(core_output)
         if workflow == "auto_preview":
             goal = params.get("goal")
+            requested_profile_id = params.get("profile_id")
+            public_profile_id = (
+                requested_profile_id.strip()
+                if isinstance(requested_profile_id, str)
+                and requested_profile_id.strip()
+                else self._agent_profile_id
+            )
             response = add_agent_state_projection(
                 response,
                 source_tool="run_mcp_workflow",
-                profile_id=self._agent_profile_id,
+                profile_id=public_profile_id,
                 project_name=(
                     params.get("project_name")
                     if isinstance(params.get("project_name"), str)

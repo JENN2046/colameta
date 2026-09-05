@@ -486,9 +486,14 @@ class MCPWorkflowCompatibilityService:
                 require_managed=True,
             )
 
+        agent_profile_id = self._host._resolve_agent_profile_id(
+            params.get("profile_id")
+        )
+        routed_params = self._host._strip_operation_context_binding_params(params)
+        routed_params["profile_id"] = agent_profile_id
         result = self._host._create_mcp_workflow_router().handle(
             workflow,
-            self._host._strip_operation_context_binding_params(params),
+            routed_params,
         )
         if self._host.mcp_exposure_profile == self._commander_exposure_profile:
             next_actions = result.get("next_actions") if isinstance(result, dict) else None
@@ -505,11 +510,7 @@ class MCPWorkflowCompatibilityService:
             result["continuation"] = typed_continuation_projection(
                 result,
                 source_tool="run_mcp_workflow",
-                profile_id=(
-                    "web_gpt_commander"
-                    if self._host.mcp_exposure_profile == self._commander_exposure_profile
-                    else "local_codex_commander"
-                ),
+                profile_id=agent_profile_id,
             )
         return self._host._attach_operation_context_binding(
             result,

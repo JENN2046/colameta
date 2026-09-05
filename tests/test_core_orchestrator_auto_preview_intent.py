@@ -175,6 +175,36 @@ def test_read_only_executor_inspection_keeps_the_executor_preflight_route() -> N
     assert classified["selected_workflow"] == "executor"
 
 
+def test_auto_preview_preserves_public_profile_for_nested_state_analysis(
+    tmp_path,
+) -> None:
+    analyzed_params: dict[str, object] = {}
+
+    def analyze_state(params):
+        analyzed_params.update(params)
+        return {
+            "ok": True,
+            "agent_state": {"profile_id": "local_codex_commander"},
+            "recommended_next_actions": [],
+        }
+
+    result = MCPWorkflowRouter(
+        str(tmp_path),
+        analyze_state_fn=analyze_state,
+        agent_profile_id="web_gpt_commander",
+    ).handle(
+        "auto_preview",
+        {
+            "goal": "Inspect the current project state and report the next read-only action.",
+            "profile_id": "web_gpt_commander",
+        },
+    )
+
+    assert analyzed_params["profile_id"] == "web_gpt_commander"
+    assert result["agent_state"]["profile_id"] == "web_gpt_commander"
+    assert result["routing"]["profile"]["profile_id"] == "web_gpt_commander"
+
+
 def test_read_only_executor_inspection_runs_only_the_bounded_preflight(
     tmp_path,
 ) -> None:
