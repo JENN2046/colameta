@@ -2193,6 +2193,48 @@ def test_exact_live_project_status_is_a_valid_commander_public_result(
     assert facts["changed_files"] == []
 
 
+@pytest.mark.parametrize("profile_id", ["source_observer", "reviewer_agent"])
+def test_filtered_docs_apply_does_not_reappear_as_commander_confirmation(
+    tmp_path,
+    profile_id: str,
+) -> None:
+    project = _make_real_git_project(tmp_path, f"filtered-docs-{profile_id}")
+    server = MCPPlanningBridgeServer(
+        str(project),
+        exposure_profile="commander",
+    )
+
+    result = server.call_tool_for_agent(
+        "run_mcp_workflow",
+        {
+            "workflow": "auto_preview",
+            "goal": "Update the docs with this section.",
+            "profile_id": profile_id,
+            "file": "README.md",
+            "section_heading": "Persona boundary",
+            "section_content": "This preview is not writable by this persona.",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result.get("error_code") != "INTERNAL_RESULT_INVALID"
+    contract = result["data"]
+    validate_commander_response(contract)
+    assert contract["outcome"] == "completed"
+    assert contract["confirmation"] is None
+    assert contract["next_action"]["tool"] == "analyze_project_state"
+    facts = contract["facts"]
+    assert facts.get("requires_confirmation", False) is False
+    assert facts["unified_status"]["needs_user_confirmation"] is False
+    assert facts["unified_status"]["can_apply"] is False
+    assert facts.get("primary_next_action") is None
+    assert all(
+        action.get("params", {}).get("phase") != "apply"
+        for action in facts.get("next_actions", [])
+        if isinstance(action, dict)
+    )
+
+
 @pytest.mark.parametrize(
     ("exposure_profile", "expected_profile"),
     [

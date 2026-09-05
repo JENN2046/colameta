@@ -247,32 +247,100 @@ def _filter_unreachable_navigation_actions(
     return filtered
 
 
-def _clear_unreachable_executor_confirmation(
+def _has_confirmation_navigation_action(
+    value: Mapping[str, Any],
+    *,
+    depth: int = 0,
+) -> bool:
+    for key in ("recommended_next_actions", "next_actions", "recommended_next_steps"):
+        actions = value.get(key)
+        if isinstance(actions, list) and any(
+            isinstance(action, Mapping)
+            and action.get("requires_confirmation") is True
+            for action in actions
+        ):
+            return True
+    if depth >= 5:
+        return False
+    for key in (
+        "result",
+        "facts",
+        "data",
+        "current_state",
+        "canonical_state",
+        "canonical_project_state",
+        "current_conclusion",
+        "unified_status",
+    ):
+        nested = value.get(key)
+        if isinstance(nested, Mapping) and _has_confirmation_navigation_action(
+            nested,
+            depth=depth + 1,
+        ):
+            return True
+    return False
+
+
+def _clear_confirmation_state(value: dict[str, Any], *, depth: int = 0) -> None:
+    if value.get("requires_confirmation") is True:
+        value["requires_confirmation"] = False
+    if value.get("confirmation_required") is True:
+        value["confirmation_required"] = False
+    confirmation = value.get("confirmation")
+    if isinstance(confirmation, Mapping) and confirmation.get("required") is True:
+        public_confirmation = dict(confirmation)
+        public_confirmation["required"] = False
+        value["confirmation"] = public_confirmation
+    if value.get("needs_user_confirmation") is True:
+        value["needs_user_confirmation"] = False
+    if depth >= 5:
+        return
+    for key in (
+        "result",
+        "facts",
+        "data",
+        "current_state",
+        "canonical_state",
+        "canonical_project_state",
+        "current_conclusion",
+        "unified_status",
+    ):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            _clear_confirmation_state(nested, depth=depth + 1)
+
+
+def _reconcile_unreachable_confirmation(
     projected: dict[str, Any],
     *,
     allowed_tools: frozenset[str] | None,
     primary_action: Mapping[str, Any] | None,
+    confirmation_action_was_filtered: bool,
 ) -> None:
-    """Keep a read-only executor preflight valid on a bounded tool profile."""
+    """Do not advertise confirmation when its only action is unreachable."""
 
-    if (
-        allowed_tools is None
-        or primary_action is not None
-        or projected.get("selected_workflow") != "executor_preflight"
-        or bool(projected.get("preview_ids"))
-    ):
+    if allowed_tools is None or projected.get("requires_confirmation") is not True:
         return
-    # The core preflight may advertise a Local-Codex-only executor preview as
-    # its compatibility next action. Once profile reachability removes that
-    # navigation action, there is no typed preview for this caller to confirm.
-    # This changes no execution authority; it prevents the public contract from
-    # claiming that an unreachable confirmation is currently required.
-    projected["requires_confirmation"] = False
+    remaining_confirmation_action = (
+        isinstance(primary_action, Mapping)
+        and primary_action.get("requires_confirmation") is True
+    ) or _has_confirmation_navigation_action(projected)
+    unreachable_executor_preflight = (
+        primary_action is None
+        and projected.get("selected_workflow") == "executor_preflight"
+        and not bool(projected.get("preview_ids"))
+    )
+    if not confirmation_action_was_filtered and not unreachable_executor_preflight:
+        return
+    if remaining_confirmation_action:
+        return
+    # The preview remains intact, but this bounded public persona has no action
+    # capable of consuming it. Keeping a confirmation flag here would cause the
+    # Commander projector to synthesize the mutation that reachability removed.
+    _clear_confirmation_state(projected)
     unified_status = projected.get("unified_status")
-    if isinstance(unified_status, Mapping):
-        public_status = dict(unified_status)
-        public_status["needs_user_confirmation"] = False
-        projected["unified_status"] = public_status
+    if isinstance(unified_status, dict) and unified_status.get("can_apply") is True:
+        unified_status["can_apply"] = False
 
 
 def _profile_visible_plan_continuation_action(
@@ -1082,14 +1150,24 @@ def add_agent_state_projection(
         source_tool=source_tool,
         project_name=project_name,
     )
+    had_confirmation_navigation_action = _has_confirmation_navigation_action(projected)
     projected = _filter_unreachable_navigation_actions(
         projected,
         allowed_tools=allowed_tools,
     )
-    _clear_unreachable_executor_confirmation(
+    confirmation_action_was_filtered = (
+        had_confirmation_navigation_action
+        and not _has_confirmation_navigation_action(projected)
+        and not (
+            isinstance(normalized_action, Mapping)
+            and normalized_action.get("requires_confirmation") is True
+        )
+    )
+    _reconcile_unreachable_confirmation(
         projected,
         allowed_tools=allowed_tools,
         primary_action=normalized_action,
+        confirmation_action_was_filtered=confirmation_action_was_filtered,
     )
     projected["agent_projection_schema_version"] = AGENT_PROJECTION_SCHEMA_VERSION
     projected["agent_state"] = _agent_state(
