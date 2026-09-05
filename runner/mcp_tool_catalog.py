@@ -3819,7 +3819,7 @@ def build_mcp_tool_definitions(
                         },
                     },
                     "run_id": {"type": "string", "description": "status 可选。执行器运行 ID。"},
-                    "profile_id": {"type": "string", "enum": ["web_gpt_commander", "local_codex_commander", "planner_agent", "reviewer_agent", "source_observer"], "description": "status/run_once 可选。用于选择 polling guidance。默认 web_gpt_commander；local_codex_commander 使用更长的本地有界轮询窗口。"},
+                    "profile_id": {"type": "string", "enum": ["web_gpt_commander", "local_codex_commander", "planner_agent", "reviewer_agent", "source_observer"], "description": "run_once_preview/run_bounded_preview/run_once/run_bounded/status 可选。preview 会把显式 profile 绑定到 artifact 并带入后续 run/status 导航；默认 web_gpt_commander，local_codex_commander 使用更长的本地有界轮询窗口。"},
                     "poll_attempt": {"type": "integer", "description": "status 可选。轮询次数。默认 1；最大建议由 polling_guidance.max_poll_attempts 按 profile 返回。"},
                     "max_diff_chars": {"type": "integer", "default": 40000, "minimum": 1, "maximum": 80000, "description": "run_once 可选。diff 输出字符限制。默认 40000，最大 80000。"},
                     "include_diff_summary": {"type": "boolean", "default": True, "description": "run_once 可选。是否返回 diff_summary。默认 true。"},

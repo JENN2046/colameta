@@ -232,6 +232,7 @@ class MCPExecutorWorkflowManager:
     def _run_once_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         params_provider_raw = _sanitize_optional_str(params.get("provider"))
         params_model_raw = _sanitize_optional_str(params.get("model"))
+        profile_id = self._str_param(params.get("profile_id"), default="")
         provider = self._str_param(params.get("provider"), default="codex", lower=True)
         execution_mode = self._str_param(params.get("execution_mode"), default="run", lower=True)
         executor_session_mode = _sanitize_optional_str(params.get("executor_session_mode"))
@@ -286,6 +287,8 @@ class MCPExecutorWorkflowManager:
         artifact["model_source"] = selected_executor_profile.get("model_source")
         artifact["reasoning_effort"] = selected_executor_profile.get("reasoning_effort")
         artifact["reasoning_effort_source"] = selected_executor_profile.get("reasoning_effort_source")
+        if profile_id:
+            artifact["profile_id"] = profile_id
         if security_profile:
             artifact["security_profile"] = security_profile
         if executor_authority_id:
@@ -386,6 +389,15 @@ class MCPExecutorWorkflowManager:
         artifact["executor_session_continuation_facts"] = continuation_facts
         self._write_preview_artifact(preview_key, artifact)
 
+        run_once_params = {
+            "action": "run_once",
+            "preview_id": preview_key,
+            "provider": provider,
+            "execution_mode": execution_mode,
+        }
+        if profile_id:
+            run_once_params["profile_id"] = profile_id
+
         return {
             "ok": True,
             "action": "run_once_preview",
@@ -421,6 +433,17 @@ class MCPExecutorWorkflowManager:
             },
             "warnings": warnings,
             "warning_codes": warning_codes,
+            "next_actions": [
+                {
+                    "action": "manage_executor_workflow.run_once",
+                    "label": "启动 executor run",
+                    "reason": "使用 run_once_preview 的 preview_id 启动异步执行。",
+                    "tool": "manage_executor_workflow",
+                    "params": run_once_params,
+                    "risk_level": "commit",
+                    "requires_confirmation": True,
+                }
+            ],
             "message": (
                 f"run_once_preview 已生成。使用 preview_id={preview_key} 调用 "
                 "manage_executor_workflow action=run_once 执行。"
@@ -800,6 +823,8 @@ class MCPExecutorWorkflowManager:
             )
         if artifact.get("artifact_kind") not in (None, "run_once"):
             return self._error("run_once", "PREVIEW_KIND_MISMATCH", "preview_id 类型不匹配，当前不是 run_once_preview。")
+        if not profile_id:
+            profile_id = self._str_param(artifact.get("profile_id"), default="")
 
         artifact_model = _sanitize_optional_str(artifact.get("model"))
         artifact_model_source = _sanitize_optional_str(artifact.get("model_source"))
@@ -1265,6 +1290,7 @@ class MCPExecutorWorkflowManager:
 
     def _run_bounded_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         provider = self._str_param(params.get("provider"), default="codex", lower=True)
+        profile_id = self._str_param(params.get("profile_id"), default="")
         max_iterations = self._bounded_int_param(params.get("max_iterations"), default=1, minimum=1, maximum=3)
         trusted_mode = self._bool_param(params.get("trusted_mode"), default=False)
         allow_fix = self._bool_param(params.get("allow_fix"), default=False)
@@ -1337,6 +1363,8 @@ class MCPExecutorWorkflowManager:
             expires_at=self._now_iso_ts(PREVIEW_TTL_SECONDS),
         )
         artifact["continuation_snapshot"] = continuation_snapshot.public_view(provider)
+        if profile_id:
+            artifact["profile_id"] = profile_id
         self._write_preview_artifact(preview_id, artifact)
 
         stop_conditions = [
@@ -1396,6 +1424,7 @@ class MCPExecutorWorkflowManager:
                         "action": "run_bounded",
                         "preview_id": preview_id,
                         "provider": provider,
+                        **({"profile_id": profile_id} if profile_id else {}),
                     },
                     "risk_level": "commit",
                     "requires_confirmation": True,
@@ -1427,6 +1456,8 @@ class MCPExecutorWorkflowManager:
             return self._error("run_bounded", "PREVIEW_NOT_FOUND", f"preview_id={preview_id} 不存在或已过期。")
         if artifact.get("artifact_kind") != "run_bounded":
             return self._error("run_bounded", "PREVIEW_KIND_MISMATCH", "preview_id 不是 run_bounded_preview 生成的 artifact。")
+        if not profile_id:
+            profile_id = self._str_param(artifact.get("profile_id"), default="")
 
         guard_error = self._preview_guard_error(
             "run_bounded",
@@ -5130,6 +5161,8 @@ class MCPExecutorWorkflowManager:
         return self._claims.read_claim(preview_id)
 
     def _already_claimed_error(self, action: str, preview_id: str, claim: dict[str, Any], *, profile_id: str | None = None) -> dict[str, Any]:
+        if not str(profile_id or "").strip():
+            profile_id = self._str_param(claim.get("profile_id"), default="")
         orphan_info = self._evaluate_orphaned_claim(claim)
         possible_report_id = self._resolve_possible_report_id(claim) if orphan_info.get("orphaned") else ""
         return already_claimed_error(
