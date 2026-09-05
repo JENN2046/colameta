@@ -3659,6 +3659,16 @@ class WorkflowOrchestrator:
             missing.append("acceptance_commands")
         return missing
 
+    @staticmethod
+    def _prompt_to_plan_continuation_params(
+        params: dict[str, Any],
+        **continuation_params: Any,
+    ) -> dict[str, Any]:
+        profile_id = str(params.get("profile_id") or "").strip()
+        if profile_id:
+            continuation_params["profile_id"] = profile_id
+        return continuation_params
+
     def _prompt_to_plan_preview(self, params: dict[str, Any]) -> dict[str, Any]:
         version = params.get("version")
         content = params.get("content")
@@ -3688,7 +3698,12 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.apply_all",
                 "label": "保存 prompt 并登记到 plan（一键完成）",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "apply_all", "preview_id": preview_ids[0]},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="apply_all",
+                    preview_id=preview_ids[0],
+                ),
                 "risk_level": "write",
                 "requires_confirmation": True,
             })
@@ -3780,7 +3795,12 @@ class WorkflowOrchestrator:
                     "action": "prompt_to_plan.plan_preview",
                     "label": "从 prompt 文件生成 plan patch preview",
                     "tool": "run_mcp_workflow",
-                    "params": {"workflow": "prompt_to_plan", "phase": "plan_preview", "prompt_file": prompt_file},
+                    "params": self._prompt_to_plan_continuation_params(
+                        params,
+                        workflow="prompt_to_plan",
+                        phase="plan_preview",
+                        prompt_file=prompt_file,
+                    ),
                     "risk_level": "preview",
                     "requires_confirmation": True,
                 })
@@ -3815,7 +3835,12 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.plan_apply",
                 "label": "应用 plan patch",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "plan_apply", "patch_id": preview_ids[0]},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="plan_apply",
+                    patch_id=preview_ids[0],
+                ),
                 "risk_level": "commit",
                 "requires_confirmation": True,
             })
@@ -3843,7 +3868,11 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.run_preview",
                 "label": "生成执行器运行预览（推荐）",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "run_preview"},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="run_preview",
+                ),
                 "risk_level": "preview",
                 "requires_confirmation": False,
             })
@@ -3925,7 +3954,11 @@ class WorkflowOrchestrator:
                 "action": "prompt_to_plan.run_preview",
                 "label": "生成执行器运行预览（推荐）",
                 "tool": "run_mcp_workflow",
-                "params": {"workflow": "prompt_to_plan", "phase": "run_preview"},
+                "params": self._prompt_to_plan_continuation_params(
+                    params,
+                    workflow="prompt_to_plan",
+                    phase="run_preview",
+                ),
                 "risk_level": "preview",
                 "requires_confirmation": False,
             }],
@@ -3992,14 +4025,13 @@ class WorkflowOrchestrator:
         preview_ids = self._extract_preview_ids(preview)
         next_actions = []
         if preview_ids:
-            run_params: dict[str, Any] = {
-                "workflow": "prompt_to_plan",
-                "phase": "run",
-                "preview_id": preview_ids[0],
-                "provider": provider,
-            }
-            if profile_id:
-                run_params["profile_id"] = profile_id
+            run_params = self._prompt_to_plan_continuation_params(
+                params,
+                workflow="prompt_to_plan",
+                phase="run",
+                preview_id=preview_ids[0],
+                provider=provider,
+            )
             next_actions.append({
                 "action": "prompt_to_plan.run",
                 "label": "确认运行执行器",
