@@ -1823,7 +1823,8 @@ max_poll_attempts: 24
 max_total_poll_seconds: 120
 ```
 
-When polling from local Codex, pass the profile explicitly:
+When starting an independent Local Codex call without an existing executor
+preview or run claim, pass the profile explicitly:
 
 ```json
 {
@@ -1837,6 +1838,23 @@ When polling from local Codex, pass the profile explicitly:
   }
 }
 ```
+
+For a server-generated executor continuation, follow the returned parameters
+instead of reconstructing the call. An explicit caller profile is carried into
+generated `run_once_preview` / `run_bounded_preview` actions, bound to the
+executor preview artifact, and persisted in the successful run claim. A later
+`status` call that supplies only the matching `preview_id` or `run_id` resolves
+the profile from that claim, so the Local Codex polling window remains 24 × 5
+seconds without requiring the client to resend `profile_id` at every hop.
+Explicit `profile_id` remains supported for a standalone status call and keeps
+its existing precedence and validation behavior.
+
+The same continuation rule applies when executor work is reached through
+`auto_preview`, `agent_dispatch`, or `prompt_to_plan`: copy the advertised
+action parameters through each phase. If the initiating call omitted
+`profile_id`, ColaMeta does not inject a cross-workflow fallback into these
+unrelated workflow defaults; exposure-derived synthesis remains limited to
+`auto_preview`.
 
 Stop polling when `terminal=true`, when `polling_exhausted=true`, or when the
 status reports provider/auth/quota/network failure. If only heartbeat is still

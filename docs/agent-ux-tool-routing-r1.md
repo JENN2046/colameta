@@ -196,11 +196,19 @@ confirmation 或 commit scope gate。
 
 当前 Commander 已经通过既有注册机制物理暴露 9 个工具。R1 保留该机制，不做
 动态注册重写，也不删除 Owner/advanced/compatibility catalog 中的工具。
-`auto_preview` 会用当前 profile 的 primary/advanced guidance 过滤
-`primary_next_action`；如果现有 workflow 只能给出 profile 不可达的底层工具，
-它返回 `null`，不会建议 Agent 调用不可见工具。这个约束只应用于
-`auto_preview` 的 canonical routing projection，不会重写既有 operator-flow
-packet 自身的 route contract。
+`auto_preview` 会取当前 profile 的 primary/advanced guidance 与当前 exposure
+实际公开的工具目录交集，并用该交集过滤 `primary_next_action`、`next_actions`、
+`recommended_next_actions` 与嵌套公开动作列表。如果现有 workflow 只能给出
+profile 不可达或当前 exposure 隐藏的底层工具，`primary_next_action` 返回
+`null`，相关列表也不会继续发布该动作。workflow record 写入后刷新的 typed
+continuation 使用同一个交集；消费者不可见时 continuation 保持 `null`。
+
+如果 persona 过滤移除了 operation 唯一可达的确认动作，公开 projection 会同步
+清除 `requires_confirmation`、`needs_user_confirmation` 与 `can_apply`，防止
+Commander 再从残留状态合成已过滤的 apply/run 动作。原 preview handle 可以作为
+观察事实保留，但不会因此获得消费它的权限。这个约束只应用于 `auto_preview` 的
+canonical routing projection，不会重写既有 operator-flow packet 自身的 route
+contract，也不会改变 preview、executor、commit 或其他 authority gate。
 
 `source_observer` 的推荐表只包含 read-only 工具；混合读写的 `manage_files`
 不会作为其 advanced tool 出现。Normal/loopback surface 直接公开既有的静态
